@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>glint</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>Glint</name>
+  <summary>Unofficial Yandex Music client</summary>
+  <summary xml:lang="ru">Неофициальный клиент Яндекс Музыки</summary>
+  <description>
+    <p>Unofficial Yandex Music client for Windows and Linux. Search, playlists, albums, lyrics and playback controls in one desktop app.</p>
+    <p xml:lang="ru">Неофициальный клиент Яндекс Музыки для Windows и Linux. Поиск, плейлисты, альбомы, тексты песен и управление воспроизведением в одном приложении.</p>
+  </description>
+  <launchable type="desktop-id">glint.desktop</launchable>
+  <url type="homepage">https://github.com/orphytype/glint</url>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+    <category>Player</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+</component>

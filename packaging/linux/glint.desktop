@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=Glint
+GenericName=Music Player
+GenericName[ru]=Музыкальный проигрыватель
+Comment=Search and play Yandex Music
+Comment[ru]=Поиск и воспроизведение музыки из Яндекс Музыки
+Exec=glint
+Icon=glint
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=music;yandex;player;audio;
+Keywords[ru]=музыка;яндекс;плеер;
+StartupNotify=true
+StartupWMClass=glint
+SingleMainWindow=true

@@ -1,0 +1,48 @@
+[workspace]
+resolver = "3"
+members = ["crates/glint", "crates/glint-update", "crates/ym-api", "crates/ym-audio"]
+
+[workspace.package]
+version = "0.1.0-alpha"
+edition = "2024"
+license = "GPL-3.0-only"
+rust-version = "1.100"
+authors = ["Glint contributors"]
+repository = "https://github.com/orphytype/glint"
+
+[workspace.dependencies]
+# RUNE is pre-release: pin a rev of `dev` (it is never rewritten). Same rev for every RUNE crate.
+rune = { git = "https://github.com/anomalyco/rune", rev = "97711c519824c394a8e67133d7d89dab67166387" }
+rune-fx = { git = "https://github.com/anomalyco/rune", rev = "97711c519824c394a8e67133d7d89dab67166387" }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "97711c519824c394a8e67133d7d89dab67166387" }
+rune-motion = { git = "https://github.com/anomalyco/rune", rev = "97711c519824c394a8e67133d7d89dab67166387" }
+bytemuck = { version = "1.25", features = ["derive"] }
+
+# RUNE builds against patched copies of these crates (its own `[patch.crates-io]` does not reach an
+# app that depends on it), so take the same copies from the same pinned rev.
+[patch.crates-io]
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "97711c519824c394a8e67133d7d89dab67166387" }
+winit = { git = "https://github.com/anomalyco/rune", rev = "97711c519824c394a8e67133d7d89dab67166387" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "97711c519824c394a8e67133d7d89dab67166387" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "97711c519824c394a8e67133d7d89dab67166387" }
+
+# Dependencies are compiled with light optimisation even in dev builds: wgpu, naga and the
+# image codecs are unusably slow at opt-level 0, and they rarely change.
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
+
+# Real-time DSP and the demo synthesiser are unusable (and glitchy) unoptimised.
+[profile.dev.package.ym-audio]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 16
+incremental = true
+strip = "debuginfo"

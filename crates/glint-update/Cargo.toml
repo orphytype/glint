@@ -1,0 +1,26 @@
+[package]
+name = "glint-update"
+description = "Looks for a newer Glint among the GitHub releases, downloads it and puts it in place."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["json", "system-proxy"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+sha2 = "0.11"
+
+# TLS on Windows: the OS's own (SChannel), as in ym-api.
+[target.'cfg(windows)'.dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
+
+# Everywhere else: rustls with ring, checked against the system's certificates, as in ym-api.
+[target.'cfg(not(windows))'.dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
+[dev-dependencies]
+serde_json = "1"

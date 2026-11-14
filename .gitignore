@@ -1,0 +1,12 @@
+/target
+/dist
+*.pdb
+*.snap.png
+/shots
+.env
+Thumbs.db
+
+# Never commit app data
+token.bin
+settings.json
+window.json

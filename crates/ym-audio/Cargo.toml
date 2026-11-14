@@ -1,0 +1,14 @@
+[package]
+name = "ym-audio"
+description = "Audio engine for Glint: gapless playback, 10-band EQ and live spectrum"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Only what the service serves (MP3, AAC in MP4/ADTS) plus WAV for the built-in demo audio.
+rodio = { version = "0.23", default-features = false, features = ["playback", "flac", "mp3", "mp4", "wav"] }
+rustfft = "6.4"
+thiserror = "2"

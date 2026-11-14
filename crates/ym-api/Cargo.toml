@@ -1,0 +1,29 @@
+[package]
+name = "ym-api"
+description = "Async client for the unofficial Yandex Music API: library, search, Wave, lyrics and signed stream URLs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["json", "form", "query", "gzip", "charset", "system-proxy"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+md-5 = "0.11"
+hmac = "0.13"
+sha2 = "0.11"
+base64 = "0.23"
+
+# TLS on Windows: the OS's own (SChannel), so no C toolchain is needed for the crypto.
+[target.'cfg(windows)'.dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
+
+# Everywhere else: rustls with ring, checked against the system's certificates. Not OpenSSL, whose
+# library differs from one Linux to the next (1.1 or 3, and named differently), which would tie a
+# build to the distribution it was made on.
+[target.'cfg(not(windows))'.dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

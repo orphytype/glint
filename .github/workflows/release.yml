@@ -1,0 +1,107 @@
+# Builds every download, and publishes them as a GitHub release when a `v*` tag is pushed.
+# Run it by hand (Actions → Release → Run workflow) to build and test without releasing; the
+# files are then attached to the run as artifacts.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: windows-
+      - name: Test
+        run: cargo test --release --locked --workspace
+      - name: Inno Setup
+        run: if (-not (Get-Command iscc -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+      - name: Package
+        run: .\scripts\dist-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/*.exe
+            dist/*.zip
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-latest
+    # Built on Debian 11 (glibc 2.31), so the binary runs on that and anything newer.
+    container: debian:bullseye
+    steps:
+      - name: System packages
+        run: |
+          # Debian 11 is past its support, so its packages now live on the archive mirror.
+          sed -i 's|deb.debian.org/debian-security|archive.debian.org/debian-security|g; s|deb.debian.org/debian|archive.debian.org/debian|g; s|security.debian.org|archive.debian.org/debian-security|g' /etc/apt/sources.list
+          apt-get -o Acquire::Check-Valid-Until=false update
+          apt-get install -y --no-install-recommends build-essential pkg-config curl ca-certificates git file dpkg-dev \
+            libasound2-dev libfontconfig1-dev libwayland-dev libxkbcommon-dev
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: |
+          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-deb
+            ~/.cargo/bin/cargo-generate-rpm
+            target
+          key: linux-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: linux-
+      - name: Packaging tools
+        run: |
+          command -v cargo-deb || cargo install cargo-deb --locked
+          command -v cargo-generate-rpm || cargo install cargo-generate-rpm --locked
+      - name: Test
+        run: cargo test --release --locked --workspace
+      - name: Package
+        run: scripts/dist-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.rpm
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          flags=""
+          case "$tag" in *-*) flags="--prerelease" ;; esac
+          gh release create "$tag" dist/* --title "Glint ${tag#v}" --notes-file packaging/release-notes.md $flags
