@@ -1027,6 +1027,12 @@ pub struct State {
     pub sys_checked: f64,
     /// Whether lrc.red was usable the last time we looked, to reload the lyrics when that flips.
     pub lrc_usable: bool,
+    /// Bound to a zero-sized element so passive 30 Hz compositor ticks wake a repaint without
+    /// rebuilding the view.
+    pub fx_pulse: rune::Live<[f32; 2]>,
+    pub fx_phase: bool,
+    pub fx_next: f64,
+    pub bugs_at: f64,
 }
 
 /// The app's home page, sent to lrc.red as the contact required by its API terms.
@@ -1263,6 +1269,10 @@ impl State {
             sys_light: false,
             sys_checked: -100.0,
             lrc_usable: false,
+            fx_pulse: rune::Live::new([0.0, 0.0]),
+            fx_phase: false,
+            fx_next: 0.0,
+            bugs_at: 0.0,
             settings,
             store,
         }
@@ -2523,13 +2533,16 @@ impl State {
             // Ask for the new track's large cover here: the views only show the copy the colours
             // already come from (the old one) until this one is in, so none of them asks for it,
             // and with the player closed nothing else does either.
+            self.art.want_sharp(&key);
             let _ = self.art.pixels(&key);
         }
         if self.palette_key.as_deref() != Some(key.as_str())
             && let Some(p) = self.art.palette(&key)
+            && let Some(thumb) = self.art.thumb(&key)
+            && !thumb.sharp.is_empty()
         {
             self.palette = p;
-            self.cover_thumb = self.art.thumb(&key);
+            self.cover_thumb = Some(thumb);
             self.palette_key = Some(key);
             return true;
         }

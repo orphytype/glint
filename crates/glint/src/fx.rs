@@ -490,6 +490,21 @@ pub fn set_wave_pointer(x: f32, y: f32) {
     WAVE_POINTER[1].store(y.to_bits(), std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Whether passive effects want another frame in ~33 ms (`poll` calls `arm_tick` when it
+/// schedules `wake_after`).
+static WANTS_TICK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static TICK_ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the last drawn frame asked for a 30 Hz passive tick.
+pub fn wants_tick() -> bool {
+    WANTS_TICK.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Marks the upcoming 30 Hz passive tick armed so the compositor lets the window rest between ticks.
+pub fn arm_tick() {
+    TICK_ARMED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Whether effect slots draw yet (see [`READY`]).
 pub fn ready() -> bool {
     READY.load(std::sync::atomic::Ordering::Relaxed)
@@ -572,17 +587,7 @@ pub struct Gfx {
     /// Whether anything that flows on its own was drawn last frame (coming back to it starts the
     /// flow again).
     flowing: bool,
-    /// Whether the frame drawn last is a picture the next one can reuse: passive effects can
-    /// advance between redraws, and the frame is kept on the GPU.
-    repeatable: bool,
-    /// When that frame was drawn (`Runtime::clock`) and what the window looked like then.
-    full_at: f64,
-    look: u64,
-    /// Time of the frames shown again, owed to the next frame drawn for real so that the clocks
-    /// below run at the pace of the window and not of the screen.
-    owed: f32,
     frames: u32,
-    reused: u32,
     upd_ms: f64,
     cpu_ms: f64,
     fps_at: f64,
@@ -602,11 +607,6 @@ struct Prof {
     n: u32,
     max_ms: f64,
 }
-
-/// A frame that comes this soon after the last one drawn, with nothing changed since, shows that
-/// one again. Passive effects are capped at roughly thirty pictures a second while input and
-/// scrolling still draw immediately.
-const REPEAT_BELOW_S: f64 = 0.032;
 
 /// Seconds the seek bars take to fade up when they come into view.
 const APPEAR_S: f32 = 0.35;
@@ -645,12 +645,7 @@ impl Gfx {
             wave_from_real: false,
             wave_mix: 0.0,
             flowing: false,
-            repeatable: false,
-            full_at: 0.0,
-            look: 0,
-            owed: 0.0,
             frames: 0,
-            reused: 0,
             upd_ms: 0.0,
             cpu_ms: 0.0,
             fps_at: 0.0,
@@ -704,9 +699,9 @@ fn rgb4(c: [f32; 3], a: f32) -> [f32; 4] {
     [c[0], c[1], c[2], a]
 }
 
-/// What the window looks like, as far as a picture of it goes. Per-tick overlays are deliberately
-/// left out because they do not change the backdrop under glass or veils.
-fn look_of(f: &Frame<'_, State>) -> u64 {
+/// What the backdrop behind `SNAP` looks like (instances `0..limit`). Everything drawn after the
+/// snapshot (dock bar, marquee, buttons, overlays) cannot affect the copied backdrop or its blur.
+fn look_of(f: &Frame<'_, State>, limit: usize) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     let mut eat = |w: u64| {
         h = (h ^ w).wrapping_mul(0x9E37_79B9_7F4A_7C15);
@@ -715,7 +710,7 @@ fn look_of(f: &Frame<'_, State>) -> u64 {
     let st = &f.rt.state;
     eat(u64::from(f.size.0) << 32 | u64::from(f.size.1));
     eat(st.settings.effects as u64 | u64::from(st.settings.reduce_motion) << 8 | u64::from(theme::light()) << 9);
-    for (n, instance) in f.rt.instances.iter().enumerate() {
+    for (n, instance) in f.rt.instances.iter().take(limit).enumerate() {
         let mark = f.rt.marks.get(n).copied().unwrap_or(0);
         if matches!(mark & 0xff, BARS | MORPH | BUTTERFLY) {
             continue;
@@ -728,29 +723,6 @@ fn look_of(f: &Frame<'_, State>) -> u64 {
     h
 }
 
-impl Gfx {
-    /// Puts the picture of the last frame drawn on screen again, when the screen asks for a frame
-    /// before anything has changed since it. Returns whether it did; the frame is then done.
-    fn show_again(&mut self, f: &mut Frame<'_, State>, look: u64) -> bool {
-        if !self.repeatable || look != self.look || !(0.0..REPEAT_BELOW_S).contains(&(f.rt.clock - self.full_at)) {
-            return false;
-        }
-        let size = [f.size.0, f.size.1];
-        let Some(gpu) = self.gpu.as_mut().filter(|g| g.key == f.device_key()) else { return false };
-        gpu.begin(size);
-        if !gpu.has_kept(size, f.format) {
-            return false;
-        }
-        gpu.touch_pyramids();
-        let (w, h) = (size[0] as f32, size[1] as f32);
-        let u = gpu.upload(f.device, f.queue, &U { bounds: [0.0, 0.0, w, h], view: [w, h, 0.0, 0.0], ..U::default() });
-        gpu.show_kept(f.device, f.encoder, f.target, f.format, u);
-        self.owed += f.dt.clamp(0.0, 0.1) as f32;
-        self.reused += 1;
-        true
-    }
-}
-
 impl Compositor<State> for Gfx {
     fn features(&self) -> wgpu::Features {
         if off("fps") { wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS } else { wgpu::Features::empty() }
@@ -761,6 +733,9 @@ impl Compositor<State> for Gfx {
     }
 
     fn render(&mut self, f: &mut Frame<'_, State>) {
+        if let Some(gpu) = self.gpu.as_mut().filter(|g| g.key == f.device_key()) {
+            gpu.pace(f.device, f.queue, [f.size.0, f.size.1]);
+        }
         let began = std::time::Instant::now();
         self.upd_ms += f.update_ms;
         self.draw(f);
@@ -770,17 +745,13 @@ impl Compositor<State> for Gfx {
 
 impl Gfx {
     fn draw(&mut self, f: &mut Frame<'_, State>) {
-        let look = look_of(f);
-        if self.show_again(f, look) {
-            return;
-        }
         let (device, queue, size) = (f.device, f.queue, f.size);
         let pass_size = [size.0, size.1];
         let st = &f.rt.state;
         let quality = st.settings.effects;
         let reduced = st.settings.reduce_motion;
         let accent = theme::accent_srgb(st.settings.accent, self.smooth.accent);
-        let dt = (f.dt + f64::from(std::mem::take(&mut self.owed))).clamp(0.0, 0.1) as f32;
+        let dt = f.dt.clamp(0.0, 0.1) as f32;
         self.smooth.update(dt, st);
         // Reduced motion keeps the look but freezes the clock.
         let t = if reduced { 7.3 } else { f.rt.t as f32 };
@@ -974,13 +945,16 @@ impl Gfx {
                     ];
                     u.tint = rgb4(canvas, 1.0);
                     u.ink = rgb4(ink, 0.0);
-                    let u = gpu.upload(device, queue, &u);
+                    let u = gpu.stage(device, &u);
                     jobs.insert(n as u32, Job { pipe: Pipe::Field, u, region: None, tag: 0 });
                     moving |= playing_level && !flat && !reduced;
                 }
                 GLASS => {
                     let s = &SPECS[(variant as usize).min(SPECS.len() - 1)];
                     let (hide, press, hover) = (d[0].clamp(0.0, 1.0), d[1].clamp(0.0, 1.0), d[2].clamp(0.0, 1.0));
+                    if hide >= 0.999 {
+                        continue;
+                    }
                     let (mut refr, mut chroma, mut blur) = (s.refr, s.chroma, s.blur);
                     let mut tint = s.tint + 0.10 * hover + 0.16 * press;
                     match quality {
@@ -1008,12 +982,12 @@ impl Gfx {
                     u.tint = rgb4(canvas, tint.clamp(0.0, 0.95));
                     // Near-black ink makes a heavy shadow on a light page, so it casts less there.
                     u.ink = rgb4(ink, if theme::light() { s.cast * 0.36 } else { s.cast });
-                    let u = gpu.upload(device, queue, &u);
+                    let u = gpu.stage(device, &u);
                     let tag = pyramid_tag(n as u32, region.is_some());
                     jobs.insert(n as u32, Job { pipe: Pipe::Glass, u, region, tag });
                 }
                 VEIL => {
-                    if quality == Effects::Off {
+                    if quality == Effects::Off || (d[0] == 0.0 && d[1] == 0.0) {
                         continue;
                     }
                     let mut u = base(i, k, pass_size, srgb, t, 0.0, true);
@@ -1026,7 +1000,7 @@ impl Gfx {
                     // behind a cover opened large), not a band.
                     u.p0 = [if d[0] < 0.0 { d[0] } else { d[0] * k }, d[1] * k, d[2] * k, d[3]];
                     u.tint = rgb4(canvas, 1.0);
-                    let u = gpu.upload(device, queue, &u);
+                    let u = gpu.stage(device, &u);
                     let tag = pyramid_tag(n as u32, region.is_some());
                     jobs.insert(n as u32, Job { pipe: Pipe::Veil, u, region, tag });
                 }
@@ -1046,7 +1020,7 @@ impl Gfx {
                     moving |= (self.marker_run - want).abs() > 0.002;
                     // d[1]: 1 for a marker that sits on a cover, which is white; else the accent.
                     u.tint = rgb4(if d[1] > 0.5 { [1.0, 1.0, 1.0] } else { accent }, 1.0);
-                    let u = gpu.upload(device, queue, &u);
+                    let u = gpu.stage(device, &u);
                     jobs.insert(n as u32, Job { pipe: Pipe::Morph, u, region: None, tag: 0 });
                     self.morph_on |= run;
                     moving |= run;
@@ -1129,7 +1103,7 @@ impl Gfx {
                     // Played or not, the bars are the text colour: white on the dark page.
                     u.tint = rgb4(ink, 1.0);
                     u.ink = rgb4(ink, 0.28);
-                    let u = gpu.upload(device, queue, &u);
+                    let u = gpu.stage(device, &u);
                     jobs.insert(n as u32, Job { pipe: Pipe::Bars, u, region: None, tag: 0 });
                 }
                 ARTMORPH => {
@@ -1144,7 +1118,7 @@ impl Gfx {
                     // "playing" is still the last track's: show exactly that (the texture before
                     // it is two tracks old).
                     u.p0 = [t, d[0], if art_hold { 1.0 } else { 0.0 }, 0.0];
-                    let u = gpu.upload(device, queue, &u);
+                    let u = gpu.stage(device, &u);
                     jobs.insert(n as u32, Job { pipe: Pipe::ArtMorph, u, region: None, tag: 0 });
                     moving = true;
                 }
@@ -1208,7 +1182,7 @@ impl Gfx {
                     u.p4 = rgb4(sm.pal[2], 0.0);
                     u.tint = rgb4(sm.pal[4], half);
                     u.ink = rgb4(canvas, 1.0);
-                    let u = gpu.upload(device, queue, &u);
+                    let u = gpu.stage(device, &u);
                     jobs.insert(n as u32, Job { pipe: Pipe::Stage, u, region: None, tag: 0 });
                     moving |= song_live || (quality == Effects::Full && !reduced && flow > 0.0);
                     moving |= cover_mix < 1.0;
@@ -1287,7 +1261,7 @@ impl Gfx {
                         moving |= p[2] > 0.0;
                     }
                     u.ink = rgb4(ink, 1.0);
-                    let u = gpu.upload(device, queue, &u);
+                    let u = gpu.stage(device, &u);
                     // Each kind of shape has a pipeline of its own (they compile faster apart).
                     let pipe = match d[0] as u32 {
                         8 => Pipe::Butterfly,
@@ -1307,13 +1281,13 @@ impl Gfx {
                     u.p0 = [8.0, d[1], d[2], self.shape_t];
                     u.p2 = [b.heading, b.open, b.bank, b.z];
                     u.ink = rgb4(ink, 1.0);
-                    let u = gpu.upload(device, queue, &u);
+                    let u = gpu.stage(device, &u);
                     jobs.insert(n as u32, Job { pipe: Pipe::Butterfly, u, region: None, tag: 0 });
                 }
                 SNAP => {
                     // Nothing is drawn here: the frame is copied at this slot, and every blur of
                     // the frame (the glass, the veils) is made from that copy.
-                    let u = gpu.upload(device, queue, &base(i, k, pass_size, srgb, t, 0.0, true));
+                    let u = gpu.stage(device, &base(i, k, pass_size, srgb, t, 0.0, true));
                     jobs.insert(n as u32, Job { pipe: Pipe::Snap, u, region: None, tag: 0 });
                 }
                 _ => {
@@ -1330,11 +1304,25 @@ impl Gfx {
                 }
             }
         }
-        // A dynamic effect changes the pixels copied by SNAP, so its pyramid must be refreshed.
-        // Static pages keep their existing pyramid textures and avoid the full downsample chain.
-        let backdrop_dynamic =
-            jobs.values().any(|job| matches!(job.pipe, Pipe::Field | Pipe::Bars | Pipe::ArtMorph | Pipe::Shape | Pipe::Liquid | Pipe::Ribbon | Pipe::Butterfly | Pipe::Stage));
-        let pyramid_key = if backdrop_dynamic { look ^ f.rt.clock.to_bits() } else { look };
+        // Only instances and dynamic effects drawn before the last SNAP affect the copied
+        // backdrop. Bucket shader-only refreshes (30 Hz for moving shapes/stage, 4 Hz for the slow
+        // page field) so a 120 Hz UI animation like the bar marquee does not rebuild blur pyramids
+        // every frame while scrolls and layout changes still refresh immediately through `look`.
+        let snap_limit = jobs.iter().filter(|(_, j)| j.pipe == Pipe::Snap).map(|(&n, _)| n as usize).max().unwrap_or(0);
+        let look = look_of(f, snap_limit);
+        let fast_dynamic = !reduced
+            && (moving || sm.level > 0.002 || self.song.loud > 0.002)
+            && jobs.iter().any(|(&n, job)| {
+                (n as usize) < snap_limit && matches!(job.pipe, Pipe::Bars | Pipe::ArtMorph | Pipe::Shape | Pipe::Liquid | Pipe::Ribbon | Pipe::Butterfly | Pipe::Stage)
+            });
+        let field_dynamic = !reduced && quality != Effects::Off && playing_level && jobs.iter().any(|(&n, job)| (n as usize) < snap_limit && job.pipe == Pipe::Field);
+        let pyramid_key = if fast_dynamic {
+            look ^ ((f.rt.clock * 30.0) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        } else if field_dynamic {
+            look ^ ((f.rt.clock * 4.0) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        } else {
+            look
+        };
         self.flowing = flows;
         // A slot that was not drawn this frame has been left; when it comes back it starts again.
         for m in self.bars.iter_mut().skip(bars_n) {
@@ -1351,46 +1339,50 @@ impl Gfx {
                 self.shapes.clear();
             }
         }
-        self.animating = building || came_up || !self.fx_warm || moving || sm.level > 0.002 || sm.beat > 0.01 || sm.stirring();
+        let want_tick = !self.fx_warm || moving || sm.level > 0.002 || sm.beat > 0.01 || sm.stirring();
+        let armed = TICK_ARMED.swap(false, std::sync::atomic::Ordering::Relaxed);
+        WANTS_TICK.store(want_tick, std::sync::atomic::Ordering::Relaxed);
+        let need_kick = want_tick && !armed;
+        // Full display-link rate only during startup pipeline builds, the cover morph, or a single
+        // transition frame to let `poll` arm the 30 Hz passive timer.
+        self.animating = building || came_up || art_changing || need_kick;
         if off("fps") {
             self.frames += 1;
             if f.rt.clock - self.fps_at >= 1.0 {
                 let gpu_ms = self.prof.as_ref().map_or(String::new(), |p| format!(" gpu {:.2} ms avg, {:.2} max over {} frames", p.sum_ms / f64::from(p.n.max(1)), p.max_ms, p.n));
-                let n = f64::from((self.frames + self.reused).max(1));
-                eprintln!(
-                    "fps {:.1} (drawn {}, reused {}) runtime {:.2} ms, ours {:.2} ms per frame{gpu_ms}",
-                    n / (f.rt.clock - self.fps_at),
-                    self.frames,
-                    self.reused,
-                    self.upd_ms / n,
-                    self.cpu_ms / n
-                );
+                let n = f64::from(self.frames.max(1));
+                eprintln!("fps {:.1} (drawn {}) runtime {:.2} ms, ours {:.2} ms per frame{gpu_ms}", n / (f.rt.clock - self.fps_at), self.frames, self.upd_ms / n, self.cpu_ms / n);
                 let song = &self.song;
                 let h = song.harmony();
                 eprintln!("stage: loud {:.2} harmony {:.0} deg x{:.2}", song.loud, h[1].atan2(h[0]).to_degrees(), h[2]);
                 if let Some(p) = self.prof.as_mut() {
                     (p.sum_ms, p.n, p.max_ms) = (0.0, 0, 0.0);
                 }
-                (self.frames, self.reused, self.upd_ms, self.cpu_ms, self.fps_at) = (0, 0, 0.0, 0.0, f.rt.clock);
+                (self.frames, self.upd_ms, self.cpu_ms, self.fps_at) = (0, 0.0, 0.0, f.rt.clock);
             }
         }
 
-        let fx = self.fx.get_or_insert_with(|| FxRenderer::new(device, f.format, FxOptions { dither: true }));
-        fx.set_srgb_blend(srgb);
-        fx.add_format(device, wgpu::TextureFormat::Rgba16Float);
         // rune-fx builds an effect's pipeline the first time one is on screen, which would freeze
         // the first like for a moment; the like's sparkles are built ahead, once the window has
         // been up a moment (rune-fx skips what is off screen, so they sit in the window's corner,
         // a point big and all but invisible: prepared, never drawn).
         let born = *self.born.get_or_insert(f.rt.clock);
-        if !self.fx_warm && f.rt.clock - born > 1.5 {
-            self.fx_warm = true;
-            let spot = Shape::rounded(1.0, 1.0, 2.0, 2.0, 1.0);
-            let warm: Vec<FxLayer> = [layer(SPARKLES, [t, 1.0, 0.5, 0.0], spot, t, accent)].into_iter().flatten().collect();
-            let slots: Vec<FxSlot> = warm.iter().map(|_| FxSlot::default()).collect();
-            fx.prepare_with_slots(device, queue, &FxFrame { viewport: [size.0, size.1], scale: 1.0, layers: &warm, backdrop: None, sources: &[] }, &slots);
+        let warm_fx = !self.fx_warm && f.rt.clock - born > 1.5;
+        if warm_fx || !layers.is_empty() {
+            let fx = self.fx.get_or_insert_with(|| FxRenderer::new(device, f.format, FxOptions { dither: true }));
+            fx.set_srgb_blend(srgb);
+            fx.add_format(device, wgpu::TextureFormat::Rgba16Float);
+            if warm_fx {
+                self.fx_warm = true;
+                let spot = Shape::rounded(1.0, 1.0, 2.0, 2.0, 1.0);
+                let warm: Vec<FxLayer> = [layer(SPARKLES, [t, 1.0, 0.5, 0.0], spot, t, accent)].into_iter().flatten().collect();
+                let slots: Vec<FxSlot> = warm.iter().map(|_| FxSlot::default()).collect();
+                fx.prepare_with_slots(device, queue, &FxFrame { viewport: [size.0, size.1], scale: 1.0, layers: &warm, backdrop: None, sources: &[] }, &slots);
+            }
+            if !layers.is_empty() {
+                fx.prepare_with_slots(device, queue, &FxFrame { viewport: [size.0, size.1], scale: 1.0, layers: &layers, backdrop: None, sources: &[] }, &placements);
+            }
         }
-        fx.prepare_with_slots(device, queue, &FxFrame { viewport: [size.0, size.1], scale: 1.0, layers: &layers, backdrop: None, sources: &[] }, &placements);
 
         let clear = f.rt.clear_color();
         let timing = self.prof.as_ref().is_some_and(|p| p.state == 0);
@@ -1399,6 +1391,10 @@ impl Gfx {
         let mut snap: Option<wgpu::TextureView> = None;
         let mut snaps: Vec<u32> = jobs.iter().filter(|(_, j)| j.pipe == Pipe::Snap).map(|(n, _)| *n).collect();
         snaps.sort_unstable();
+        for i in 0..gpu.used() {
+            let (buf, data) = gpu.uniform(i);
+            f.write_buffer(buf, 0, bytemuck::bytes_of(data));
+        }
         f.ui.prepare(device, queue, &mut f.rt.text.atlas, &f.rt.instances, size);
         f.ui.draw_with_backdrop(f.encoder, f.target, clear, &mut |phase, s: &EffectSite<'_>| {
             if let Some(job) = jobs.get(&s.index) {
@@ -1452,6 +1448,7 @@ impl Gfx {
                 return;
             }
             let Some(k) = at.iter().position(|n| *n == s.index) else { return };
+            let Some(fx) = self.fx.as_mut() else { return };
             match phase {
                 EffectPhase::Backdrop(enc) => {
                     if let Some(bd) = s.backdrop {
@@ -1461,13 +1458,6 @@ impl Gfx {
                 EffectPhase::Draw(pass) => fx.draw_layer_in(pass, s.format, s.origin, k),
             }
         });
-        // A window that only moves on its own keeps this frame for the next one to show again.
-        self.repeatable = self.animating;
-        self.full_at = f.rt.clock;
-        self.look = look;
-        if self.repeatable {
-            gpu.keep_frame(device, f.encoder, f.target, f.format);
-        }
         if let (true, Some(p)) = (timing, self.prof.as_mut()) {
             f.encoder.write_timestamp(&p.set, 1);
             f.encoder.resolve_query_set(&p.set, 0..2, &p.resolve, 0);

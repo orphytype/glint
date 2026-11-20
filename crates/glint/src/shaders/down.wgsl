@@ -39,13 +39,28 @@ fn tent(at: vec2<i32>, lim: vec2<i32>) -> vec4<f32> {
 
 // Level 0: the region of the backdrop, in pass pixels, mapped onto this target. The region is
 // always exactly twice the target's size, so the target is half the region's resolution.
+// Reads from the separate backdrop copy (not the pyramid itself), so four bilinear taps at
+// ±0.75 texels around the 2x2 centre compute the exact same (1, 3, 3, 1) tent in a quarter of
+// the fetches.
 @fragment
 fn fs_down0(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // Pass pixels to the copy's texels (the same, unless the copy is a different size).
-    let lim = vec2<i32>(textureDimensions(src, 0));
-    let k = vec2<f32>(lim) / max(u.view.xy, vec2<f32>(1.0));
-    let px = u.region.xy + floor(frag.xy) * 2.0;
-    var c = tent(vec2<i32>(floor(px * k)), lim);
+    let lim = vec2<f32>(textureDimensions(src, 0));
+    let k = lim / max(u.view.xy, vec2<f32>(1.0));
+    let at = floor((u.region.xy + floor(frag.xy) * 2.0) * k);
+    let inv = 1.0 / lim;
+    let lo = 0.5 * inv;
+    let hi = (lim - 0.5) * inv;
+    let u0 = clamp((at + vec2<f32>(0.25, 0.25)) * inv, lo, hi);
+    let u1 = clamp((at + vec2<f32>(1.75, 0.25)) * inv, lo, hi);
+    let u2 = clamp((at + vec2<f32>(0.25, 1.75)) * inv, lo, hi);
+    let u3 = clamp((at + vec2<f32>(1.75, 1.75)) * inv, lo, hi);
+    var c = (
+        textureSampleLevel(src, smp, u0, 0.0)
+        + textureSampleLevel(src, smp, u1, 0.0)
+        + textureSampleLevel(src, smp, u2, 0.0)
+        + textureSampleLevel(src, smp, u3, 0.0)
+    ) * 0.25;
     c.a = 1.0;
     return c;
 }

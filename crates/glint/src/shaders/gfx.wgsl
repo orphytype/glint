@@ -49,8 +49,9 @@ fn blurred(t: texture_2d<f32>, p: vec2<f32>, sigma: f32) -> vec3<f32> {
     let top = f32(textureNumLevels(t)) - 1.0;
     let l = clamp(log2(max(sigma / 1.58, 1.0)), 0.0, top);
     let a = i32(floor(l));
-    let b = min(a + 1, i32(top));
-    return mix(bspline(t, ruv, a), bspline(t, ruv, b), fract(l));
+    let frac = fract(l);
+    if (frac < 0.001 || a >= i32(top)) { return bspline(t, ruv, a); }
+    return mix(bspline(t, ruv, a), bspline(t, ruv, a + 1), frac);
 }
 
 fn sharp(t: texture_2d<f32>, p: vec2<f32>) -> vec3<f32> {
@@ -198,7 +199,7 @@ fn fs_glass(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let ca = disp * u.p0.z * (0.45 + corner);
     let sigma = u.p0.w;
     var col = vec3<f32>(0.0);
-    if (u.p0.z > 0.0) {
+    if (u.p0.z > 0.0 && dot(ca, ca) > 1e-4) {
         col.r = soften(bd, pyr, rc + ca, sigma).r;
         col.g = soften(bd, pyr, rc, sigma).g;
         col.b = soften(bd, pyr, rc - ca, sigma).b;
@@ -1179,18 +1180,21 @@ fn shape_px(frag: vec4<f32>, part: i32) -> vec4<f32> {
             glow = exp(-max(f, 0.0) / 0.075) * (0.30 + 0.35 * music + 0.15 * hov) * room * (1.0 - cov);
         }
         if ((cov <= 0.0 && ring <= 0.0 && glow <= 0.002) || clip <= 0.0) { discard; }
-        var col = lq_color(fam, q, qs, f, seed, T, hue, hov, music, light);
-        if (fam != 19) {
-            // A mood's pebble or picture is printed: each channel in a few steps, an ordered dither between
-            // them, in cells a couple of pixels wide.
-            let cell = max(1.0, round(k * clamp(size / k / 70.0, 1.5, 2.5)));
-            let thr = bayer8(floor((p - u.rect.xy) / cell));
-            col = floor(col * 4.0 + vec3<f32>(thr)) / 4.0;
-        } else if (wave_look().y > 0) {
-            col = wave_print(wave_look().y, col, p, k, size, seed, light);
-        } else {
-            // A grain of noise against banding in the smooth gradients.
-            col = col + (bayer8(floor(p - u.rect.xy)) - 0.5) / 255.0;
+        var col = vec3<f32>(0.0);
+        if (cov > 0.0 || hue < 0.0) {
+            col = lq_color(fam, q, qs, f, seed, T, hue, hov, music, light);
+            if (fam != 19) {
+                // A mood's pebble or picture is printed: each channel in a few steps, an ordered dither between
+                // them, in cells a couple of pixels wide.
+                let cell = max(1.0, round(k * clamp(size / k / 70.0, 1.5, 2.5)));
+                let thr = bayer8(floor((p - u.rect.xy) / cell));
+                col = floor(col * 4.0 + vec3<f32>(thr)) / 4.0;
+            } else if (wave_look().y > 0) {
+                col = wave_print(wave_look().y, col, p, k, size, seed, light);
+            } else {
+                // A grain of noise against banding in the smooth gradients.
+                col = col + (bayer8(floor(p - u.rect.xy)) - 0.5) / 255.0;
+            }
         }
         var gcol = select(sh_hsl(hue + 20.0, 0.75, 0.55), sh_hsl(hue + 20.0, 0.70, 0.62), light);
         if (hue < 0.0) {
@@ -1384,7 +1388,6 @@ fn fs_stage(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let peak = u.rect.xy + u.p0.zw * u.rect.zw;
     let rel = p - peak;
     let r = length(rel);
-    let th = atan2(rel.y, rel.x) + 3.14159265;
     let reach = length(u.rect.zw);
     let look = st_look(0);
     let look2 = st_look(1);
@@ -1396,14 +1399,17 @@ fn fs_stage(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let deep = u.region.rgb;
     let mid = u.p4.rgb;
     let hi = u.tint.rgb;
-    let gt = u.p3.w;
-    let asp = vec2<f32>(u.rect.z / max(u.rect.w, 1.0), 1.0);
-    let q = uv * asp * 1.25 + vec2<f32>(seed * 0.37, seed * 0.11);
-    let n1 = fbm(q + vec2<f32>(gt * 0.020, -gt * 0.015), 2);
-    let n2 = fbm(q * 1.6 + 1.3 * vec2<f32>(n1, -n1) + vec2<f32>(-gt * 0.012, gt * 0.017), 3);
     let near = 1.0 - smoothstep(0.0, 0.75 * reach, r);
-    let x = clamp(n2 * 1.25 - 0.18 + 0.30 * near, 0.0, 1.0);
-    var ground = mix(mix(deep, mid, smoothstep(0.0, 0.55, x)), hi, smoothstep(0.6, 1.0, x) * 0.6);
+    var ground = deep;
+    if (u.p1.y <= 0.5) {
+        let gt = u.p3.w;
+        let asp = vec2<f32>(u.rect.z / max(u.rect.w, 1.0), 1.0);
+        let q = uv * asp * 1.25 + vec2<f32>(seed * 0.37, seed * 0.11);
+        let n1 = fbm(q + vec2<f32>(gt * 0.020, -gt * 0.015), 2);
+        let n2 = fbm(q * 1.6 + 1.3 * vec2<f32>(n1, -n1) + vec2<f32>(-gt * 0.012, gt * 0.017), 3);
+        let x = clamp(n2 * 1.25 - 0.18 + 0.30 * near, 0.0, 1.0);
+        ground = mix(mix(deep, mid, smoothstep(0.0, 0.55, x)), hi, smoothstep(0.6, 1.0, x) * 0.6);
+    }
     let loud_now = clamp(u.p2.y, 0.0, 1.0);
 
     // How far outside the cover this point is, in the cover's own shape.
@@ -1413,14 +1419,6 @@ fn fs_stage(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // The reaction picked in the player's panel: 0 off, 1 calm, 2 lively.
     let rays_on = look.y > 0.5;
     let react = select(0.45, 1.0, look.y > 1.5);
-    // The cover's colour at its edge, used to tint the burst.
-    let edge_dir = rel / max(max(abs(rel.x), abs(rel.y)), 1.0);
-    let edge_col = textureSampleLevel(bd, smp, clamp(vec2<f32>(0.5) + 0.46 * edge_dir, vec2<f32>(0.02), vec2<f32>(0.98)), select(0.0, 5.0, u.p1.y > 0.5)).rgb;
-
-    // The rays: three inexpensive fans leave the cover and react to the music. The first fan is
-    // broad and bass-heavy, the second follows the melody, and the third shimmers with the highs.
-    // They are independent of the flash setting: the flash only changes the bloom under the
-    // cover, so turning it off does not remove the rays. The reaction does: off draws none.
     let clock = u.p1.x;
     let dist = max(d, 0.0);
     let parts = st_look(2);
@@ -1430,72 +1428,80 @@ fn fs_stage(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let kick = clamp(parts.w, 0.0, 1.0);
     let from_under = smoothstep(-2.0 * k, 6.0 * k, d);
     var rays = 0.0;
-    let turn = clock * 0.012 * moving;
-    for (var i = 0; i < 3; i = i + 1) {
-        let fi = f32(i);
-        let n = select(select(30.0, 18.0, i == 1), 10.0, i == 0);
-        let dir = select(1.0, -1.0, i == 1);
-        let shift = turn * dir * (1.0 + 0.5 * fi) + fi * 1.7 + seed;
-        let cell = (th + shift) * n / 6.2831853;
-        let j = floor(cell);
-        let off = (fract(cell) - 0.5) * 6.2831853 / n * max(r, 1.0);
-        let jit = sh_h(j + fi * 31.0, 77.0);
-        var len = 0.0;
-        var lit = 0.0;
-        var wide = 1.0;
-        if (i == 0) {
-            // The kick's fan: broad, thrown out on each hit.
-            len = cover * (0.18 + react * (0.30 * bass + 0.60 * kick) * (0.6 + 0.8 * jit));
-            lit = 0.30 + react * (0.30 * bass + 0.40 * kick);
-            wide = 1.6 + 0.9 * kick;
-        } else {
-            let phi = (j + 0.5) * 6.2831853 / n - shift - 3.14159265;
-            let lb = clamp(st_live(st_band_of(phi)), 0.0, 1.0);
-            if (i == 1) {
-                // The voice's fan: it reaches out while someone sings.
-                len = cover * (0.10 + react * (0.18 + 0.85 * jit) * lb * (0.35 + 1.35 * voice));
-                lit = 0.28 + react * lb * (0.30 + 0.70 * voice);
-                wide = 1.0 + 0.5 * voice;
-            } else {
-                // The hats' fine rays.
-                len = cover * (0.06 + react * 0.45 * jit * top * (0.4 + lb));
-                lit = (0.20 + 0.5 * top) * (0.6 + 0.4 * sin(clock * 0.9 + jit * 40.0));
-                wide = 0.7;
+    var ray_col = vec3<f32>(0.0);
+    if (rays_on && from_under > 0.0) {
+        let th = atan2(rel.y, rel.x) + 3.14159265;
+        let turn = clock * 0.012 * moving;
+        for (var i = 0; i < 3; i = i + 1) {
+            let fi = f32(i);
+            let n = select(select(30.0, 18.0, i == 1), 10.0, i == 0);
+            let dir = select(1.0, -1.0, i == 1);
+            let shift = turn * dir * (1.0 + 0.5 * fi) + fi * 1.7 + seed;
+            let cell = (th + shift) * n / 6.2831853;
+            let j = floor(cell);
+            let off = (fract(cell) - 0.5) * 6.2831853 / n * max(r, 1.0);
+            let jit = sh_h(j + fi * 31.0, 77.0);
+            let wide = select(select(0.7, 1.0 + 0.5 * voice, i == 1), 1.6 + 0.9 * kick, i == 0);
+            let z = off / (k * (0.6 + 0.5 * jit) * wide + 0.005 * dist);
+            if (abs(z) < 3.5) {
+                var len = 0.0;
+                var lit = 0.0;
+                if (i == 0) {
+                    // The kick's fan: broad, thrown out on each hit.
+                    len = cover * (0.18 + react * (0.30 * bass + 0.60 * kick) * (0.6 + 0.8 * jit));
+                    lit = 0.30 + react * (0.30 * bass + 0.40 * kick);
+                } else {
+                    let phi = (j + 0.5) * 6.2831853 / n - shift - 3.14159265;
+                    let lb = clamp(st_live(st_band_of(phi)), 0.0, 1.0);
+                    if (i == 1) {
+                        // The voice's fan: it reaches out while someone sings.
+                        len = cover * (0.10 + react * (0.18 + 0.85 * jit) * lb * (0.35 + 1.35 * voice));
+                        lit = 0.28 + react * lb * (0.30 + 0.70 * voice);
+                    } else {
+                        // The hats' fine rays.
+                        len = cover * (0.06 + react * 0.45 * jit * top * (0.4 + lb));
+                        lit = (0.20 + 0.5 * top) * (0.6 + 0.4 * sin(clock * 0.9 + jit * 40.0));
+                    }
+                }
+                let thin = exp(-z * z);
+                rays = rays + thin * exp(-dist / max(len, 1.0)) * lit * (0.65 + 0.35 * jit);
             }
         }
-        let z = off / (k * (0.6 + 0.5 * jit) * wide + 0.005 * dist);
-        let thin = exp(-z * z);
-        rays = rays + thin * exp(-dist / max(len, 1.0)) * lit * (0.65 + 0.35 * jit);
+        let g = 0.7853982 + 0.12 * sin(clock * 0.04 + seed);
+        let hit = max(kick, snare);
+        let gl = cover * (0.45 + react * (0.35 * kick + 0.30 * snare + 0.35 * bass) + 0.3 * loud_now);
+        let fall = exp(-dist / gl);
+        let sg = sin(g);
+        let cg = cos(g);
+        // The two diagonals, one across the other.
+        let perp0 = abs(rel.x * sg - rel.y * cg);
+        let perp1 = abs(rel.x * cg + rel.y * sg);
+        let gw = k * (0.8 + 0.5 * hit) + 0.004 * dist;
+        rays = rays + (exp(-perp0 / gw) + exp(-perp1 / gw)) * fall * (0.50 + 0.18 * kick + 0.18 * snare);
+        rays = rays * 0.75 * from_under;
+        if (rays > 0.0005) {
+            // The cover's colour at its edge, used to tint the burst.
+            let edge_dir = rel / max(max(abs(rel.x), abs(rel.y)), 1.0);
+            let edge_col = textureSampleLevel(bd, smp, clamp(vec2<f32>(0.5) + 0.46 * edge_dir, vec2<f32>(0.02), vec2<f32>(0.98)), select(0.0, 5.0, u.p1.y > 0.5)).rgb;
+            var light_col = mix(edge_col, hi, 0.30);
+            light_col = mix(vec3<f32>(luma(light_col)), light_col, 1.25);
+            ray_col = mix(light_col, vec3<f32>(1.0), 0.35 + 0.4 * exp(-dist / (cover * 0.3)));
+        }
     }
-    let g = 0.7853982 + 0.12 * sin(clock * 0.04 + seed);
-    let hit = max(kick, snare);
-    let gl = cover * (0.45 + react * (0.35 * kick + 0.30 * snare + 0.35 * bass) + 0.3 * loud_now);
-    let fall = exp(-dist / gl);
-    let sg = sin(g);
-    let cg = cos(g);
-    // The two diagonals, one across the other.
-    let perp0 = abs(rel.x * sg - rel.y * cg);
-    let perp1 = abs(rel.x * cg + rel.y * sg);
-    let gw = k * (0.8 + 0.5 * hit) + 0.004 * dist;
-    rays = rays + (exp(-perp0 / gw) + exp(-perp1 / gw)) * fall * (0.50 + 0.18 * kick + 0.18 * snare);
-    rays = rays * 0.75 * from_under * select(0.0, 1.0, rays_on);
 
-    // The colour of the rays: the cover's edge, a little of its lightest colour, with a little
-    // more of its own colour than a grey would have.
-    var light_col = mix(edge_col, hi, 0.30);
-    light_col = mix(vec3<f32>(luma(light_col)), light_col, 1.25);
-    let ray_col = mix(light_col, vec3<f32>(1.0), 0.35 + 0.4 * exp(-dist / (cover * 0.3)));
-
-    // The halo: the key's hue around the cover, as loud as the music.
-    let key_ang = atan2(u.p3.y, u.p3.x);
-    let tonal = clamp(u.p3.z, 0.0, 1.0);
-    let halo_col = mix(mid, sh_hsl(key_ang * 57.29578 + 360.0, 0.55, 0.58), 0.30 + 0.3 * tonal);
     // The flash is a broad bloom directly beneath the cover. Its three levels affect only this
     // bloom. With the reaction off it no longer moves with the kick, the snare or the voice.
     let flash_mode = clamp(look.x, 0.0, 2.0);
     let flash_strength = select(select(0.0, 0.55, flash_mode > 0.5), 1.0, flash_mode > 1.5);
-    let halo = flash_strength * exp(-max(d, 0.0) / ((130.0 + 60.0 * bass + 50.0 * voice) * k))
-        * (0.08 + 0.12 * loud_now + 0.04 * beat + select(0.0, react, rays_on) * (0.09 * kick + 0.05 * snare + 0.08 * voice));
+    var halo = 0.0;
+    var halo_col = mid;
+    if (flash_strength > 0.0) {
+        let key_ang = atan2(u.p3.y, u.p3.x);
+        let tonal = clamp(u.p3.z, 0.0, 1.0);
+        halo_col = mix(mid, sh_hsl(key_ang * 57.29578 + 360.0, 0.55, 0.58), 0.30 + 0.3 * tonal);
+        halo = flash_strength * exp(-dist / ((130.0 + 60.0 * bass + 50.0 * voice) * k))
+            * (0.08 + 0.12 * loud_now + 0.04 * beat + select(0.0, react, rays_on) * (0.09 * kick + 0.05 * snare + 0.08 * voice));
+    }
 
     var col: vec3<f32>;
     if (u.p1.y > 0.5) {

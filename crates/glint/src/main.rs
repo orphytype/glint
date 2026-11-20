@@ -12,9 +12,9 @@ mod autostart;
 mod backdrop;
 mod bugs;
 mod desktop;
-mod fkcensor;
 #[cfg(feature = "tooling")]
 mod fixtures;
+mod fkcensor;
 mod fx;
 mod genre;
 mod i18n;
@@ -157,16 +157,40 @@ fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
     }
     // The page's own wheel scrolling eases toward where the wheel sent it.
     let dt = (s.now - s.prev_now).clamp(0.0, 0.05) as f32;
-    // The butterflies on Home live while Home shows.
-    if s.bugs_alive() {
-        if s.swarm.seed != s.home_seed {
-            s.swarm = bugs::Swarm::new(s.home_seed);
-            changed = true;
+    // Passive shader effects (stage glow, garden, seek bars) and butterflies tick at 30 Hz instead
+    // of spinning at display refresh rate; input, scrolling and UI transitions still render at full
+    // rate. Touching `fx_pulse` wakes a repaint without rebuilding the view or layout.
+    const FX_STEP: f64 = 1.0 / 30.0;
+    let visible = s.app.as_ref().is_none_or(|app| app.is_visible());
+    let fx_on = visible && fx::wants_tick();
+    let bugs_on = visible && s.bugs_alive();
+    if bugs_on && s.swarm.seed != s.home_seed {
+        s.swarm = bugs::Swarm::new(s.home_seed);
+        s.bugs_at = s.now;
+        changed = true;
+    }
+    if fx_on || bugs_on {
+        if fx_on {
+            fx::arm_tick();
         }
-        let scroll = app::page_scroll("home").map_or(0.0, |p| p[0]);
-        let geom = s.bug_geom.borrow().clone();
-        if let Some(next) = s.swarm.step(s.now, dt, &geom, scroll) {
-            tx.wake_after(next.max(Duration::from_millis(33)));
+        if s.now >= s.fx_next {
+            let bug_dt = (s.now - s.bugs_at).clamp(0.0, 0.1) as f32;
+            s.bugs_at = s.now;
+            let mut bug_wait = None;
+            if bugs_on {
+                let scroll = app::page_scroll("home").map_or(0.0, |p| p[0]);
+                let geom = s.bug_geom.borrow().clone();
+                bug_wait = s.swarm.step(s.now, bug_dt, &geom, scroll);
+            }
+            let wait = if fx_on { Duration::from_secs_f64(FX_STEP) } else { bug_wait.map_or(Duration::from_secs_f64(FX_STEP), |d| d.max(Duration::from_secs_f64(FX_STEP))) };
+            s.fx_next = if fx_on && s.fx_next > 0.0 && s.now - s.fx_next < FX_STEP { s.fx_next + FX_STEP } else { s.now + wait.as_secs_f64() };
+            tx.wake_after(Duration::from_secs_f64((s.fx_next - s.now).max(0.004)));
+            if fx_on {
+                s.fx_phase = !s.fx_phase;
+                s.fx_pulse.set([0.0, if s.fx_phase { 1.0 } else { 0.0 }]);
+            }
+        } else {
+            tx.wake_after(Duration::from_secs_f64((s.fx_next - s.now).max(0.004)));
         }
     }
     let reduce = s.settings.reduce_motion;

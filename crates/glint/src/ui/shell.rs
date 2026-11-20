@@ -66,6 +66,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         .h_full()
         .fill(th::bg())
         .hover_motion_within(rune::Spring::new(0.16, 0.0), rune::Spring::new(0.24, 0.0))
+        .child(el().key("fx-pulse").absolute(0.0, 0.0).size(0.0, 0.0).live_offset(&s.fx_pulse).transition(Transition::none()))
         .child(el().key("field").absolute(0.0, 0.0).w_full().h_full().fx(fx::FIELD).paint_order(PAINT_FIELD));
     if logged_in {
         if np_full {

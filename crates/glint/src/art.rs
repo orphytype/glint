@@ -26,6 +26,8 @@ struct Inner {
     /// Pictures a shader draws as well (an artist in a shape): a copy of their pixels is kept,
     /// since the one RUNE holds cannot be read back.
     keep: HashSet<String>,
+    /// Playing covers that need the 256px sharp copy (at most two: current and previous).
+    want_sharp: Vec<String>,
 }
 
 struct Entry {
@@ -66,13 +68,18 @@ pub const THUMB: u32 = 40;
 pub const SHARP: u32 = 256;
 
 impl Thumb {
-    /// Both copies of `rgba` (`w` x `h`).
-    pub fn from_rgba(w: u32, h: u32, rgba: &[u8]) -> Option<Thumb> {
+    /// The 40px thumbnail, plus the 256px sharp copy when `with_sharp` is set (only for playing covers).
+    pub fn from_rgba(w: u32, h: u32, rgba: &[u8], with_sharp: bool) -> Option<Thumb> {
         if w == 0 || h == 0 || rgba.len() < (w * h * 4) as usize {
             return None;
         }
-        let side = SHARP.min(w.min(h)).max(THUMB);
-        Some(Thumb { width: THUMB, height: THUMB, rgba: shrink(w, h, rgba, THUMB), sharp_side: side, sharp: shrink(w, h, rgba, side) })
+        let (sharp_side, sharp) = if with_sharp {
+            let side = SHARP.min(w.min(h)).max(THUMB);
+            (side, shrink(w, h, rgba, side))
+        } else {
+            (0, Vec::new())
+        };
+        Some(Thumb { width: THUMB, height: THUMB, rgba: shrink(w, h, rgba, THUMB), sharp_side, sharp })
     }
 
     /// What the two copies take in memory.
@@ -158,12 +165,13 @@ pub struct Decoded {
 }
 
 /// Finished pictures kept, most; and the memory they may take together before the oldest go.
-const KEEP: usize = 240;
-const BUDGET: usize = 48 << 20;
+/// Each live `Pixels` also keeps a copy in RUNE's CPU and GPU image atlas, so keep this compact.
+const KEEP: usize = 96;
+const BUDGET: usize = 24 << 20;
 
 impl ArtCache {
     pub fn new() -> ArtCache {
-        ArtCache(Arc::new(Mutex::new(Inner { map: HashMap::new(), wanted: Vec::new(), tick: 0, view: 1, landed: 0, keep: HashSet::new() })))
+        ArtCache(Arc::new(Mutex::new(Inner { map: HashMap::new(), wanted: Vec::new(), tick: 0, view: 1, landed: 0, keep: HashSet::new(), want_sharp: Vec::new() })))
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -214,18 +222,47 @@ impl ArtCache {
         self.lock().landed
     }
 
+    /// Marks `key` as a playing cover that needs the 256px sharp copy (for the cover morph and
+    /// My Wave). Drops sharp copies from older covers so only the last two stay in RAM.
+    pub fn want_sharp(&self, key: &str) {
+        let mut g = self.lock();
+        if let Some(pos) = g.want_sharp.iter().position(|k| k == key) {
+            let k = g.want_sharp.remove(pos);
+            g.want_sharp.push(k);
+        } else {
+            g.want_sharp.push(key.to_owned());
+            while g.want_sharp.len() > 2 {
+                let old = g.want_sharp.remove(0);
+                if let Some(e) = g.map.get_mut(&old)
+                    && let Some(t) = &e.thumb
+                    && !t.sharp.is_empty()
+                {
+                    e.bytes = e.bytes.saturating_sub(t.sharp.len());
+                    e.thumb = Some(Arc::new(Thumb { width: t.width, height: t.height, rgba: t.rgba.clone(), sharp_side: 0, sharp: Vec::new() }));
+                }
+            }
+        }
+        // If this cover was already decoded for a page without its sharp copy, reload it from disk.
+        let needs_reload = g.map.get(key).is_some_and(|e| e.ready && e.thumb.as_ref().is_none_or(|t| t.sharp.is_empty()));
+        if needs_reload && !g.wanted.iter().any(|k| k == key) {
+            g.wanted.push(key.to_owned());
+        }
+    }
+
     /// The pixels of `key` for a shader, once they are in. Asking marks the picture as one whose
     /// pixels are kept; ask before it lands (when the view first shows it), or it is loaded again.
     pub fn full(&self, key: &str) -> Option<Arc<Decoded>> {
         let mut g = self.lock();
         if g.keep.insert(key.to_owned()) {
-            // Only the last few are kept: a shape shows one picture at a time.
-            if g.keep.len() > 8 {
-                let drop: Vec<String> = g.keep.iter().filter(|k| *k != key).take(g.keep.len() - 8).cloned().collect();
+            // Only the last two are kept: a shape shows one picture at a time.
+            if g.keep.len() > 2 {
+                let drop: Vec<String> = g.keep.iter().filter(|k| *k != key).take(g.keep.len() - 2).cloned().collect();
                 for k in drop {
                     g.keep.remove(&k);
-                    if let Some(e) = g.map.get_mut(&k) {
-                        e.full = None;
+                    if let Some(e) = g.map.get_mut(&k)
+                        && let Some(f) = e.full.take()
+                    {
+                        e.bytes = e.bytes.saturating_sub(f.rgba.len());
                     }
                 }
             }
@@ -269,18 +306,22 @@ impl ArtCache {
             self.lock().map.remove(key);
             return;
         };
+        let with_sharp = self.lock().want_sharp.iter().any(|k| k == key);
         let palette = Palette::from_rgba(image.width, image.height, &image.rgba);
-        let thumb = Thumb::from_rgba(image.width, image.height, &image.rgba).map(Arc::new);
+        let thumb = Thumb::from_rgba(image.width, image.height, &image.rgba, with_sharp).map(Arc::new);
         let thumb_bytes = thumb.as_ref().map_or(0, |t| t.bytes());
         let mut g = self.lock();
         let full = g.keep.contains(key).then(|| Arc::new(Decoded { width: image.width, height: image.height, rgba: image.rgba.clone() }));
         let full_bytes = full.as_ref().map_or(0, |f| f.rgba.len());
         let Some(e) = g.map.get_mut(key) else { return };
+        let was_ready = e.ready;
         let pixels = e.pixels.clone();
         e.palette = Some(palette);
         e.thumb = thumb;
         e.ready = true;
-        e.done = Some(std::time::Instant::now());
+        if !was_ready {
+            e.done = Some(std::time::Instant::now());
+        }
         e.bytes = image.rgba.len() + thumb_bytes + full_bytes;
         e.full = full;
         g.landed += 1;
@@ -288,7 +329,7 @@ impl ArtCache {
         // are and by what they take (a few large covers weigh as much as hundreds of thumbnails).
         // A picture on screen is held by its view as well, so it outlives its place here.
         let total: usize = g.map.values().map(|e| e.bytes).sum();
-        if g.map.len() > KEEP + 40 || total > BUDGET {
+        if g.map.len() > KEEP + 24 || total > BUDGET {
             // Only what the last two views did not ask for can go: the page on screen keeps all
             // of its pictures, even past the budget.
             let recent = g.view.saturating_sub(1);
@@ -307,7 +348,9 @@ impl ArtCache {
         }
         drop(g);
         // Hand the pixels over outside the lock: RUNE wakes its views from here.
-        pixels.set(image.width, image.height, image.rgba);
+        if !was_ready {
+            pixels.set(image.width, image.height, image.rgba);
+        }
     }
 }
 

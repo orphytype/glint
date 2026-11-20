@@ -60,8 +60,6 @@ pub enum Pipe {
     Ribbon,
     /// A butterfly (`fs_butterfly`).
     Butterfly,
-    /// Copies a texture over the frame (the kept frame, shown again).
-    Blit,
     /// The slot where the frame is copied for every blur of it; it draws nothing.
     Snap,
     /// The first pyramid level, and every one after it.
@@ -83,7 +81,7 @@ impl Pipe {
             Pipe::Ribbon => "fs_ribbon",
             Pipe::Butterfly => "fs_butterfly",
             Pipe::Stage => "fs_stage",
-            Pipe::Blit | Pipe::Snap => "fs_blit",
+            Pipe::Snap => "fs_blit",
             Pipe::Down0 => "fs_down0",
             Pipe::Down => "fs_down",
         }
@@ -95,7 +93,7 @@ impl Pipe {
 
     /// Pipelines that copy instead of blending over the frame.
     fn opaque(self) -> bool {
-        matches!(self, Pipe::Blit | Pipe::Down0 | Pipe::Down)
+        matches!(self, Pipe::Down0 | Pipe::Down)
     }
 }
 
@@ -189,30 +187,6 @@ struct Pyr {
     source_key: u64,
 }
 
-/// A frame-sized copy of what the window showed last.
-struct Page {
-    tex: wgpu::Texture,
-    view: wgpu::TextureView,
-    format: wgpu::TextureFormat,
-}
-
-impl Page {
-    fn new(device: &wgpu::Device, size: [u32; 2], format: wgpu::TextureFormat) -> Page {
-        let tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("page"),
-            size: wgpu::Extent3d { width: size[0].max(1), height: size[1].max(1), depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let view = tex.create_view(&Default::default());
-        Page { tex, view, format }
-    }
-}
-
 /// What a draw reads besides its uniforms.
 #[derive(Default, Clone, Copy)]
 pub struct Binds<'a> {
@@ -242,8 +216,11 @@ pub struct Gpu {
     /// The playing cover and the one before it (for the crossfade), tiny, and which thumbnail the
     /// first one was made from.
     art: [Option<wgpu::TextureView>; 2],
-    /// The live readings of the stage (for `fs_stage`): one row of texels.
+    /// The live readings of the stage (for `fs_stage`): one row of texels, plus the last uploaded
+    /// half-float payload so unchanged frames skip `write_texture`.
     live: Option<(wgpu::Texture, wgpu::TextureView)>,
+    live_data: [u16; 44],
+    live_valid: bool,
     /// The playing track's waveform for the seek line (`fs_bars`): two rows, the shape now and
     /// the one it grows out of, four values to a texel.
     wave: Option<(wgpu::Texture, wgpu::TextureView)>,
@@ -271,9 +248,10 @@ pub struct Gpu {
     pyrs: HashMap<(u32, u32, u8), Pyr>,
     frame: u64,
     size: [u32; 2],
-    /// The last frame as it was presented, while the window animates: a frame the screen asks for
-    /// before anything has moved is this again.
-    shown: Option<Page>,
+    /// Submitted vs completed frame count, so the CPU stays at most two frames ahead of the GPU
+    /// if the swapchain stops pacing after resizes.
+    submitted: u64,
+    completed: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Gpu {
@@ -362,6 +340,8 @@ impl Gpu {
             dummy,
             art: [None, None],
             live: None,
+            live_data: [0; 44],
+            live_valid: false,
             wave: None,
             shadow: Vec::new(),
             sharp: [None, None],
@@ -376,7 +356,8 @@ impl Gpu {
             pyrs: HashMap::new(),
             frame: 0,
             size: [0, 0],
-            shown: None,
+            submitted: 0,
+            completed: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -394,8 +375,7 @@ impl Gpu {
         // same worker: the second is the same shader, which the driver has just compiled, so it
         // costs next to nothing (built side by side, both would be compiled in full). The slowest
         // to compile go first, each on a worker of its own, so the look comes in early.
-        let order =
-            [Pipe::Liquid, Pipe::Glass, Pipe::Stage, Pipe::Veil, Pipe::Ribbon, Pipe::Butterfly, Pipe::Shape, Pipe::Field, Pipe::ArtMorph, Pipe::Bars, Pipe::Morph, Pipe::Blit];
+        let order = [Pipe::Liquid, Pipe::Glass, Pipe::Stage, Pipe::Veil, Pipe::Ribbon, Pipe::Butterfly, Pipe::Shape, Pipe::Field, Pipe::ArtMorph, Pipe::Bars, Pipe::Morph];
         let mut jobs: Vec<Vec<(wgpu::TextureFormat, Pipe)>> = order
             .into_iter()
             .map(|p| {
@@ -472,31 +452,57 @@ impl Gpu {
         });
     }
 
+    /// Keeps at most two frames in flight on the GPU. On a resize, waits for prior work first so
+    /// old size-dependent textures are freed before the new ones are allocated.
+    pub fn pace(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, size: [u32; 2]) {
+        use std::sync::atomic::Ordering;
+        let resized = self.size != [0, 0] && size != self.size;
+        self.submitted += 1;
+        let done = self.completed.clone();
+        queue.on_submitted_work_done(move || {
+            done.fetch_add(1, Ordering::Release);
+        });
+        let _ = device.poll(wgpu::PollType::Poll);
+        let limit = if resized { 1 } else { 2 };
+        for _ in 0..4 {
+            if self.submitted.saturating_sub(self.completed.load(Ordering::Acquire)) < limit {
+                break;
+            }
+            let wait = wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_millis(50)) };
+            if device.poll(wait).is_err() {
+                break;
+            }
+        }
+    }
+
     /// Starts a frame of `size`: hands every uniform buffer back, drops pyramids nobody has used
-    /// for a while, and forgets the kept frame when the window changed size.
+    /// for a while, and clears size-dependent caches right away when the window changed size.
     pub fn begin(&mut self, size: [u32; 2]) {
         self.frame += 1;
         self.used = 0;
         let frame = self.frame;
-        self.pyrs.retain(|_, p| frame.saturating_sub(p.used) < 90);
-        self.binds.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|_, (_, used)| frame.saturating_sub(*used) < BIND_KEEP);
-        self.first_binds.retain(|_, (_, used)| frame.saturating_sub(*used) < BIND_KEEP);
         if size != self.size {
             self.size = size;
-            self.shown = None;
+            self.pyrs.clear();
+            self.binds.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+            self.first_binds.clear();
+            return;
         }
+        self.pyrs.retain(|_, p| frame.saturating_sub(p.used) < 12);
+        self.binds.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|_, (_, used)| frame.saturating_sub(*used) < BIND_KEEP);
+        self.first_binds.retain(|_, (_, used)| frame.saturating_sub(*used) < BIND_KEEP);
     }
 
-    /// A reused frame still depends on the cached blur textures. Keep them alive while the
-    /// compositor is presenting that frame without recording new backdrop passes.
-    pub fn touch_pyramids(&mut self) {
-        for pyramid in self.pyrs.values_mut() {
-            pyramid.used = self.frame;
-        }
+    /// Number of uniform blocks staged for this frame.
+    pub fn used(&self) -> usize {
+        self.used
     }
 
-    /// Writes `u` into the next free buffer and returns its place. All of a frame's uniforms are
-    /// written before it is submitted, so each draw (and each pyramid) needs a buffer of its own.
+    /// Buffer and staged bytes for uniform slot `i` (`0..self.used()`).
+    pub fn uniform(&self, i: usize) -> (&wgpu::Buffer, &U) {
+        (&self.ubufs[i].buf, &self.shadow[i])
+    }
+
     /// The uniform block `upload` gave index `u`, moved into an isolated layer's pass (a group
     /// that fades): the same slot drawn at `origin` in a target of `size` device pixels.
     pub fn upload_in_layer(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, u: usize, origin: [f32; 2], size: [u32; 2]) -> usize {
@@ -508,10 +514,14 @@ impl Gpu {
         v.misc[1] = origin[1];
         v.view[0] = size[0] as f32;
         v.view[1] = size[1] as f32;
-        self.upload(device, queue, &v)
+        let slot = self.stage(device, &v);
+        queue.write_buffer(&self.ubufs[slot].buf, 0, bytemuck::bytes_of(&v));
+        slot
     }
 
-    pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, u: &U) -> usize {
+    /// Reserves the next uniform buffer and records `u` to be written through `Frame::write_buffer`
+    /// before the frame's passes begin.
+    pub fn stage(&mut self, device: &wgpu::Device, u: &U) -> usize {
         if self.shadow.len() <= self.used {
             self.shadow.resize(self.used + 1, U::default());
         }
@@ -530,7 +540,6 @@ impl Gpu {
             });
             self.ubufs.push(UBuf { buf, bind });
         }
-        queue.write_buffer(&self.ubufs[self.used].buf, 0, bytemuck::bytes_of(u));
         self.used += 1;
         self.used - 1
     }
@@ -644,59 +653,22 @@ impl Gpu {
         }
     }
 
-    /// Keeps the frame just drawn into `target` (call it after the last pass of the frame).
-    pub fn keep_frame(&mut self, device: &wgpu::Device, enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, format: wgpu::TextureFormat) {
-        let src = target.texture();
-        let (w, h) = (src.width(), src.height());
-        if src.format().remove_srgb_suffix() != format.remove_srgb_suffix() || w == 0 || h == 0 {
-            self.shown = None;
-            return;
-        }
-        if self.shown.as_ref().is_none_or(|p| p.format != format || p.tex.width() != w || p.tex.height() != h) {
-            self.shown = Some(Page::new(device, [w, h], format));
-        }
-        let Some(page) = &self.shown else { return };
-        enc.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo { texture: src, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            wgpu::TexelCopyTextureInfo { texture: &page.tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        );
-    }
-
-    /// Whether a kept frame is there for a target of `size` and `format`, with the pipeline to show it.
-    pub fn has_kept(&self, size: [u32; 2], format: wgpu::TextureFormat) -> bool {
-        self.pipes.contains_key(&(format, Pipe::Blit)) && self.shown.as_ref().is_some_and(|p| p.format == format && [p.tex.width(), p.tex.height()] == size)
-    }
-
-    /// Draws the kept frame into `target`. `u` is a uniform block whose `bounds` and `view` cover it.
-    pub fn show_kept(&self, device: &wgpu::Device, enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, format: wgpu::TextureFormat, u: usize) {
-        let (Some(page), Some(pipeline)) = (&self.shown, self.pipes.get(&(format, Pipe::Blit))) else { return };
-        let bind = self.tbind(device, &page.view, &self.dummy);
-        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("same frame"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, &self.ubufs[u].bind, &[]);
-        pass.set_bind_group(1, &bind, &[]);
-        pass.draw(0..4, 0..1);
-    }
-
     /// The live readings of the stage, one row: eight texels of spectrum (32 bands), then the look
     /// chosen in the player's panel, the beat, the pulse and whether anything moves, then the low
     /// end, the middle, the top and the kick.
-    pub fn set_live(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, texels: &[[f32; 4]]) {
+    pub fn set_live(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, texels: &[[f32; 4]; 11]) {
+        let mut data = [0u16; 44];
+        for (i, t) in texels.iter().enumerate() {
+            for c in 0..4 {
+                data[i * 4 + c] = half(t[c]);
+            }
+        }
         let tex = self.live_tex(device, texels.len() as u32);
-        let data: Vec<u16> = texels.iter().flat_map(|t| t.map(half)).collect();
+        if self.live_valid && self.live_data == data {
+            return;
+        }
+        self.live_data = data;
+        self.live_valid = true;
         queue.write_texture(
             wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             bytemuck::cast_slice(&data),
@@ -831,7 +803,7 @@ impl Gpu {
             return false;
         }
         let view = Self::art_texture(device, queue, thumb.width, thumb.height, &thumb.rgba);
-        let sharp = Self::art_texture(device, queue, thumb.sharp_side, thumb.sharp_side, &thumb.sharp);
+        let sharp = if thumb.sharp_side > 0 && !thumb.sharp.is_empty() { Self::art_texture(device, queue, thumb.sharp_side, thumb.sharp_side, &thumb.sharp) } else { view.clone() };
         let first = self.art[0].is_none();
         self.art[1] = if first { Some(view.clone()) } else { self.art[0].take() };
         self.art[0] = Some(view);
