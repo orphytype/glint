@@ -1,0 +1,14 @@
+{
+ "name": "glint",
+ "direction": "\u0411\u043b\u0438\u043a \u043d\u0430 \u043a\u0430\u043f\u043b\u0435",
+ "palette": {
+  "ink": "#121212",
+  "paper": "#f4f2ee",
+  "accent": "#ff5a36",
+  "neutral": "#8c877f",
+  "tint": "#e6e2db"
+ },
+ "fonts": [
+  "Fraunces"
+ ]
+}

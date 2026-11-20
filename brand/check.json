@@ -1,0 +1,56 @@
+{
+ "direction": "\u0411\u043b\u0438\u043a \u043d\u0430 \u043a\u0430\u043f\u043b\u0435",
+ "checks": [
+  {
+   "check": "stroke at 16 px",
+   "value": "4.76 px",
+   "pass_at": ">= 1.5 px",
+   "ok": true
+  },
+  {
+   "check": "counters at 16 px",
+   "value": "1 of 1",
+   "pass_at": "same as at 512 px",
+   "ok": true
+  },
+  {
+   "check": "ink on paper",
+   "value": "16.76:1",
+   "pass_at": ">= 4.5:1",
+   "ok": true
+  },
+  {
+   "check": "accent against paper or ink",
+   "value": "6.04:1",
+   "pass_at": ">= 3:1",
+   "ok": true
+  },
+  {
+   "check": "nearest reference",
+   "value": "0.845",
+   "pass_at": "< 0.889",
+   "ok": true
+  }
+ ],
+ "nearest": [
+  {
+   "score": 0.8446,
+   "ref": "refs/world-music-band-logos/music-band-logos\\18739218.jpg"
+  },
+  {
+   "score": 0.6859,
+   "ref": "refs/arena/marks-monograms-symbols\\21635536.jpg"
+  },
+  {
+   "score": 0.5421,
+   "ref": "refs/world-music-band-logos/music-band-logos\\18739525.jpg"
+  }
+ ],
+ "ink_share_by_size": {
+  "16": 0.6757,
+  "32": 0.6758,
+  "64": 0.6759,
+  "512": 0.6758
+ },
+ "ok": true
+}
