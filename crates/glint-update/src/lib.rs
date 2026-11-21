@@ -289,6 +289,7 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
 
 /// Puts the downloaded `file` in place and starts the new copy. The caller quits right after, so
 /// that the new copy has the audio device, the tray and the files to itself.
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(unused_variables))]
 pub fn install(method: Method, file: &Path) -> Result<()> {
     match method {
         #[cfg(windows)]

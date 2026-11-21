@@ -94,6 +94,8 @@ pub fn debug_on() -> bool {
 }
 
 /// Something the user asked of the player from outside the window.
+// SMTC and MPRIS are the only senders of the four transport commands below; macOS has neither.
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     Play,
