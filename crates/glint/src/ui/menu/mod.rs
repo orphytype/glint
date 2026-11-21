@@ -154,8 +154,10 @@ pub fn popover(s: &State, cx: &Cx<State>, w: f32, h: f32) -> El {
         Popover::Liked { .. } => (popovers::liked_entries(s), 260.0),
         Popover::EqPreset { .. } => (popovers::eq_entries(s), 200.0),
         Popover::TrackSort { .. } => (popovers::track_sort_entries(s), 220.0),
+        Popover::LibSort { .. } => (popovers::lib_sort_entries(s), 220.0),
         Popover::DiscSort { .. } => (popovers::disc_sort_entries(s), 220.0),
-        Popover::WaveTune { .. } => (panels::wave_tune_entries(s, h), panels::STAGE_W),
+        Popover::WaveTune { .. } => (panels::wave_tune_entries(s, h), panels::TUNE_W),
+        Popover::Update { .. } => (popovers::update_entries(s), popovers::UPDATE_W),
     };
     let mut flow = place_w(cx, &PopupAnchor::Key(p.anchor().into()), width, height(&list), w, h);
     if matches!(p, Popover::Stage { .. }) {
@@ -174,12 +176,14 @@ const VOL_BOTTOM: f32 = 12.0;
 /// Renders the dock's vertical notched volume card.
 pub fn volume(s: &State, cx: &Cx<State>, w: f32, h: f32) -> El {
     let t = s.vol.t;
-    let (from, from_radius) = match cx.window_layout("vol-btn") {
+    let (from, from_radius) = match cx.window_layout("vol-btn").or_else(|| cx.window_layout("vol-mute")) {
         Some(r) => (r, r[2].min(r[3]) * 0.5),
         None => ([w * 0.5, h * 0.5, 0.0, 0.0], 0.0),
     };
     let cx_mid = from[0] + from[2] * 0.5;
-    let to = [(cx_mid - VOL_W * 0.5).clamp(EDGE, (w - VOL_W - EDGE).max(EDGE)), (from[1] - GAP - VOL_H).max(EDGE), VOL_W, VOL_H];
+    let dock_top = h - kit::BAR_GAP - kit::BAR_H;
+    let to_y = (dock_top - 10.0 - VOL_H).min(from[1] - GAP - VOL_H).max(EDGE);
+    let to = [(cx_mid - VOL_W * 0.5).clamp(EDGE, (w - VOL_W - EDGE).max(EDGE)), to_y, VOL_W, VOL_H];
     let e = t.max(0.0);
     let lerp = |a: f32, b: f32| a + (b - a) * e;
     let (x, y) = (lerp(from[0], to[0]), lerp(from[1], to[1]));
@@ -232,6 +236,7 @@ pub fn volume(s: &State, cx: &Cx<State>, w: f32, h: f32) -> El {
         .children(kit::frost(radius, skin))
         .transition(Transition::none())
         .on_press(|_s: &mut State| {})
+        .on_wheel(super::dock::volume_wheel)
         .on_hover_change(|s: &mut State, over: bool, _tx: &mut rune::Tx| {
             s.vol_card_hover = over;
             if over {
@@ -264,10 +269,21 @@ pub fn profile(s: &State, cx: &Cx<State>, w: f32, h: f32) -> El {
     let list = vec![
         Entry::Head(head),
         Entry::Divider,
-        Entry::Row(entry("menu-settings", &icons::SETTINGS, S::Settings.get(lang), s.settings_open).on_press(|s: &mut State| s.open_settings())),
+        Entry::Row(entry("menu-account", &icons::USER, S::Account.get(lang), s.settings_open && s.settings_tab == super::settings::SetTab::Account).on_press(|s: &mut State| {
+            s.settings_tab = super::settings::SetTab::Account;
+            s.open_settings();
+        })),
         Entry::Divider,
         Entry::Row(entry("menu-out", &icons::SIGN_OUT, S::SignOut.get(lang), false).on_press(|s: &mut State| s.sign_out())),
     ];
-    let flow = place(cx, &PopupAnchor::Key("profile".into()), height(&list), w, h);
+    let card_h = height(&list);
+    let flow = match cx.window_layout("profile") {
+        Some([bx, by, bw, bh]) => {
+            let left = bx.clamp(EDGE, (w - W - EDGE).max(EDGE));
+            let top = (by + bh + 8.0).clamp(EDGE, (h - card_h - EDGE).max(EDGE));
+            Flow { from: [bx, by, bw, bh], to: [left, top, W, card_h], from_radius: bh.min(bw) * 0.5 }
+        }
+        None => place(cx, &PopupAnchor::Key("profile".into()), card_h, w, h),
+    };
     flow_menu("menu", s.menu.t, s.menu_open, &flow, list, |s| s.menu_open = false)
 }

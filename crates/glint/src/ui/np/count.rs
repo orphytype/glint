@@ -1,22 +1,35 @@
-//! Animated 3-2-1 morphing count-in above timed lyrics, crumbling into bouncing grains on beat 0.
+//! Minimalist pre-lyrics bead loader that dissolves into grains colliding with the actual glyph
+//! contours of the first lyric line.
 
+use std::cell::RefCell;
+use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 
-use rune::{El, Shape, Transition, canvas, el};
+use rune::{El, Shape, TextStyle, Transition, canvas, el};
 
 use crate::app::{Load, State};
 use crate::theme as th;
 
+/// Lead-in window (ms) during which the 3 beads light up beat by beat before vocals begin.
 const COUNT_MS: i64 = 3000;
-const MORPH_MS: f32 = 600.0;
-const COUNT_PTS: usize = 72;
-pub(super) const COUNT_W: f32 = 52.0;
-const COUNT_H: f32 = 60.0;
-const RING_PAD: f32 = 18.0;
-const GRAIN_S: f32 = 1.7;
-const STROKE: f32 = 4.2;
+/// Width and height of the minimalist loader slot above the first lyric line.
+pub(super) const COUNT_W: f32 = 60.0;
+const COUNT_H: f32 = 38.0;
+/// Duration (seconds) over which dissolved grains bounce across the letters and fade out.
+const GRAIN_S: f32 = 1.9;
+/// Horizontal sub-samples per point for the cached letter-contour height map.
+const SUB: f32 = 2.0;
 
-/// Start time in ms of the first sung line when late enough for a 3-second count-in.
+/// What text sits immediately beneath `ly-note` so grains land on its real letter shapes.
+pub(super) struct TargetLine<'a> {
+    pub(super) text: &'a str,
+    pub(super) style: TextStyle,
+    pub(super) font: u8,
+    /// Vertical distance in points from the top of `ly-note` to the top of this text box.
+    pub(super) top_y: f32,
+}
+
+/// Start time in ms of the first sung line when late enough for an intro loader.
 pub fn count_start(l: &ym_api::Lyrics) -> Option<u32> {
     if !l.synced {
         return None;
@@ -26,244 +39,426 @@ pub fn count_start(l: &ym_api::Lyrics) -> Option<u32> {
     (i64::from(ms) > COUNT_MS).then_some(ms)
 }
 
-/// Whether the count-in morph or grain scatter is currently active.
+/// Whether the intro loader or grain scatter is currently animating.
 pub fn counting(s: &State) -> bool {
     let Load::Ready(l) = &s.lyrics.lyrics else { return false };
     let Some(first) = count_start(l) else { return false };
     let left = i64::from(first) - i64::from(s.lyric_ms());
-    s.player.playing && left <= COUNT_MS + 50 && left > -(GRAIN_S * 1000.0) as i64 - 100
+    s.player.playing && left > -(GRAIN_S * 1000.0) as i64 - 100
 }
 
-/// Closed-form parabolic gravity and bounce integration (converges in <= 4 bounces).
-fn simulate_grain(mut x: f32, mut y: f32, mut vx: f32, mut vy: f32, land: f32, mut rem: f32) -> (f32, f32) {
-    const G: f32 = 1500.0;
-    while rem > 0.0 {
-        let h = (land - y).max(0.0);
-        let disc = (vy * vy + 2.0 * G * h).max(0.0);
-        let t_hit = (-vy + disc.sqrt()) / G;
-        if rem <= t_hit {
-            x += vx * rem;
-            y += vy * rem + 0.5 * G * rem * rem;
+/// Cached 1D top-surface contour of the first wrapped visual line below `ly-note`.
+struct LetterContour {
+    /// For each column `i` (`x = i / SUB`), the highest ink Y relative to the text box top, or
+    /// `f32::NAN` where the column is empty space (between letters or words).
+    surface: Vec<f32>,
+    /// Local surface tangent `dy / dx` at finite columns, for realistic bounces and rolling.
+    slope: Vec<f32>,
+    /// Horizontal span `[min_x, max_x]` containing ink.
+    min_x: f32,
+    max_x: f32,
+    /// Approximate bottom of ink (baseline) relative to text box top.
+    bottom_y: f32,
+}
+
+impl LetterContour {
+    fn sample(&self, x: f32) -> Option<(f32, f32)> {
+        if x < 0.0 || self.surface.is_empty() {
+            return None;
+        }
+        let idx = (x * SUB).round() as isize;
+        if idx < 0 || idx as usize >= self.surface.len() {
+            return None;
+        }
+        let i = idx as usize;
+        let y = self.surface[i];
+        y.is_finite().then(|| (y, self.slope[i]))
+    }
+
+    /// True if there is ink within ±`radius` horizontally (prevents tiny grains slipping through 1px cracks).
+    fn sample_with_radius(&self, x: f32, r: f32) -> Option<(f32, f32)> {
+        if let Some(hit) = self.sample(x) {
+            return Some(hit);
+        }
+        let left = self.sample(x - r * 0.65);
+        let right = self.sample(x + r * 0.65);
+        match (left, right) {
+            (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        }
+    }
+}
+
+/// Extracts the first wrapped visual line of `text` fitting inside `max_w`.
+fn first_visual_line(text: &str, style: TextStyle, max_w: f32) -> &str {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return "";
+    }
+    if rune::text::measure(trimmed, &[], style, None).0 <= max_w + 0.5 {
+        return trimmed;
+    }
+    let mut best_end = 0usize;
+    let mut i = 0usize;
+    let bytes = trimmed.as_bytes();
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let word_start = i;
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if word_start == i {
             break;
         }
-        x += vx * t_hit;
-        y = land;
-        rem -= t_hit;
-        vy = -(vy + G * t_hit) * 0.32;
-        vx *= 0.6;
-        if vy.abs() < 18.0 {
+        let cand = &trimmed[..i];
+        if rune::text::measure(cand, &[], style, None).0 <= max_w + 0.5 {
+            best_end = i;
+        } else {
+            if best_end == 0 {
+                best_end = i;
+            }
             break;
         }
     }
-    (x, y)
+    if best_end == 0 { trimmed } else { &trimmed[..best_end] }
 }
 
-/// Renders the morphing note/countdown above timed lyrics (`align`: 0 left, 1 center, 2 right).
-pub(super) fn count_note(first: u32, pos: u32, w: f32, align: u8) -> El {
+/// Selects bundled static TTF bytes matching `style` so swash can rasterize exact letter shapes
+/// with zero extra `TextSystem` memory.
+fn font_bytes_for(style: TextStyle, lyric_font: u8) -> Option<&'static [u8]> {
+    if style.family == th::DISPLAY || (lyric_font == 2 && style.family != th::SANS) {
+        crate::APP_FONTS.get(1).copied()
+    } else if style.family == th::SANS {
+        crate::APP_FONTS.first().copied()
+    } else {
+        None
+    }
+}
+
+fn build_contour(text: &str, style: TextStyle, lyric_font: u8, block_w: f32, align: u8) -> LetterContour {
+    let cols = ((block_w * SUB).ceil() as usize).max(1);
+    let mut surface = vec![f32::NAN; cols];
+    let vis = first_visual_line(text, style, block_w);
+    let vis_w = rune::text::measure(vis, &[], style, None).0;
+    let line_x0 = match align {
+        1 => ((block_w - vis_w) * 0.5).max(0.0),
+        2 => (block_w - vis_w).max(0.0),
+        _ => 0.0,
+    };
+
+    let font_ref = font_bytes_for(style, lyric_font).and_then(|bytes| swash::FontRef::from_index(bytes, 0));
+    let mut scale_cx = swash::scale::ScaleContext::new();
+    let mut min_x = block_w;
+    let mut max_x = 0.0f32;
+    let mut bottom_y = style.line_height * 0.85;
+
+    for (byte_idx, ch) in vis.char_indices() {
+        if ch.is_whitespace() {
+            continue;
+        }
+        let ch_str = &vis[byte_idx..byte_idx + ch.len_utf8()];
+        let Some(ink) = rune::text::ink(ch_str, style) else { continue };
+        let [ix, iy, iw, ih] = ink.bounds;
+        if iw <= 0.1 || ih <= 0.1 {
+            continue;
+        }
+        let char_x = line_x0 + rune::text::advance(&vis[..byte_idx], style);
+        let gx0 = char_x + ix;
+        let gx1 = gx0 + iw;
+        min_x = min_x.min(gx0);
+        max_x = max_x.max(gx1);
+        bottom_y = bottom_y.max(iy + ih);
+
+        let mut rasterized = false;
+        if let Some(font) = font_ref {
+            let gid = font.charmap().map(ch);
+            if gid != 0 {
+                let mut scaler = scale_cx.builder(font).size(style.size * SUB).hint(false).variations(&[("wght", style.weight)]).build();
+                if let Some(img) = swash::scale::Render::new(&[swash::scale::Source::Outline]).format(swash::zeno::Format::Alpha).render(&mut scaler, gid) {
+                    let (rw, rh) = (img.placement.width as usize, img.placement.height as usize);
+                    if rw > 0 && rh > 0 && img.data.len() >= rw * rh {
+                        // Find tight vertical ink bounds in the raster so we align 1:1 with `rune::text::ink`.
+                        let mut r_top = rh;
+                        let mut r_bot = 0usize;
+                        let mut r_left = rw;
+                        let mut r_right = 0usize;
+                        for py in 0..rh {
+                            for px in 0..rw {
+                                if img.data[py * rw + px] >= 56 {
+                                    r_top = r_top.min(py);
+                                    r_bot = r_bot.max(py);
+                                    r_left = r_left.min(px);
+                                    r_right = r_right.max(px);
+                                }
+                            }
+                        }
+                        if r_top <= r_bot && r_left <= r_right {
+                            let span_x = (r_right - r_left + 1) as f32;
+                            let span_y = (r_bot - r_top + 1) as f32;
+                            let c0 = ((gx0 * SUB).floor() as isize).clamp(0, cols as isize - 1) as usize;
+                            let c1 = ((gx1 * SUB).ceil() as isize).clamp(0, cols as isize - 1) as usize;
+                            for (c, slot) in surface.iter_mut().enumerate().take(c1 + 1).skip(c0) {
+                                let x_pt = c as f32 / SUB;
+                                let u = ((x_pt - gx0) / iw).clamp(0.0, 0.999);
+                                let px = (r_left + (u * span_x) as usize).min(r_right);
+                                if let Some(py) = (r_top..=r_bot).find(|&py| img.data[py * rw + px] >= 56) {
+                                    let v = (py - r_top) as f32 / span_y;
+                                    let y_pt = iy + v * ih;
+                                    *slot = if slot.is_finite() { slot.min(y_pt) } else { y_pt };
+                                }
+                            }
+                            rasterized = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !rasterized {
+            let c0 = ((gx0 * SUB).floor() as isize).clamp(0, cols as isize - 1) as usize;
+            let c1 = ((gx1 * SUB).ceil() as isize).clamp(0, cols as isize - 1) as usize;
+            for slot in surface.iter_mut().take(c1 + 1).skip(c0) {
+                *slot = if slot.is_finite() { slot.min(iy) } else { iy };
+            }
+        }
+    }
+
+    let mut slope = vec![0.0f32; cols];
+    for i in 0..cols {
+        if !surface[i].is_finite() {
+            continue;
+        }
+        let left = (i >= 2 && surface[i - 2].is_finite()).then(|| surface[i - 2]);
+        let right = (i + 2 < cols && surface[i + 2].is_finite()).then(|| surface[i + 2]);
+        let dy_dx = match (left, right) {
+            (Some(l), Some(r)) => (r - l) / (4.0 / SUB),
+            (Some(l), None) => (surface[i] - l) / (2.0 / SUB),
+            (None, Some(r)) => (r - surface[i]) / (2.0 / SUB),
+            (None, None) => 0.0,
+        };
+        slope[i] = dy_dx.clamp(-2.0, 2.0);
+    }
+
+    if min_x > max_x {
+        (min_x, max_x) = (line_x0, (line_x0 + vis_w).min(block_w));
+    }
+    LetterContour { surface, slope, min_x, max_x, bottom_y }
+}
+
+fn with_contour<R>(target: &TargetLine<'_>, block_w: f32, align: u8, f: impl FnOnce(&LetterContour) -> R) -> R {
+    thread_local! {
+        static CACHE: RefCell<Option<(u64, LetterContour)>> = const { RefCell::new(None) };
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    target.text.hash(&mut hasher);
+    target.style.size.to_bits().hash(&mut hasher);
+    target.style.weight.to_bits().hash(&mut hasher);
+    target.style.line_height.to_bits().hash(&mut hasher);
+    target.font.hash(&mut hasher);
+    ((block_w * 4.0) as u32).hash(&mut hasher);
+    align.hash(&mut hasher);
+    let key = hasher.finish();
+
+    CACHE.with_borrow_mut(|slot| {
+        if !slot.as_ref().is_some_and(|(k, _)| *k == key) {
+            let contour = build_contour(target.text, target.style, target.font, block_w, align);
+            *slot = Some((key, contour));
+        }
+        if let Some((_, contour)) = slot.as_ref() { f(contour) } else { unreachable!() }
+    })
+}
+
+/// Integrates a single grain under gravity and bounces/rolls it against the real glyph top contour.
+/// Returns `(x, y, visibility_alpha)` where grains falling through word spaces fade softly below the line.
+fn simulate_on_contour(pos: [f32; 2], vel: [f32; 2], r: f32, top_y: f32, contour: &LetterContour, age: f32, block_w: f32) -> (f32, f32, f32) {
+    let (mut x, mut y) = (pos[0], pos[1]);
+    let (mut vx, mut vy) = (vel[0], vel[1]);
+    const G: f32 = 1080.0;
+    const DT: f32 = 1.0 / 120.0;
+    let steps = (age / DT).ceil() as usize;
+    let mut rem = age;
+    let mut settled = false;
+    let max_drop = top_y + contour.bottom_y + 12.0;
+
+    for _ in 0..steps.min(260) {
+        let dt = rem.min(DT);
+        if dt <= 0.0 {
+            break;
+        }
+        rem -= dt;
+        if settled {
+            // Gently check if resting on a steep slope; allow tiny slow roll.
+            if let Some((sy, slope)) = contour.sample_with_radius(x, r) {
+                let target_y = top_y + sy - r;
+                if slope.abs() > 0.35 {
+                    x += slope * 18.0 * dt;
+                    if let Some((sy2, _)) = contour.sample_with_radius(x, r) {
+                        y = top_y + sy2 - r;
+                    } else {
+                        settled = false;
+                        vy = 18.0;
+                    }
+                } else {
+                    y = target_y;
+                }
+            } else {
+                settled = false;
+            }
+            continue;
+        }
+        let prev_y = y;
+        vy += G * dt;
+        vx *= 1.0 - 0.55 * dt;
+        x = (x + vx * dt).clamp(r, (block_w - r).max(r));
+        y += vy * dt;
+
+        if let Some((sy, slope)) = contour.sample_with_radius(x, r) {
+            let hit_y = top_y + sy - r;
+            if vy > 0.0 && prev_y <= hit_y + 5.0 && y >= hit_y {
+                y = hit_y;
+                let inv = 1.0 / (1.0 + slope * slope).sqrt();
+                let (nx, ny) = (-slope * inv, -inv);
+                let (tx, ty) = (inv, slope * inv);
+                let vn = vx * nx + vy * ny;
+                let vt = vx * tx + vy * ty;
+                if vn < 0.0 {
+                    let bounce_n = -vn * 0.28;
+                    // Push slightly along the letter's real slope so curved tops deflect grains naturally.
+                    let slide_t = vt * 0.74 + slope * vn.abs() * 0.24;
+                    vx = tx * slide_t + nx * bounce_n;
+                    vy = ty * slide_t + ny * bounce_n;
+                    if bounce_n < 24.0 && slide_t.abs() < 26.0 && slope.abs() < 0.55 {
+                        vx = 0.0;
+                        vy = 0.0;
+                        settled = true;
+                    }
+                }
+            }
+        }
+        if y >= max_drop {
+            y = max_drop;
+            break;
+        }
+    }
+
+    let gap_fade = if y > top_y + contour.bottom_y * 0.42 { 1.0 - ((y - (top_y + contour.bottom_y * 0.42)) / (contour.bottom_y * 0.50 + 4.0)).clamp(0.0, 1.0) } else { 1.0 };
+    (x, y, gap_fade)
+}
+
+/// Renders the minimalist 3-bead intro loader and its real letter-contour grain scatter.
+pub(super) fn count_note(first: u32, pos: u32, w: f32, align: u8, target: TargetLine<'_>) -> El {
     let since = COUNT_MS - (i64::from(first) - i64::from(pos));
     let x0 = match align {
         1 => ((w - COUNT_W) * 0.5).floor(),
-        2 => w - COUNT_W,
-        _ => -2.0,
+        2 => (w - COUNT_W).max(0.0),
+        _ => 0.0,
     };
     let wrap = el().key("ly-note").w_full().h(COUNT_H).transition(Transition::none());
     let ink = th::text();
+    let beads_x = [x0 + 12.0, x0 + COUNT_W * 0.5, x0 + COUNT_W - 12.0];
+    let cy = COUNT_H * 0.5;
+    let ring = unit_dot();
+
     if since >= COUNT_MS {
         let gone = (since - COUNT_MS) as f32 / 1000.0;
         if gone >= GRAIN_S {
             return wrap;
         }
-        let fade = 1.0 - ((gone - 0.85) / (GRAIN_S - 0.85)).clamp(0.0, 1.0);
-        let a = 0.92 * fade;
-        if a <= 0.01 {
+        let fade = 1.0 - ((gone - 0.95) / (GRAIN_S - 0.95)).clamp(0.0, 1.0);
+        let fade = fade * fade * (3.0 - 2.0 * fade);
+        if fade <= 0.01 {
             return wrap;
         }
-        let pts = one_points();
-        let hex = unit_hex();
-        let floor = COUNT_H + 20.0;
-        let room = floor + 24.0;
-        let color = ink.alpha(a);
-        let mut shape = Shape::new();
-        for (i, p) in pts.iter().enumerate() {
-            let h = |k: u32| ((i as u32).wrapping_mul(2_654_435_761).wrapping_add(k.wrapping_mul(40_503)) % 1000) as f32 / 1000.0;
-            let start = (1.0 - p[1]) * 0.10 + h(1) * 0.06;
-            let age = gone - start;
-            let (mut x, mut y) = (pad_x(p[0]), pad_y(p[1]));
-            let size = 2.2 + 1.4 * h(2);
-            if age > 0.0 {
-                let vx = (h(3) - 0.5) * 90.0 + (p[0] - 0.55) * 60.0;
-                let vy = -(25.0 + 70.0 * h(4));
-                let land = floor + 4.0 * h(5) - size;
-                (x, y) = simulate_grain(x, y, vx, vy, land, age);
+        let shape_and_h = with_contour(&target, w, align, |contour| {
+            let mut shape = Shape::new();
+            let canvas_h = target.top_y + contour.bottom_y + 18.0;
+            // Choose a horizontal cascade band over the real letters near the loader.
+            let span_l = contour.min_x.min(x0);
+            let span_r = contour.max_x.max(x0 + COUNT_W);
+            let (band_l, band_r) = match align {
+                1 => {
+                    let mid = (x0 + COUNT_W * 0.5).clamp(span_l, span_r);
+                    ((mid - 155.0).max(span_l), (mid + 155.0).min(span_r))
+                }
+                2 => ((span_r - 280.0).max(span_l), span_r),
+                _ => (span_l, (span_l + 280.0).min(span_r)),
+            };
+            const PER_BEAD: usize = 18;
+            let total = 3 * PER_BEAD;
+            for idx in 0..total {
+                let bead = idx / PER_BEAD;
+                let h = |k: u32| ((idx as u32).wrapping_mul(2_654_435_761).wrapping_add(k.wrapping_mul(40_503)) % 1000) as f32 / 1000.0;
+                let ang = std::f32::consts::TAU * (idx % PER_BEAD) as f32 / PER_BEAD as f32 + h(0) * 0.5;
+                let rad_in = 3.8 * h(1).sqrt();
+                let sx = beads_x[bead] + ang.cos() * rad_in;
+                let sy = cy + ang.sin() * rad_in;
+                let start = 0.015 * bead as f32 + h(2) * 0.09;
+                let age = gone - start;
+                let r = 1.35 + 0.85 * h(3);
+                let (gx, gy, gap_a) = if age > 0.0 {
+                    // Aim particles evenly across the letter band so the whole silhouette is traced.
+                    let frac = ((idx as f32 + 0.3 + 0.4 * h(4)) / total as f32).clamp(0.0, 1.0);
+                    let aim_x = band_l + (band_r - band_l) * frac;
+                    let flight = 0.30 + 0.14 * h(5);
+                    let vx = ((aim_x - sx) / flight).clamp(-420.0, 420.0);
+                    let vy = -(36.0 + 74.0 * h(6));
+                    simulate_on_contour([sx, sy], [vx, vy], r, target.top_y, contour, age, w)
+                } else {
+                    (sx, sy, 1.0)
+                };
+                let alpha = 0.90 * fade * gap_a;
+                if alpha <= 0.015 {
+                    continue;
+                }
+                let poly: Vec<[f32; 2]> = ring.iter().map(|&[ux, uy]| [gx + r * ux, gy + r * uy]).collect();
+                shape = shape.fill(poly, ink.alpha(alpha));
             }
-            let r = size * 0.5;
-            let ox = 40.0 + x;
-            let dot: Vec<[f32; 2]> = hex.iter().map(|&[cx, cy]| [ox + r * cx, y + r * cy]).collect();
-            shape = shape.fill(dot, color);
-        }
-        let span = COUNT_W + 80.0;
-        let layer = canvas(shape.view_box(span, room)).key("ly-note-grains").absolute(x0 - 40.0, 0.0).w(span).h(room).transition(Transition::none()).motion(rune::Spring::NONE);
+            (shape, canvas_h)
+        });
+        let (shape, canvas_h) = shape_and_h;
+        let layer = canvas(shape.view_box(w, canvas_h)).key("ly-note-grains").absolute(0.0, 0.0).w(w).h(canvas_h).transition(Transition::none()).motion(rune::Spring::NONE);
         return wrap.child(layer);
     }
-    let (from, to, local) = if since < 0 {
-        (0, 0, f32::INFINITY)
-    } else {
-        let k = ((since / 1000) as usize).min(2);
-        (k, k + 1, (since - k as i64 * 1000) as f32)
-    };
-    let tt = local / MORPH_MS;
-    let pop = 0.86 + 0.14 * settle(local / 520.0);
-    let weight = STROKE * (1.0 + 0.45 * (-local / 240.0).exp());
-    let a = resampled_figure(from);
-    let b = resampled_figure(to);
-    let last = (COUNT_PTS - 1) as f32;
-    let place = |x: f32, y: f32| [pad_x(0.5 + (x - 0.5) * pop) + RING_PAD, pad_y(0.5 + (y - 0.5) * pop) + RING_PAD];
-    let pts: Vec<[f32; 2]> = a
-        .iter()
-        .zip(b)
-        .enumerate()
-        .map(|(i, (p, q))| {
-            let u = ((tt - 0.32 * i as f32 / last) / 0.68).clamp(0.0, 1.0);
-            let e = settle(u);
-            let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
-            let swing = 0.24 * (std::f32::consts::PI * u).sin();
-            place(p[0] + dx * e - dy * swing, p[1] + dy * e + dx * swing)
-        })
-        .collect();
-    let mut shape = Shape::new().stroke_with(pts, false, weight, rune::LineCap::Round, ink.alpha(0.92));
-    let foot = if to == 3 { settle(tt).max(0.0) } else { 0.0 };
-    if foot > 0.0 {
-        let (l, r) = (0.58 - 0.26 * foot, 0.58 + 0.26 * foot);
-        shape = shape.stroke_with(vec![place(l, 0.98), place(r, 0.98)], false, weight, rune::LineCap::Round, ink.alpha(0.92 * foot.min(1.0)));
+
+    let mut shape = Shape::new();
+    let t_sec = pos as f32 / 1000.0;
+    let gather = if since > COUNT_MS - 260 { ((since - (COUNT_MS - 260)) as f32 / 260.0).clamp(0.0, 1.0) } else { 0.0 };
+    let gather_e = gather * gather * (3.0 - 2.0 * gather);
+    let mid_x = COUNT_W * 0.5;
+
+    for i in 0..3 {
+        let base_x = [12.0, COUNT_W * 0.5, COUNT_W - 12.0][i];
+        let (r, dy, alpha) = if since < 0 {
+            // Calm, meditative travelling breath wave while waiting through a longer intro.
+            let wave = 0.5 + 0.5 * (t_sec * 2.4 - i as f32 * 0.85).sin();
+            (3.5 + 1.0 * wave, -1.8 * wave, 0.28 + 0.34 * wave)
+        } else {
+            // Clean 3-beat progression: smooth cubic ease without bubble overshoot.
+            let beat_ms = (since as f32 - i as f32 * 1000.0).max(0.0);
+            let u = (beat_ms / 520.0).clamp(0.0, 1.0);
+            let e = 1.0 - (1.0 - u).powi(3);
+            let lift = if u > 0.0 && u < 1.0 { -3.6 * (std::f32::consts::PI * u).sin() * (1.0 - 0.3 * u) } else { 0.0 };
+            let r = 3.7 + 1.15 * e + 0.35 * (std::f32::consts::PI * u).sin();
+            let a = 0.26 + 0.68 * e + 0.04 * gather_e;
+            (r, lift, a.min(0.96))
+        };
+        let bx = base_x + (mid_x - base_x) * (0.08 * gather_e);
+        let by = cy + dy;
+        let poly: Vec<[f32; 2]> = ring.iter().map(|&[ux, uy]| [bx + r * ux, by + r * uy]).collect();
+        shape = shape.fill(poly, ink.alpha(alpha));
     }
-    let ring = local / 650.0;
-    if ring < 1.0 {
-        let grow = 1.0 - (1.0 - ring).powi(3);
-        let rad = 24.0 + 16.0 * grow;
-        let (cx, cy) = (RING_PAD + COUNT_W * 0.5, RING_PAD + COUNT_H * 0.5);
-        let circle: Vec<[f32; 2]> = unit_ring().iter().map(|&[ux, uy]| [cx + rad * ux, cy + rad * 1.08 * uy]).collect();
-        shape = shape.stroke_with(circle, true, 1.6, rune::LineCap::Round, ink.alpha(0.30 * (1.0 - ring).powi(2)));
-    }
-    let (bw, bh) = (COUNT_W + 2.0 * RING_PAD, COUNT_H + 2.0 * RING_PAD);
-    wrap.child(canvas(shape.view_box(bw, bh)).key("ly-note-fig").absolute(x0 - RING_PAD, -RING_PAD).w(bw).h(bh).transition(Transition::none()).motion(rune::Spring::NONE))
+
+    wrap.child(canvas(shape.view_box(COUNT_W, COUNT_H)).key("ly-note-fig").absolute(x0, 0.0).w(COUNT_W).h(COUNT_H).transition(Transition::none()).motion(rune::Spring::NONE))
 }
 
-fn figure(k: usize) -> Vec<[f32; 2]> {
-    match k {
-        0 => {
-            let mut p = vec![[0.86, 0.42], [0.80, 0.27], [0.68, 0.16], [0.58, 0.05], [0.58, 0.30], [0.58, 0.55], [0.58, 0.79]];
-            for i in 1..=24 {
-                let a = std::f32::consts::TAU * i as f32 / 24.0;
-                p.push([0.40 + 0.18 * a.cos(), 0.80 + 0.14 * a.sin()]);
-            }
-            p
-        }
-        1 => vec![
-            [0.18, 0.18],
-            [0.30, 0.07],
-            [0.50, 0.03],
-            [0.70, 0.08],
-            [0.80, 0.22],
-            [0.76, 0.36],
-            [0.62, 0.45],
-            [0.46, 0.48],
-            [0.62, 0.51],
-            [0.80, 0.62],
-            [0.84, 0.78],
-            [0.74, 0.92],
-            [0.52, 0.98],
-            [0.30, 0.95],
-            [0.16, 0.84],
-        ],
-        2 => vec![[0.18, 0.24], [0.28, 0.09], [0.48, 0.02], [0.68, 0.06], [0.80, 0.20], [0.78, 0.36], [0.62, 0.54], [0.40, 0.75], [0.18, 0.97], [0.52, 0.97], [0.86, 0.97]],
-        _ => vec![[0.26, 0.24], [0.42, 0.13], [0.58, 0.02], [0.58, 0.35], [0.58, 0.67], [0.58, 0.98]],
-    }
-}
-
-fn resample(pts: &[[f32; 2]], n: usize) -> Vec<[f32; 2]> {
-    let mut dense = Vec::new();
-    for i in 0..pts.len().saturating_sub(1) {
-        let p0 = pts[i.saturating_sub(1)];
-        let (p1, p2) = (pts[i], pts[i + 1]);
-        let p3 = pts[(i + 2).min(pts.len() - 1)];
-        for j in 0..8 {
-            let t = j as f32 / 8.0;
-            let (t2, t3) = (t * t, t * t * t);
-            let c = |a: f32, b: f32, c: f32, d: f32| 0.5 * (2.0 * b + (-a + c) * t + (2.0 * a - 5.0 * b + 4.0 * c - d) * t2 + (-a + 3.0 * b - 3.0 * c + d) * t3);
-            dense.push([c(p0[0], p1[0], p2[0], p3[0]), c(p0[1], p1[1], p2[1], p3[1])]);
-        }
-    }
-    dense.push(*pts.last().unwrap_or(&[0.0, 0.0]));
-    let mut acc = vec![0.0f32];
-    for w in dense.windows(2) {
-        let d = ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt();
-        acc.push(acc.last().copied().unwrap_or(0.0) + d);
-    }
-    let total = acc.last().copied().unwrap_or(0.0).max(1e-6);
-    let mut out = Vec::with_capacity(n);
-    let mut k = 0;
-    for i in 0..n {
-        let want = total * i as f32 / (n - 1) as f32;
-        while k + 1 < acc.len() - 1 && acc[k + 1] < want {
-            k += 1;
-        }
-        let span = (acc[k + 1] - acc[k]).max(1e-6);
-        let f = ((want - acc[k]) / span).clamp(0.0, 1.0);
-        out.push([dense[k][0] + (dense[k + 1][0] - dense[k][0]) * f, dense[k][1] + (dense[k + 1][1] - dense[k][1]) * f]);
-    }
-    out
-}
-
-fn settle(u: f32) -> f32 {
-    if u <= 0.0 {
-        0.0
-    } else if u >= 1.0 {
-        1.0
-    } else {
-        1.0 - (-6.0 * u).exp() * (7.0 * u).cos()
-    }
-}
-
-fn pad_x(x: f32) -> f32 {
-    5.0 + x * (COUNT_W - 10.0)
-}
-
-fn pad_y(y: f32) -> f32 {
-    5.0 + y * (COUNT_H - 10.0)
-}
-
-fn resampled_figure(k: usize) -> &'static [[f32; 2]] {
-    static FIGURES: OnceLock<[Vec<[f32; 2]>; 4]> = OnceLock::new();
-    let all = FIGURES.get_or_init(|| [resample(&figure(0), COUNT_PTS), resample(&figure(1), COUNT_PTS), resample(&figure(2), COUNT_PTS), resample(&figure(3), COUNT_PTS)]);
-    &all[k.min(3)]
-}
-
-fn one_points() -> &'static [[f32; 2]] {
-    static ONE: OnceLock<Vec<[f32; 2]>> = OnceLock::new();
-    ONE.get_or_init(|| {
-        let mut p = resample(&figure(3), 30);
-        for i in 0..=10 {
-            p.push([0.32 + 0.52 * i as f32 / 10.0, 0.98]);
-        }
-        p
-    })
-}
-
-fn unit_hex() -> &'static [[f32; 2]; 6] {
-    static HEX: OnceLock<[[f32; 2]; 6]> = OnceLock::new();
-    HEX.get_or_init(|| {
+fn unit_dot() -> &'static [[f32; 2]; 14] {
+    static DOT: OnceLock<[[f32; 2]; 14]> = OnceLock::new();
+    DOT.get_or_init(|| {
         std::array::from_fn(|k| {
-            let ang = std::f32::consts::TAU * k as f32 / 6.0;
-            [ang.cos(), ang.sin()]
-        })
-    })
-}
-
-fn unit_ring() -> &'static [[f32; 2]; 48] {
-    static RING: OnceLock<[[f32; 2]; 48]> = OnceLock::new();
-    RING.get_or_init(|| {
-        std::array::from_fn(|k| {
-            let ang = std::f32::consts::TAU * k as f32 / 48.0;
+            let ang = std::f32::consts::TAU * k as f32 / 14.0;
             [ang.cos(), ang.sin()]
         })
     })

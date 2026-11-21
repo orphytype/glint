@@ -7,7 +7,7 @@ use std::hash::{Hash, Hasher};
 use rune::{Cursor, El, ScrollSpec, Span, Tx, col, el, icon, row};
 use ym_api::{LyricLine, LyricWord, LyricsSource, join_words};
 
-use super::count::{COUNT_W, count_note, count_start};
+use super::count::{COUNT_W, TargetLine, count_note, count_start};
 use super::notice;
 use crate::app::{Load, State};
 use crate::i18n::{Lang, S};
@@ -262,7 +262,29 @@ pub(super) fn lyrics_view(s: &State, p: &Pal, x: f32, w: f32, h: f32) -> El {
             let block_w = lyrics_block_width(s.lyrics_gen, l, style, look.font, w, credit_el.is_some(), lang);
             let mut lines = col().w(block_w).gap(20.0).pt(vp_h * 0.5).pb(vp_h * 0.5).motion(rune::Spring::NONE);
             if let Some(first) = count_start(l) {
-                lines = lines.child(count_note(first, pos, block_w, look.align));
+                let mut empty_before = 0usize;
+                let mut first_line_idx = None;
+                for (i, line) in l.lines.iter().enumerate() {
+                    if line.text.trim().is_empty() && line.words.is_empty() {
+                        empty_before += 1;
+                    } else {
+                        first_line_idx = Some(i);
+                        break;
+                    }
+                }
+                let top_y = 38.0 + 20.0 + empty_before as f32 * 40.0;
+                let (target_text, target_style): (Cow<'_, str>, rune::TextStyle) = match first_line_idx.and_then(|i| l.lines.get(i)) {
+                    Some(line) if l.synced && line.part.is_some() => {
+                        let name = part_name(line.part.as_deref().unwrap_or_default(), lang);
+                        (Cow::Owned(name), th::LABEL)
+                    }
+                    Some(line) => {
+                        let main = if !line.words.is_empty() { Cow::Owned(join_words(&line.words)) } else { Cow::Borrowed(line.text.as_str()) };
+                        (main, style)
+                    }
+                    None => (Cow::Borrowed(""), style),
+                };
+                lines = lines.child(count_note(first, pos, block_w, look.align, TargetLine { text: &target_text, style: target_style, font: look.font, top_y }));
             }
             let ctx = LineCtx { style, back: 0.30, pos_ms: pos, synced: l.synced, align: look.align, font: look.font, reduce: s.settings.reduce_motion, resizing: s.is_resizing() };
             for (i, line) in l.lines.iter().enumerate() {
@@ -293,7 +315,7 @@ pub(super) fn lyrics_view(s: &State, p: &Pal, x: f32, w: f32, h: f32) -> El {
                 };
                 lines = lines.child(row_c.child(c).mt(12.0));
             }
-            col().key("np-lyrics").absolute(x, vp_top).w(w).h(vp_h).motion(rune::Spring::NONE).scroll(ScrollSpec { stick_bottom: false }).child(lines)
+            col().key("np-lyrics").absolute(x, vp_top).w(w).h(vp_h).motion(rune::Spring::NONE).scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(56.0).child(lines)
         }
     }
 }

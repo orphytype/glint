@@ -309,6 +309,20 @@ impl State {
         self.invalidate_next();
     }
 
+    /// Clears all upcoming tracks after the currently playing one.
+    pub fn clear_up_next(&mut self) {
+        let Some(cur) = self.player.index else { return };
+        if cur + 1 >= self.player.queue.len() {
+            return;
+        }
+        self.player.queue.truncate(cur + 1);
+        let kept: std::collections::HashSet<&str> = self.player.queue.iter().map(|t| t.id.as_str()).collect();
+        self.player.original.retain(|t| kept.contains(t.id.as_str()));
+        self.invalidate_next();
+        let text = self.tr(S::QueueCleared);
+        self.toast(text);
+    }
+
     pub fn stop_all(&mut self) {
         self.finish_listen();
         if let Some(e) = &self.player.engine {

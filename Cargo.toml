@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/glint", "crates/glint-update", "crates/ym-api", "crates/ym-audio"]
 
 [workspace.package]
-version = "0.9.0"
+version = "0.9.1"
 edition = "2024"
 license = "GPL-3.0-only"
 rust-version = "1.100"
@@ -12,10 +12,10 @@ repository = "https://github.com/orphytype/glint"
 
 [workspace.dependencies]
 # RUNE is pre-release: pin a rev of `dev` (it is never rewritten). Same rev for every RUNE crate.
-rune = { git = "https://github.com/anomalyco/rune", rev = "dc8f7f7213cbe43af45212de6998d530d0945187" }
-rune-fx = { git = "https://github.com/anomalyco/rune", rev = "dc8f7f7213cbe43af45212de6998d530d0945187" }
-rune-kit = { git = "https://github.com/anomalyco/rune", rev = "dc8f7f7213cbe43af45212de6998d530d0945187" }
-rune-motion = { git = "https://github.com/anomalyco/rune", rev = "dc8f7f7213cbe43af45212de6998d530d0945187" }
+rune = { git = "https://github.com/anomalyco/rune", rev = "c6df83fe495224c5bcd091fda837549edf28e564" }
+rune-fx = { git = "https://github.com/anomalyco/rune", rev = "c6df83fe495224c5bcd091fda837549edf28e564" }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "c6df83fe495224c5bcd091fda837549edf28e564" }
+rune-motion = { git = "https://github.com/anomalyco/rune", rev = "c6df83fe495224c5bcd091fda837549edf28e564" }
 bytemuck = { version = "1.25", features = ["derive"] }
 reqwest = { version = "0.13", default-features = false }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
@@ -51,12 +51,12 @@ wildcard_imports = "warn"
 # RUNE builds against patched copies of these crates (its own `[patch.crates-io]` does not reach an
 # app that depends on it), so take the same copies from the same pinned rev.
 [patch.crates-io]
-wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "dc8f7f7213cbe43af45212de6998d530d0945187" }
-winit = { git = "https://github.com/anomalyco/rune", rev = "dc8f7f7213cbe43af45212de6998d530d0945187" }
-sctk-adwaita = { git = "https://github.com/anomalyco/rune", rev = "dc8f7f7213cbe43af45212de6998d530d0945187" }
-parley_engine = { git = "https://github.com/anomalyco/rune", rev = "dc8f7f7213cbe43af45212de6998d530d0945187" }
-accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "dc8f7f7213cbe43af45212de6998d530d0945187" }
-accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "dc8f7f7213cbe43af45212de6998d530d0945187" }
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "c6df83fe495224c5bcd091fda837549edf28e564" }
+winit = { git = "https://github.com/anomalyco/rune", rev = "c6df83fe495224c5bcd091fda837549edf28e564" }
+sctk-adwaita = { git = "https://github.com/anomalyco/rune", rev = "c6df83fe495224c5bcd091fda837549edf28e564" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "c6df83fe495224c5bcd091fda837549edf28e564" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "c6df83fe495224c5bcd091fda837549edf28e564" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "c6df83fe495224c5bcd091fda837549edf28e564" }
 
 # Dependencies are compiled with light optimisation even in dev builds: wgpu, naga and the
 # image codecs are unusably slow at opt-level 0, and they rarely change.

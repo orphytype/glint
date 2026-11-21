@@ -85,7 +85,20 @@ fn greeting(s: &State) -> El {
         .mt(20.0)
         .child(col().grow(1.0).min_w(0.0).gap(6.0).child(row().key("home-title").child(label(title, th::TITLE, th::text()).max_lines(2))).child(suggest))
         .child(
-            kit::round("home-reroll", kit::Weight::Soft, &icons::SPARKLE, kit::BTN_H, 18.0, S::RerollShapes.get(lang))
+            row()
+                .key("home-reroll")
+                .role("button")
+                .label(S::RerollShapes.get(lang))
+                .help(S::RerollShapes.get(lang))
+                .w(dock::CHIP)
+                .h(dock::CHIP)
+                .radius(dock::CHIP * 0.5)
+                .center()
+                .cursor(Cursor::Pointer)
+                .press_scale(th::PRESS)
+                .hov(th::veil(0.06))
+                .child(kit::glass(crate::fx::Glass::Chip, dock::CHIP * 0.5))
+                .child(icon(&icons::SPARKLE, 18.0).color(th::text()))
                 .on_press(|s: &mut State| s.home_seed = s.home_seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407)),
         )
 }

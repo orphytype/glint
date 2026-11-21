@@ -56,35 +56,47 @@ fn fs_glass(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let corner = abs((q.x * q.y) / max(half.x * half.y, 1.0));
     let ca = disp * u.p0.z * (0.45 + corner);
     let sigma = u.p0.w;
-    var col = vec3<f32>(0.0);
-    if (u.p0.z > 0.0 && dot(ca, ca) > 1e-4) {
-        col.r = soften(bd, pyr, rc + ca, sigma).r;
-        col.g = soften(bd, pyr, rc, sigma).g;
-        col.b = soften(bd, pyr, rc - ca, sigma).b;
+    var col: vec3<f32>;
+    if (sigma < 0.0) {
+        col = work(u.tint.rgb);
     } else {
         col = soften(bd, pyr, rc, sigma);
+        if (u.p0.z > 0.0 && dot(ca, ca) > 0.25) {
+            col.r = soften(bd, pyr, rc + ca, sigma).r;
+            col.b = soften(bd, pyr, rc - ca, sigma).b;
+        }
     }
 
+    let is_light = u.view.w > 0.5;
     col = grade(col);
-    col = mix(col, work(u.tint.rgb), u.tint.a);
+    let tint_rgb = select(work(u.tint.rgb), work(vec3<f32>(1.0)), is_light);
+    col = mix(col, tint_rgb, select(u.tint.a, clamp(u.tint.a + 0.14, 0.0, 0.92), sigma < 0.0));
 
-    let bevel = 1.0 - smoother(dist / max(width * 1.2, 1.0));
-    col = col * (1.0 + u.p1.w * bevel * bevel * bevel);
+    let bevel = 1.0 - smoother(dist / max(width * 1.15, 1.0));
+    let lift = u.p1.w * bevel * bevel;
+    let white = work(vec3<f32>(1.0));
+    col = select(col * (1.0 + lift) + white * (lift * 0.22), col + (white - col) * (lift * 0.45), is_light);
 
     let edge_w = max(u.p3.w * k, 1.5);
     let edge = 1.0 - smoother(dist / edge_w);
     let ang = u.p3.z;
     let l2 = vec2<f32>(cos(ang), sin(ang));
-    let nrm = normalize(vec3<f32>(-n2.x, -n2.y, 1.0));
-    let s1 = pow(max(dot(nrm, normalize(vec3<f32>(l2, 1.0))), 0.0), max(u.p2.y, 1.0));
-    let s2 = pow(max(dot(nrm, normalize(vec3<f32>(-l2, 1.0))), 0.0), max(u.p2.y, 1.0)) * 0.6;
+    let nrm = normalize(vec3<f32>(-n2.x, -n2.y, 1.15));
+    let s1 = pow(max(dot(nrm, normalize(vec3<f32>(l2, 0.9))), 0.0), max(u.p2.y, 1.0));
+    let s2 = pow(max(dot(nrm, normalize(vec3<f32>(-l2, 0.9))), 0.0), max(u.p2.y, 1.0)) * 0.45;
     let spec = clamp((s1 + s2) * u.p2.x * edge, 0.0, 1.0);
-    let band = 1.0 - smoothstep(max(u.p2.w * k - 1.0, 0.0), max(u.p2.w * k, 0.5), dist);
+    let band = 1.0 - smoothstep(max(u.p2.w * k - 0.9, 0.0), max(u.p2.w * k + 0.15, 0.6), dist);
     let up = clamp(0.5 - 0.5 * n2.y, 0.0, 1.0);
-    let rim = clamp(u.p2.z * band * (0.35 + 0.65 * up), 0.0, 1.0);
-    let shade = u.p3.x * edge;
-    col = mix(col, vec3<f32>(0.0), shade * (1.0 - spec));
-    col = mix(col, work(vec3<f32>(1.0)), clamp(spec + rim * (1.0 - spec), 0.0, 1.0));
+    let rim = clamp(u.p2.z * band * (0.28 + 0.72 * up), 0.0, 1.0);
+    if (is_light) {
+        let hair = band * 0.10 * (1.0 - up * 0.55);
+        col = mix(col, vec3<f32>(0.0), hair * (1.0 - spec));
+        col = mix(col, white, clamp(spec * 0.95 + rim * 0.85, 0.0, 1.0));
+    } else {
+        let shade = u.p3.x * edge * (1.0 - up * 0.4);
+        col = mix(col, vec3<f32>(0.0), shade * (1.0 - spec));
+        col = mix(col, white, clamp(spec + rim * (1.0 - spec), 0.0, 1.0));
+    }
 
     col = col + (ign(p) - 0.5) * (1.2 / 255.0);
     let a = cov * u.p3.y;

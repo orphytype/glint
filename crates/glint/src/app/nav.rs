@@ -92,6 +92,16 @@ impl State {
 
     /// Triggers initial data loading when entering a page.
     fn enter(&mut self, page: Page) {
+        let kind = match &page {
+            Page::Home => "Home",
+            Page::Library => "Library",
+            Page::Search => "Search",
+            Page::Album(_) => "Album",
+            Page::Playlist(_, _) => "Playlist",
+            Page::Artist(_) => "Artist",
+        };
+        crate::diag_log::event("nav", &format!("page={kind}"));
+        self.log_mem(&format!("nav:{kind}"));
         let detail = !page.is_root();
         match page {
             Page::Library => self.load_library_tab(self.library.tab),
@@ -174,6 +184,11 @@ impl State {
         }
         let base = d.unsorted.get_or_insert_with(|| d.tracks.clone());
         d.tracks = sort.apply(base);
+    }
+
+    /// Sorts Liked tracks in Library without mutating the source list.
+    pub fn set_library_sort(&mut self, sort: TrackSort) {
+        self.library.sort = sort;
     }
 
     /// Re-applies the active sort after replacing the open page's track list.

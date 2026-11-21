@@ -108,6 +108,8 @@ pub struct Release {
     pub version: String,
     /// The release's page on GitHub, for the notes and for a manual download.
     pub page_url: String,
+    /// Plain-text release notes from the GitHub release body.
+    pub notes: String,
     /// The file for this install, when the release has one that can be trusted.
     pub asset: Option<Asset>,
 }
@@ -116,6 +118,8 @@ pub struct Release {
 struct ApiRelease {
     tag_name: String,
     html_url: String,
+    #[serde(default)]
+    body: String,
     #[serde(default)]
     draft: bool,
     #[serde(default)]
@@ -167,8 +171,37 @@ fn newest(list: Vec<ApiRelease>, current: &Version, method: Method) -> Option<Re
         .max_by(|a, b| a.0.cmp(&b.0))
         .map(|(_, r)| {
             let asset = method.asset_suffix().and_then(|suffix| r.assets.iter().find(|a| a.name.ends_with(suffix))).and_then(trusted);
-            Release { version: r.tag_name.trim_start_matches(['v', 'V']).to_owned(), page_url: r.html_url, asset }
+            Release { version: r.tag_name.trim_start_matches(['v', 'V']).to_owned(), page_url: r.html_url, notes: clean_notes(&r.body), asset }
         })
+}
+
+/// Turns a GitHub Markdown release body into concise plain text for the update popover, stopping
+/// before the download-file table section.
+fn clean_notes(body: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for raw in body.lines() {
+        let trimmed = raw.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("## which file") || lower.starts_with("### which file") || lower.starts_with("which file to download") {
+            break;
+        }
+        if trimmed.is_empty() || trimmed.starts_with("---") || trimmed.starts_with("|") {
+            continue;
+        }
+        let stripped = trimmed.trim_start_matches('#').trim();
+        let plain = if let Some(rest) = stripped.strip_prefix("- ").or_else(|| stripped.strip_prefix("* ")) { format!("• {}", strip_md(rest)) } else { strip_md(stripped) };
+        if !plain.is_empty() {
+            lines.push(plain);
+        }
+        if lines.len() >= 12 {
+            break;
+        }
+    }
+    lines.join("\n")
+}
+
+fn strip_md(s: &str) -> String {
+    s.replace("**", "").replace('`', "").trim().to_owned()
 }
 
 /// The asset, if it is from this project's releases and GitHub gave its checksum.

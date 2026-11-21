@@ -6,7 +6,7 @@ use rune::{Live, LiveText, PopupAnchor, TextEdit};
 use ym_api::{Album, Artist, Lyrics, Playlist, Track};
 use ym_audio::{Engine, EqSettings};
 
-use super::types::{LibTab, Load, Page, PinnedItem};
+use super::types::{LibTab, Load, Page, PinnedItem, TrackSort};
 use crate::i18n::{Lang, S};
 use crate::store::Repeat;
 
@@ -43,11 +43,12 @@ impl PlayingFrom {
 #[derive(Default)]
 pub struct Library {
     pub tab: LibTab,
-    /// Collection search query and cached matching indices for liked tracks.
+    pub sort: TrackSort,
+    /// Collection search query and cached matching/sorted indices for liked tracks.
     pub filter: TextEdit,
     pub shown: RefCell<Vec<usize>>,
-    /// Cache key for `shown`: trimmed lowercase query, track slice pointer, and length.
-    pub shown_key: RefCell<(String, usize, usize)>,
+    /// Cache key for `shown`: trimmed lowercase query, active sort, track slice pointer, and length.
+    pub shown_key: RefCell<(String, TrackSort, usize, usize)>,
     pub tracks: Load<Vec<Track>>,
     pub playlists: Load<Vec<Playlist>>,
     pub albums: Load<Vec<Album>>,
@@ -152,10 +153,14 @@ pub enum Popover {
     EqPreset { anchor: String },
     /// Track sort order for the open page.
     TrackSort { anchor: String },
+    /// Track sort order for Liked tracks in Library.
+    LibSort { anchor: String },
     /// Release sort order and kind filter on an artist page.
     DiscSort { anchor: String },
     /// My Wave tuning knobs and shape style on Home.
     WaveTune { anchor: String },
+    /// Available app update summary and install action from the title bar icon.
+    Update { anchor: String },
 }
 
 /// One wave option in a wave card popover.
@@ -178,8 +183,10 @@ impl Popover {
             | Popover::Liked { anchor }
             | Popover::EqPreset { anchor }
             | Popover::TrackSort { anchor }
+            | Popover::LibSort { anchor }
             | Popover::DiscSort { anchor }
-            | Popover::WaveTune { anchor } => anchor,
+            | Popover::WaveTune { anchor }
+            | Popover::Update { anchor } => anchor,
         }
     }
 }

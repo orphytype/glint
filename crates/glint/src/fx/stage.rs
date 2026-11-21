@@ -74,10 +74,10 @@ impl Gfx {
         u.tint = rgb4(self.smooth.pal[2], half);
         u.ink = rgb4(ctx.canvas, 1.0);
         let u = gpu.stage(ctx.device, &u);
-        self.jobs.push((slot_idx, Job { pipe: Pipe::Stage, u, region: None, tag: 0 }));
+        self.jobs.push((slot_idx, Job { pipe: Pipe::Stage, u, region: None, tag: 0, shared: false }));
         let stage_anim = look.effects > 0;
-        summary.moving |= (ctx.song_live && stage_anim) || (stage_anim && ctx.quality == Effects::Full && !ctx.reduced && ctx.flow > 0.0);
-        summary.flows = true;
+        summary.audio_reactive |= stage_anim && ctx.st.player.playing;
+        summary.moving |= ctx.song_live && stage_anim;
     }
 
     pub(super) fn stage_shape(&mut self, gpu: &mut Gpu, slot_ref: SlotRef<'_>, ctx: &FrameCtx<'_>, summary: &mut SlotSummary) {
@@ -138,9 +138,15 @@ impl Gfx {
             19 => Pipe::Wave,
             _ => Pipe::Mood,
         };
-        self.jobs.push((slot_idx, Job { pipe, u, region: None, tag: 0 }));
-        summary.moving |= !still && ctx.flow > 0.0;
-        summary.flows = true;
+        self.jobs.push((slot_idx, Job { pipe, u, region: None, tag: 0, shared: false }));
+        let active_ribbon = pipe == Pipe::Ribbon && (m[0] > 0.0 || m[1] > 0.0);
+        summary.audio_reactive |= !still && (pipe != Pipe::Ribbon || active_ribbon);
+        if pipe == Pipe::Ribbon {
+            summary.moving |= !still && active_ribbon;
+        } else {
+            summary.moving |= !still && (m[0] > 0.0 || ctx.flow > 0.0);
+            summary.flows = true;
+        }
     }
 
     pub(super) fn stage_butterfly(&mut self, gpu: &mut Gpu, slot_ref: SlotRef<'_>, ctx: &FrameCtx<'_>, summary: &mut SlotSummary) {
@@ -152,6 +158,6 @@ impl Gfx {
         u.p2 = [b.heading, b.open, b.bank, b.z];
         u.ink = rgb4(ctx.ink, 1.0);
         let u = gpu.stage(ctx.device, &u);
-        self.jobs.push((slot_idx, Job { pipe: Pipe::Butterfly, u, region: None, tag: 0 }));
+        self.jobs.push((slot_idx, Job { pipe: Pipe::Butterfly, u, region: None, tag: 0, shared: false }));
     }
 }

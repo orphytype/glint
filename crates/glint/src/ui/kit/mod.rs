@@ -117,16 +117,31 @@ pub fn snapshot() -> El {
 }
 
 pub fn glass(kind: Glass, radius: f32) -> El {
+    glass_alpha(kind, radius, 1.0)
+}
+
+pub fn glass_alpha(kind: Glass, radius: f32, alpha: f32) -> El {
+    let alpha = alpha.clamp(0.0, 1.0);
     let pane = el().absolute(0.0, 0.0).w_full().h_full().radius(radius).transition(Transition::none());
-    if fx::glass_enabled() { pane.effect(fx::glass(kind)) } else { pane.fill(th::veil(0.06)).border(1.0, th::veil(0.08)) }
+    if fx::glass_enabled() {
+        return pane.effect(fx::glass(kind)).fx_data([1.0 - alpha, 0.0, 0.0, 0.0]);
+    }
+    let (fill, edge, shadow) = match kind {
+        Glass::Dock => (th::pop().alpha(0.96 * alpha), th::veil(0.11 * alpha), Some((8.0, 24.0, if th::light() { 0.14 } else { 0.42 }))),
+        Glass::Card => (th::pop().alpha(0.96 * alpha), th::veil(0.10 * alpha), Some((10.0, 28.0, if th::light() { 0.12 } else { 0.36 }))),
+        Glass::Chip => (th::pop().alpha(0.90 * alpha), th::veil(0.12 * alpha), Some((4.0, 12.0, if th::light() { 0.10 } else { 0.28 }))),
+        Glass::Menu => (th::pop().alpha(alpha), th::veil(0.10 * alpha), None),
+    };
+    let pane = pane.fill(fill).border(1.0, edge);
+    match shadow {
+        Some((y, blur, a)) if alpha > 0.01 => pane.shadow(y, blur, th::rgba(0x000000, a * alpha)),
+        _ => pane,
+    }
 }
 
 pub fn frost(radius: f32, skin: f32) -> [El; 2] {
     let film = if fx::glass_enabled() { th::FROST } else { 1.0 };
-    [
-        glass(Glass::Menu, radius).fx_data([1.0 - skin, 0.0, 0.0, 0.0]),
-        el().absolute(0.0, 0.0).w_full().h_full().radius(radius).fill(th::pop().alpha(film * skin)).transition(Transition::none()),
-    ]
+    [glass_alpha(Glass::Menu, radius, skin), el().absolute(0.0, 0.0).w_full().h_full().radius(radius).fill(th::pop().alpha(film * skin)).transition(Transition::none())]
 }
 
 pub fn veil_top(h: f32) -> El {
@@ -190,7 +205,7 @@ pub fn heading(key: impl Into<String>, title: &str, more: Option<El>) -> El {
 }
 
 pub fn list_heading(key: impl Into<String>, title: &str, more: Option<El>) -> El {
-    heading(key, title, more).pl(8.0).pr(4.0)
+    heading(key, title, more)
 }
 
 pub fn scroll_page(key: impl Into<String>, body: El) -> El {

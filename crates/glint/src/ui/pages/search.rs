@@ -109,6 +109,7 @@ pub(super) fn search(s: &State, w: f32) -> El {
     let kind_loading = tab != SearchTab::All && s.search.more.is_loading();
     let content: El = match (&s.search.results, s.search_view()) {
         (Load::Failed(_), None) => kit::list_state(&s.search.results, s).unwrap_or_else(el),
+        (Load::Loading, None) => search_skeleton(w),
         (_, Some(r)) => {
             let empty = match tab {
                 SearchTab::All => r.is_empty(),
@@ -118,7 +119,7 @@ pub(super) fn search(s: &State, w: f32) -> El {
                 SearchTab::Playlists => r.playlists.results.is_empty(),
             };
             if empty && kind_loading {
-                el()
+                search_skeleton(w)
             } else if empty {
                 kit::empty(&p, Ill::Lens, S::NoResults.get(lang))
             } else {
@@ -346,12 +347,49 @@ fn top_row(s: &State, r: &SearchResult, w: f32) -> Option<El> {
     Some(r.child(list))
 }
 
+fn search_skeleton(w: f32) -> El {
+    let cw = column(w);
+    let wide = cw >= 820.0;
+    let rows = (0..4)
+        .map(|i| {
+            row()
+                .key(format!("sr-bone-{i}"))
+                .w_full()
+                .h(ROW_H)
+                .px(kit::ROW_PAD)
+                .gap(14.0)
+                .items_center()
+                .child(el().w(kit::ROW_COVER).h(kit::ROW_COVER).radius(kit::ROW_COVER_R).fill(kit::bone_fill()))
+                .child(col().grow(1.0).gap(6.0).child(kit::text_bone(format!("sr-bone-t-{i}"), 16.0, 12.0, 220.0 - 20.0 * (i % 3) as f32)).child(kit::text_bone(
+                    format!("sr-bone-a-{i}"),
+                    14.0,
+                    10.0,
+                    130.0,
+                )))
+        })
+        .collect::<Vec<_>>();
+    let card = col()
+        .key("sr-bone-card")
+        .w(if wide { (cw * 0.38).clamp(300.0, 420.0) } else { cw })
+        .h(244.0)
+        .padding(24.0)
+        .gap(16.0)
+        .justify_between()
+        .radius(24.0)
+        .fill(th::veil(0.04))
+        .child(el().w(104.0).h(104.0).radius(16.0).fill(kit::bone_fill()))
+        .child(col().gap(10.0).child(kit::text_bone("sr-bone-h", 26.0, 20.0, 200.0)).child(kit::text_bone("sr-bone-s", 16.0, 12.0, 120.0)));
+    let tracks = col().grow(1.0).min_w(0.0).gap(4.0).children(rows);
+    let inner = if wide { row().w_full().gap(28.0).items_start().child(card).child(tracks) } else { col().w_full().gap(24.0).child(card).child(tracks) };
+    el().key("sr-loading").w_full().child(inner)
+}
+
 fn top_card(s: &State, r: &SearchResult) -> Option<El> {
     let lang = s.lang;
     let q = s.search.query.to_lowercase();
     let artist = r.artists.results.first().filter(|a| !q.is_empty() && a.name.to_lowercase().contains(&q));
     let rows = r.tracks.results.len().min(TOP_ROWS) as f32;
-    let h = (rows * (ROW_H + 2.0) - 2.0).max(210.0);
+    let h = (rows * (ROW_H + 2.0) - 2.0).max(244.0);
     let base = |key: String, name: &str| {
         col()
             .key(key)
@@ -360,8 +398,9 @@ fn top_card(s: &State, r: &SearchResult) -> Option<El> {
             .h(h)
             .padding(24.0)
             .gap(16.0)
-            .justify_end()
+            .justify_between()
             .radius(24.0)
+            .clip_rounded(24.0)
             .cursor(Cursor::Pointer)
             .fill(th::veil(0.05))
             .border_gradient(1.0, th::veil(0.10), th::veil(0.02))

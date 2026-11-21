@@ -182,7 +182,7 @@ fn link_row(key: &str, ic: &'static Icon, name: &str, url: &'static str) -> El {
         .child(rune::icon(&icons::EXTERNAL, 14.0).color(th::text3()).gcol(th::text2()))
 }
 
-pub(super) fn about(s: &State) -> Vec<El> {
+pub(super) fn about(s: &State, k: &rune_kit::Kit) -> Vec<El> {
     let lang = s.lang;
     let version = row().h(22.0).px(9.0).radius(11.0).center().fill(veil(0.07)).child(label(format!("v{}", env!("CARGO_PKG_VERSION")), th::MONO, th::text2()));
     let hero = col()
@@ -195,6 +195,33 @@ pub(super) fn about(s: &State) -> Vec<El> {
         .child(app_mark(72.0))
         .child(row().gap(10.0).items_center().mt(6.0).child(label("Glint".to_owned(), th::H0, th::text())).child(version))
         .child(label(S::AboutText.get(lang).to_owned(), th::SMALL, th::text2()).wrap().align(Align::Center).max_w(420.0));
+    let log_toggle = toggle(k, s.settings.logging, S::DiagLogs.get(lang), |s| {
+        s.settings.logging = !s.settings.logging;
+        crate::diag_log::set_enabled(s.settings.logging);
+        if s.settings.logging {
+            crate::diag_log::write_system(&s.settings, s.update_method, s.win_size.get());
+        }
+        s.mark_settings_dirty();
+    });
+    let log_bytes = crate::diag_log::total_bytes();
+    let log_actions = row()
+        .gap(8.0)
+        .items_center()
+        .child(figure(size(log_bytes, lang)))
+        .child(kit::btn_small("logs-open", S::OpenLogs.get(lang), Some(&icons::FOLDER)).on_press(|s: &mut State| s.open_logs_folder()))
+        .children((log_bytes > 0).then(|| {
+            kit::btn_small("logs-clear", S::ClearShort.get(lang), Some(&icons::TRASH)).on_press(|s: &mut State| {
+                crate::diag_log::clear();
+                let text = s.tr(S::LogsCleared);
+                s.toast(text);
+            })
+        }));
+    let diagnostics = group(
+        "set-diag",
+        Some(S::Diagnostics.get(lang)),
+        vec![item(S::DiagLogs.get(lang), Some(S::DiagLogsNote.get(lang)), log_toggle), item(S::DiagLogFiles.get(lang), None, log_actions)],
+        None,
+    );
     let links = group(
         "set-links",
         Some(S::Links.get(lang)),
@@ -205,5 +232,5 @@ pub(super) fn about(s: &State) -> Vec<El> {
         ],
         Some(S::Credits.get(lang)),
     );
-    vec![hero, links]
+    vec![hero, diagnostics, links]
 }

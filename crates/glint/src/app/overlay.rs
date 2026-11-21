@@ -23,12 +23,10 @@ impl State {
     pub(crate) fn tick_menu(&mut self, dt: f32) -> bool {
         let reduce = self.settings.reduce_motion;
         let np_target = self.np_open && self.current().is_some();
-        let veil_target = np_target && self.np.t >= 1.0;
         let mut changed = self.menu.step(self.menu_open, dt, reduce)
             | self.tmenu.step(self.tmenu_open, dt, reduce)
             | self.vol.step(self.vol_open, dt, reduce)
             | self.np.glide(np_target, dt, reduce)
-            | self.np_veil.step(veil_target, dt, reduce)
             | self.pop.step(self.popover_open, dt, reduce)
             | self.sheet_pop.morph(self.sheet_open, dt, reduce)
             | (!self.sheet_dragging && self.sheet_drag.settle(0.0, 0.42, 0.86, dt));
@@ -53,7 +51,6 @@ impl State {
             || self.tmenu.moving(self.tmenu_open)
             || self.vol.moving(self.vol_open)
             || self.np.moving(self.np_open && self.current().is_some())
-            || self.np_veil.moving(self.np_open && self.current().is_some() && self.np.t >= 1.0)
             || self.pop.moving(self.popover_open)
             || self.sheet_pop.moving(self.sheet_open)
             || (!self.sheet_dragging && (self.sheet_drag.t != 0.0 || self.sheet_drag.v != 0.0))

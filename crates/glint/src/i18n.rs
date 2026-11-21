@@ -303,6 +303,7 @@ strings! {
     SizeMedium => "Medium", "Средний";
     SizeLarge => "Large", "Крупный";
     SearchCollection => "Search the collection", "Поиск в коллекции";
+    Collection => "Collection", "Коллекция";
     Resume => "Resume", "Продолжить";
     CopyTitle => "Copy title", "Скопировать название";
     TitleCopied => "Title copied", "Название скопировано";
@@ -351,7 +352,6 @@ strings! {
     WaveRussian => "Russian", "Русский";
     WaveForeign => "Foreign", "Иностранный";
     WaveTune => "Tune My Wave", "Настроить волну";
-    WaveTuneOf => "Settings of", "Настройки волны";
     WaveTuneNone => "This wave has no settings of its own", "У этой волны нет своих настроек";
     WaveCharacter => "Character", "Характер";
     WaveLanguage => "Language", "Язык";
@@ -379,11 +379,14 @@ strings! {
     GoToAlbum => "Go to album", "Перейти к альбому";
     GoToArtist => "Go to artist", "Перейти к исполнителю";
     QueueEmpty => "The queue is empty", "Очередь пуста";
+    QueueCleared => "Queue cleared", "Очередь очищена";
     // login
     Welcome => "Sign in to Glint", "Вход в Glint";
     LoginLead => "An unofficial Yandex Music client. Sign in with your own Yandex account.", "Неофициальный клиент Яндекс Музыки. Войдите своим аккаунтом Яндекса.";
+    LoginStep1 => "Sign in to your Yandex account in the browser", "Войдите в аккаунт Яндекса в браузере";
     LoginStep2 => "Paste the address you land on, or just the token", "Вставьте адрес, на который попадёте, или сам токен";
     OpenYandex => "Open Yandex sign-in", "Открыть вход Яндекса";
+    Paste => "Paste", "Вставить";
     TokenHint => "Paste the redirect URL or token", "Вставьте адрес или токен";
     ShowToken => "Show what is pasted", "Показать вставленное";
     HideToken => "Hide what is pasted", "Скрыть вставленное";
@@ -498,6 +501,7 @@ strings! {
     UpdateReleasePage => "Release page", "Страница релиза";
     UpdateDownloading => "Downloading", "Загрузка";
     UpdateInstalling => "Installing…", "Устанавливаю…";
+    UpdateMenuSub => "New version available", "Доступна новая версия";
     UpdateShort => "Update", "Обновление";
     UpdateFailed => "Could not update. Try again, or download the new version from GitHub.", "Не удалось обновить. Попробуйте ещё раз или скачайте новую версию с GitHub.";
     UpdateManual => "Installed from a package or built from source: download the new version from the release page.", "Установлено из пакета или собрано из исходников: скачайте новую версию на странице релиза.";
@@ -516,6 +520,7 @@ strings! {
     SearchHistoryNote => "Recent searches under the search field. Kept only on this computer.", "Недавние запросы под строкой поиска. Хранятся только на этом компьютере.";
     ListeningHistoryNote => "Tracks played since Glint started, shown on the search page.", "Треки, сыгранные с момента запуска. Показываются на странице поиска.";
     ClearShort => "Clear", "Очистить";
+    ClearQueue => "Clear queue", "Очистить очередь";
     HistoryEmpty => "Empty", "Пусто";
     HistoryCleared => "History cleared", "История очищена";
     IdHidden => "Hidden. Point at it to read it.", "Скрыто. Наведите, чтобы увидеть.";
@@ -583,5 +588,11 @@ strings! {
     ScBack => "Back, or close a panel", "Назад или закрыть панель";
     Links => "Links", "Ссылки";
     ReportIssue => "Report a problem", "Сообщить о проблеме";
+    Diagnostics => "Diagnostics", "Диагностика";
+    DiagLogs => "Diagnostic logs", "Запись логов";
+    DiagLogsNote => "Local log up to 1 MB and anonymized hardware info. No personal data is saved.", "Локальный журнал до 1 МБ и обезличенные данные о системе. Личные данные не записываются.";
+    DiagLogFiles => "Log files", "Файлы логов";
+    OpenLogs => "Open folder", "Открыть папку";
+    LogsCleared => "Logs cleared", "Логи очищены";
     LyricsBy => "Lyrics by lrc.red", "Текст: lrc.red";
 }

@@ -6,7 +6,7 @@ use ym_api::Track;
 use ym_audio::DiskCache;
 
 use super::{LYRIC_LEAD_MS, Load, LyricsUi, State};
-use crate::art::{ArtCache, COVER_PX};
+use crate::art::{ArtCache, COVER_PX, DECODE_PX};
 use crate::net::{self, Backend};
 
 impl State {
@@ -108,7 +108,7 @@ impl State {
 #[cfg(feature = "tooling")]
 fn paint_fixture_cover(key: &str) -> Option<crate::art::Decoded> {
     let (hue, style, seed, size) = crate::fixtures::parse_cover_url(key)?;
-    let size = size.min(COVER_PX);
+    let size = size.min(DECODE_PX);
     let rgba = crate::fixtures::cover_rgba(hue, style, seed, size);
     Some(crate::art::Decoded { width: size, height: size, rgba })
 }
@@ -124,7 +124,7 @@ fn spawn_cover_load(backend: Backend, art: ArtCache, key: String, disk: Option<A
             let disk2 = disk.clone();
             tokio::task::spawn_blocking(move || {
                 let raw = from_ram.or_else(|| disk2.as_ref().and_then(|d| d.get(&k2)))?;
-                let img = crate::art::decode(&raw, COVER_PX)?;
+                let img = crate::art::decode(&raw, DECODE_PX)?;
                 if sharp_only {
                     art2.finish_sharp(&k2, Some(img));
                 } else {
@@ -141,7 +141,7 @@ fn spawn_cover_load(backend: Backend, art: ArtCache, key: String, disk: Option<A
             return;
         }
         if sharp_only {
-            let img = backend.image(&key, COVER_PX).await;
+            let img = backend.image(&key, DECODE_PX).await;
             let _ = tokio::task::spawn_blocking(move || art.finish_sharp(&key, img)).await;
             return;
         }
@@ -151,7 +151,7 @@ fn spawn_cover_load(backend: Backend, art: ArtCache, key: String, disk: Option<A
             let k2 = key.clone();
             let disk2 = disk.clone();
             let _ = tokio::task::spawn_blocking(move || {
-                if let Some(img) = crate::art::decode(&raw, COVER_PX) {
+                if let Some(img) = crate::art::decode(&raw, DECODE_PX) {
                     if let Some(d) = disk2 {
                         let _ = d.put(&k2, &raw);
                     }
@@ -163,7 +163,7 @@ fn spawn_cover_load(backend: Backend, art: ArtCache, key: String, disk: Option<A
             .await;
             return;
         }
-        if let Some(img) = backend.image(&key, COVER_PX).await {
+        if let Some(img) = backend.image(&key, DECODE_PX).await {
             let _ = tokio::task::spawn_blocking(move || art.finish(&key, Some(img), None)).await;
         } else {
             art.finish(&key, None, None);

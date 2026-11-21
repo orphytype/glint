@@ -10,9 +10,11 @@ use rune::Pixels;
 
 use crate::palette::Palette;
 
-/// Single cover size used everywhere in the app (list rows, cards, headers, player and media card)
-/// so the same artwork is never downloaded or decoded twice at different sizes.
+/// Single cover size requested from Yandex CDN so the same artwork is never downloaded twice.
 pub const COVER_PX: u32 = 300;
+/// Maximum decoded RGBA side kept in RAM and uploaded into RUNE's 1024x1024 image atlas pages
+/// (4x4 = 16 covers per 4 MiB page instead of 3x3 = 9 at 300px, cutting GPU/CPU atlas usage ~42%).
+pub const DECODE_PX: u32 = 256;
 
 #[derive(Clone)]
 pub struct ArtCache(Arc<Mutex<Inner>>);
@@ -167,9 +169,12 @@ pub struct Decoded {
     pub rgba: Vec<u8>,
 }
 
-/// Decoded covers kept in RUNE's atlas and RAM (at 300x300 RGBA, 48 MiB holds ~135 covers).
-const KEEP: usize = 160;
-const BUDGET: usize = 48 << 20;
+/// Decoded covers kept in RUNE's atlas and RAM (at 256x256 RGBA, 24 MiB holds ~96 covers in 6 atlas pages).
+const KEEP: usize = 96;
+const BUDGET: usize = 24 << 20;
+/// Decoded covers retained when the window goes idle (`on_rest`), keeping off-screen covers only as compressed bytes.
+const IDLE_KEEP: usize = 48;
+const IDLE_BUDGET: usize = 12 << 20;
 /// Compressed cover bytes kept in RAM (~400 covers in 8 MiB).
 const RAW_KEEP: usize = 512;
 const RAW_BUDGET: usize = 8 << 20;
@@ -294,6 +299,37 @@ impl ArtCache {
         let mut g = self.lock();
         g.raw.clear();
         g.raw_bytes = 0;
+    }
+
+    /// Drops off-screen decoded covers down to the idle budget when the window rests.
+    /// Compressed bytes remain warm in `raw`, so revisiting a page re-decodes without network I/O.
+    pub fn trim_idle(&self) {
+        let mut g = self.lock();
+        let total: usize = g.map.values().map(|e| e.bytes).sum();
+        if g.map.len() <= IDLE_KEEP && total <= IDLE_BUDGET {
+            return;
+        }
+        let recent = g.view.saturating_sub(1);
+        let mut by_use: Vec<(u64, String)> =
+            g.map.iter().filter(|(k, e)| e.ready && e.seen < recent && !g.want_sharp.iter().any(|w| w == *k)).map(|(k, e)| (e.used, k.clone())).collect();
+        by_use.sort_unstable();
+        let (mut count, mut total) = (g.map.len(), total);
+        for (_, k) in by_use {
+            if count <= IDLE_KEEP && total <= IDLE_BUDGET {
+                break;
+            }
+            if let Some(e) = g.map.remove(&k) {
+                count -= 1;
+                total -= e.bytes;
+            }
+        }
+    }
+
+    /// Diagnostic counts: `(decoded_count, decoded_bytes, raw_count, raw_bytes)`.
+    pub fn stats(&self) -> (usize, usize, usize, usize) {
+        let g = self.lock();
+        let decoded_bytes: usize = g.map.values().map(|e| e.bytes).sum();
+        (g.map.len(), decoded_bytes, g.raw.len(), g.raw_bytes)
     }
 
     /// Marks `key` as a playing cover that needs the 256px sharp copy (for My Wave).

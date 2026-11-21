@@ -62,6 +62,7 @@ impl State {
         self.job(async move { glint_update::check(env!("CARGO_PKG_VERSION"), method).await }, move |s, _, res| {
             s.update = match res {
                 Ok(Some(release)) => {
+                    crate::diag_log::event("update", &format!("available version={}", release.version));
                     if !by_hand {
                         let text = s.tr(S::UpdateToast);
                         s.toast(text);
@@ -69,7 +70,10 @@ impl State {
                     Ui::Available(release)
                 }
                 Ok(None) => Ui::Latest,
-                Err(e) if by_hand => Ui::Failed(failure(&e)),
+                Err(e) if by_hand => {
+                    crate::diag_log::event("update", &format!("check failed: {e}"));
+                    Ui::Failed(failure(&e))
+                }
                 Err(_) => Ui::Idle,
             };
         });

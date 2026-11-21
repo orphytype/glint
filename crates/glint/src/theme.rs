@@ -259,11 +259,6 @@ pub fn name_on(size: f32) -> TextStyle {
     TextStyle::new((size * 1.22).round(), SERIF_W).family(DISPLAY).italic().lh((size * 1.3).round())
 }
 
-/// Smaller words about My Wave (what it plays, its knobs): Cormorant at `size`.
-pub fn wave_words(size: f32) -> TextStyle {
-    display(size, (size * 1.25).round())
-}
-
 // Sizes, tracking and line heights are in points.
 
 /// The name at the head of a release, a playlist or an artist: the sans, bold and tight, and a
@@ -288,8 +283,6 @@ pub const SECTION: TextStyle = display(25.0, 30.0);
 pub const H2: TextStyle = TextStyle::new(16.0, 600.0).family(SANS).tracking(-0.1).lh(22.0);
 /// A track's name in the bar.
 pub const H3: TextStyle = TextStyle::new(14.0, 600.0).family(SANS).lh(19.0);
-/// Who made it, under a head's name.
-pub const BYLINE: TextStyle = TextStyle::new(15.0, 400.0).family(SANS).lh(22.0);
 pub const BODY: TextStyle = TextStyle::new(14.0, 400.0).family(SANS).lh(20.0);
 pub const BODY_M: TextStyle = TextStyle::new(14.0, 500.0).family(SANS).lh(20.0);
 pub const SMALL: TextStyle = TextStyle::new(12.5, 400.0).family(SANS).lh(17.0);

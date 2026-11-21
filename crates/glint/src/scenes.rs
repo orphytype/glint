@@ -71,6 +71,10 @@ pub const SCENES: &[(&str, Scene)] = &[
     ("lyrics-none", lyrics_none),
     ("lyrics-count", lyrics_count),
     ("lyrics-count-run", lyrics_count_run),
+    ("lyrics-count-scatter", lyrics_count_scatter),
+    ("wave-tune-ru", wave_tune_ru),
+    ("update-popover", update_popover),
+    ("dock-menu", dock_menu),
     ("actions", actions),
     ("np-waves", np_waves),
     ("np-look", np_look),
@@ -252,7 +256,6 @@ fn queue_from(s: &mut State) {
     playlist_own(s);
     s.np_open = true;
     s.np.t = 1.0;
-    s.np_veil.t = 1.0;
     s.np_tab = NpTab::Queue;
 }
 
@@ -274,7 +277,6 @@ fn nowplaying(s: &mut State) {
     s.np_open = true;
     // The player as it rests, not on its way in.
     s.np.t = 1.0;
-    s.np_veil.t = 1.0;
     s.np_tab = NpTab::Lyrics;
 }
 
@@ -393,7 +395,6 @@ fn nowplaying_ru(s: &mut State) {
     s.np_open = true;
     // The player as it rests, not on its way in.
     s.np.t = 1.0;
-    s.np_veil.t = 1.0;
     s.np_tab = NpTab::Lyrics;
 }
 
@@ -419,7 +420,6 @@ fn queue_menu(s: &mut State) {
     s.np_open = true;
     // The player as it rests, not on its way in.
     s.np.t = 1.0;
-    s.np_veil.t = 1.0;
     s.np_tab = NpTab::Queue;
     let t = c.tracks[4].clone();
     s.open_track_menu(t, Some(4), rune::PopupAnchor::Key("np-more".into()));
@@ -490,11 +490,47 @@ fn lyrics_count(s: &mut State) {
     s.player.playing = false;
 }
 
-/// The count-in running into the first line (for frame strips: the 1 falls apart into grains).
+/// The count-in running into the first line (for frame strips: the beads scatter onto letters).
 fn lyrics_count_run(s: &mut State) {
     lyrics_count(s);
     s.player.pos_ms = 9_600;
     s.player.playing = true;
+}
+
+/// Grains mid-settle directly on the letter contours of the first lyric line.
+fn lyrics_count_scatter(s: &mut State) {
+    lyrics_count(s);
+    s.lyrics.active = Some(0);
+    s.player.pos_ms = 12_620;
+    s.player.playing = false;
+}
+
+/// Home in Russian with the redesigned My Wave settings popover open.
+fn wave_tune_ru(s: &mut State) {
+    home_ru(s);
+    s.open_popover(crate::app::Popover::WaveTune { anchor: "hm-wave-tune".into() });
+    s.pop.t = 1.0;
+}
+
+/// Home in Russian with the circular update icon in the title bar and its dropdown open.
+fn update_popover(s: &mut State) {
+    home_ru(s);
+    s.update_method = glint_update::Method::WindowsInstaller;
+    s.update = crate::update::Ui::Available(glint_update::Release {
+        version: "0.9.1".into(),
+        page_url: "https://github.com/orphytype/glint/releases/tag/v0.9.1".into(),
+        notes: "Cleaner headers, track lists and Now Playing controls.\n• Redesigned My Wave tuning menu and pre-lyrics animation.\n• Fixed idle GPU load, window restore freeze, and reduced memory use.\n• Added local anonymized diagnostic logs up to 1 MB in Settings.".into(),
+        asset: Some(glint_update::Asset { name: "Glint-0.9.1-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
+    });
+    s.open_popover(crate::app::Popover::Update { anchor: "update-pill".into() });
+    s.pop.t = 1.0;
+}
+
+/// Home with the mini-player dock "..." menu open (audio quality removed since it sits beside it).
+fn dock_menu(s: &mut State) {
+    home_ru(s);
+    s.open_player_menu(rune::PopupAnchor::Key("bar-more".into()));
+    s.tmenu.t = 1.0;
 }
 
 /// What can be done with an album (its "..." menu).
@@ -524,7 +560,7 @@ fn np_waves(s: &mut State) {
 fn np_look(s: &mut State) {
     nowplaying(s);
     s.settings.stage.effects = 2;
-    s.open_popover(crate::app::Popover::Stage { anchor: "np-look".into() });
+    s.open_popover(crate::app::Popover::Stage { anchor: "np-more".into() });
     s.pop.t = 1.0;
 }
 
@@ -629,9 +665,10 @@ fn settings_update(s: &mut State) {
     settings(s);
     s.update_method = glint_update::Method::WindowsInstaller;
     s.update = crate::update::Ui::Available(glint_update::Release {
-        version: "0.2.0".into(),
-        page_url: "https://github.com/orphytype/glint/releases/tag/v0.2.0".into(),
-        asset: Some(glint_update::Asset { name: "Glint-0.2.0-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
+        version: "0.9.1".into(),
+        page_url: "https://github.com/orphytype/glint/releases/tag/v0.9.1".into(),
+        notes: "Cleaner headers, track lists and Now Playing controls.\n• Redesigned My Wave tuning menu and pre-lyrics animation.".into(),
+        asset: Some(glint_update::Asset { name: "Glint-0.9.1-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
     });
 }
 

@@ -12,6 +12,7 @@ mod autostart;
 mod backdrop;
 mod bugs;
 mod desktop;
+mod diag_log;
 #[cfg(feature = "tooling")]
 mod fixtures;
 mod fkcensor;
@@ -46,7 +47,7 @@ use store::Store;
 /// Names the running Glint to a later launch (the pipe on Windows, the socket on Linux).
 const INSTANCE_ID: &str = "io.github.orphytype.glint";
 
-static APP_FONTS: &[&[u8]] = &[
+pub(crate) static APP_FONTS: &[&[u8]] = &[
     include_bytes!("../assets/fonts/Commissioner[FLAR,VOLM,slnt,wght].ttf"),
     include_bytes!("../assets/fonts/Cormorant[wght].ttf"),
     include_bytes!("../assets/fonts/Cormorant-Italic[wght].ttf"),
@@ -75,8 +76,11 @@ fn main() {
     // Where the window was last closed, if that is still on a display.
     let store = if headless { Store::none() } else { Store::open() };
     let settings = store.load();
+    if !headless {
+        diag_log::init(store.logs_dir(), settings.logging);
+    }
     let spec = rune::AppSpec {
-        min_size: Some((960.0, 640.0)),
+        min_size: Some((840.0, 560.0)),
         #[cfg(feature = "tooling")]
         scenes: scenes::SCENES,
         fonts: APP_FONTS,
@@ -100,6 +104,12 @@ fn main() {
     let app = app
         .titlebar(rune::Titlebar::new(ui::kit::CAPTION_H))
         .on_window(desktop::place::keep_window)
+        .on_focus(on_focus)
+        .on_rest(|s: &mut State, _tx: &mut Tx| {
+            s.art.trim_idle();
+            s.log_mem("rest");
+            false
+        })
         .compositor(fx::Gfx::new())
         .srgb_blend(true)
         // Closing the window only hides it; whether that ends the app is decided in `on_close`.
@@ -112,6 +122,7 @@ fn main() {
             }
         })
         .on_quit(|s: &mut State, _tx: &mut Tx| {
+            diag_log::event("app", "quit");
             s.save_settings_now();
             desktop::place::save(&s.store);
             s.shutdown_desktop();
@@ -150,6 +161,8 @@ fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
         static SHAPES: AtomicBool = AtomicBool::new(false);
         static SLOTS: AtomicBool = AtomicBool::new(false);
         if !GPU.load(Ordering::Relaxed) && fx::gpu_up() && !GPU.swap(true, Ordering::Relaxed) {
+            diag_log::write_system(&s.settings, s.update_method, s.win_size.get());
+            s.log_mem("gpu:ready");
             changed = true;
         }
         if !GLASS.load(Ordering::Relaxed) && fx::glass_ready() && !GLASS.swap(true, Ordering::Relaxed) {
@@ -185,6 +198,18 @@ fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
     }
     if s.player.playing || s.player.loading {
         tx.wake_after(Duration::from_millis(250));
+        // If Windows left the window marked covered after minimizing and restoring without mouse
+        // or keyboard input, nudge the host once per second until frames resume.
+        if visible
+            && !s.headless
+            && s.now - fx::last_draw_clock() > 1.0
+            && s.now - s.restore_kick_at > 1.0
+            && let Some(app) = &s.app
+        {
+            s.restore_kick_at = s.now;
+            fx::disarm_tick();
+            app.wake();
+        }
     }
     let dt = (s.now - s.prev_now).clamp(0.0, 0.05) as f32;
     // Passive shader effects, butterflies, and word-by-word lyrics share one 30 Hz cadence.
@@ -325,6 +350,25 @@ fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
         }
     }
     changed
+}
+
+/// Restores live playback updates immediately when the window regains focus (e.g. after
+/// restoring from minimized without hovering the cursor or pressing a key).
+fn on_focus(s: &mut State, focused: bool, _tx: &mut Tx) {
+    if !focused {
+        return;
+    }
+    fx::disarm_tick();
+    s.fx_next = 0.0;
+    s.sync_lives();
+    if (s.player.playing || s.player.loading)
+        && let Some(app) = s.app.clone()
+    {
+        net::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            app.wake();
+        });
+    }
 }
 
 /// Shortcuts: keys no text field wants (`keys.rs` has what each one does).

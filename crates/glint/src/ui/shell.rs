@@ -43,6 +43,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         }
     }
     fx::set_resizing(s.is_resizing());
+    fx::set_effects_off(s.settings.effects == crate::store::Effects::Off);
     if let Some([bw, _]) = cx.layout_size("vol-track") {
         s.vol_w.set(bw);
     }
@@ -89,14 +90,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         .child(el().key("field").absolute(0.0, 0.0).w_full().h_full().fx(fx::FIELD).paint_order(PAINT_FIELD));
     if logged_in {
         if np_full {
-            // The player's own soft edges grow in once it covers the window (they blur the player,
-            // so they can only be drawn once it is all there is).
-            let v = s.np_veil.t;
-            app = app
-                .child(np::page(s, w, h, 1.0, true))
-                .child(kit::snapshot())
-                .child(kit::veil_top((TITLE_H + 20.0) * v).key("np-veil-top").motion(rune::Spring::NONE))
-                .child(kit::veil_bottom(48.0 * v).key("np-veil-bottom").motion(rune::Spring::NONE));
+            app = app.child(np::page(s, w, h, 1.0, true)).child(kit::snapshot());
         } else {
             // Under a player that is coming over, the page leaves at once when it is covered (its
             // own fade out would play on top of the player).
@@ -118,14 +112,14 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         kit::set_under(on_surface);
     }
     if np_moving {
-        app = app.child(np::page(s, w, h, np_t, np_open));
+        app = app.child(np::page(s, w, h, np_t, np_open)).child(kit::snapshot().key("np-snapshot"));
     }
     kit::set_under(false);
     app = app.child(titlebar(s, ins.leading, ins.trailing, logged_in, np_open));
     if logged_in && (np_full || np_moving) {
         app = app.child(np_close(s, ins.leading, if np_open { np_t } else { 0.0 }));
         if np_open {
-            app = app.child(np_source(s, w, h, np_t));
+            app = app.child(np_source(s, w, h, ins.leading, ins.trailing, np_t));
         }
     }
     if logged_in && s.menu_visible() {
@@ -195,8 +189,7 @@ fn titlebar(s: &State, lead: f32, trail: f32, logged_in: bool, np: bool) -> El {
     let pad = if left > 0.0 { kit::PAGE_PAD - 4.0 } else { kit::CHROME_INSET };
     let mut r = row()
         .key("titlebar")
-        .absolute(left, 0.0)
-        .w_full()
+        .pin(Some(left), Some(0.0), Some(0.0), None)
         .h(TITLE_H)
         .pl(pad + lead)
         .pr(16.0 + trail)
@@ -215,8 +208,7 @@ fn titlebar(s: &State, lead: f32, trail: f32, logged_in: bool, np: bool) -> El {
     }
     // A new version waits beside the window's controls.
     if logged_in && let Some(pill) = dock::update_pill(s) {
-        // Kept well clear of the window's buttons: right beside them it read as touching "minimise".
-        r = r.child(el().grow(1.0)).child(pill.mr(16.0));
+        r = r.child(el().grow(1.0)).child(pill.mr(12.0));
     }
     r
 }
@@ -225,28 +217,33 @@ fn titlebar(s: &State, lead: f32, trail: f32, logged_in: bool, np: bool) -> El {
 /// Name"; pressing it leads there. It is glass, as tall as the way out beside it and in the same
 /// colours, and like it comes and goes through its glass's own `hide` (`t`: how far the player is
 /// open).
-fn np_source(s: &State, w: f32, h: f32, t: f32) -> El {
+fn np_source(s: &State, w: f32, h: f32, lead: f32, trail: f32, t: f32) -> El {
     let Some(from) = &s.playing_from else { return el() };
     let t = t.clamp(0.0, 1.0);
     let text = from.line(s.lang);
-    let (x, side, _, _) = np::columns(s, w, h, s.np_panel() != crate::app::NpTab::Closed);
-    // Keep the source badge inside the cover column. The icon and padding consume 56 px,
-    // leaving the rest for the single-line title; the label itself truncates at that width.
-    let max_text = (side - 56.0).max(0.0);
-    let tw = rune::text::measure(&text, &[], th::SMALL, None).0.ceil().min(max_text);
-    let pw = 56.0 + tw;
+    let panel_open = s.np_panel() != crate::app::NpTab::Closed;
+    let (x, side, _, _) = np::columns(s, w, h, panel_open);
     let c = dock::CHIP;
+    // Stay clear of `np-close` on the left, the window caption controls on the right, and the side
+    // panel when lyrics or the queue are open.
+    let min_x = kit::CHROME_INSET + lead + c + 12.0;
+    let win_right = (w - trail - 16.0).max(min_x + 80.0);
+    let max_right = if panel_open { (x + side).max(min_x + 120.0).min(win_right) } else { win_right };
+    let max_pw = side.min((max_right - min_x).max(80.0)).max(80.0);
+    let max_text = (max_pw - 56.0).max(0.0);
+    let tw = rune::text::measure(&text, &[], th::SMALL, None).0.ceil().min(max_text);
+    let pw = (56.0 + tw).min(max_pw);
     let glyph = if from.wave { kit::wave_glyph(18.0, th::text().alpha(t)) } else { icon(&icons::QUEUE, 16.0).color(th::text().alpha(t)).w(18.0) };
     let page = from.page.clone();
     let cx = x + side * 0.5;
+    let px = (cx - pw * 0.5).clamp(min_x, (max_right - pw).max(min_x));
     let mut pill = row()
         .key("np-source")
         .role(if page.is_some() { "link" } else { "note" })
         .label(text.as_str())
-        // Over the cover's column, so lines of lyrics or the queue never run under it.
-        .absolute((cx - pw * 0.5).clamp(8.0, (w - pw - 8.0).max(8.0)), kit::CHROME_INSET)
+        .absolute(px, kit::CHROME_INSET)
         .w(pw)
-        .max_w(side)
+        .max_w(max_pw)
         .h(c)
         .pl(14.0)
         .pr(16.0)
@@ -256,7 +253,7 @@ fn np_source(s: &State, w: f32, h: f32, t: f32) -> El {
         .no_window_drag()
         .transition(Transition::none())
         .motion(rune::Spring::NONE)
-        .child(kit::glass(Glass::Chip, c * 0.5).fx_data([1.0 - t, 0.0, 0.0, 0.0]))
+        .child(kit::glass_alpha(Glass::Chip, c * 0.5, t))
         .child(glyph)
         .child(label(text, th::SMALL, th::text().alpha(t)).truncate().max_w(max_text));
     if let Some(p) = page {
@@ -286,7 +283,7 @@ fn np_close(s: &State, lead: f32, t: f32) -> El {
         .press_scale(th::PRESS)
         .transition(Transition::none())
         .motion(rune::Spring::NONE)
-        .child(kit::glass(Glass::Chip, c * 0.5).fx_data([1.0 - t, 0.0, 0.0, 0.0]))
+        .child(kit::glass_alpha(Glass::Chip, c * 0.5, t))
         .child(icon(&icons::CHEVRON_DOWN, kit::GLYPH).color(th::text().alpha(t)))
         .on_press(|s: &mut State| s.set_np(false))
 }

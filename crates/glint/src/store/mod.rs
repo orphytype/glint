@@ -75,6 +75,11 @@ impl Store {
         self.cache.as_ref().map(|c| c.join("downloads"))
     }
 
+    /// Folder holding local anonymized diagnostic logs (`glint.log`, `glint.prev.log`, `system.txt`).
+    pub fn logs_dir(&self) -> Option<PathBuf> {
+        self.config.as_ref().map(|d| d.join("logs"))
+    }
+
     /// Where earlier versions kept the downloads (beside the cache folder rather than in it), when
     /// that folder is still there.
     pub fn legacy_downloads_dir(&self) -> Option<PathBuf> {

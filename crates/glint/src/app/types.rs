@@ -300,6 +300,19 @@ impl TrackSort {
         }
         v
     }
+
+    /// Sorts `indices` into `tracks` by this order; ties keep their relative order.
+    pub fn sort_indices(self, tracks: &[Track], indices: &mut [usize]) {
+        let low = |s: &str| s.to_lowercase();
+        match self {
+            TrackSort::Original => {}
+            TrackSort::Title => indices.sort_by_cached_key(|&i| low(&tracks[i].full_title())),
+            TrackSort::Artist => indices.sort_by_cached_key(|&i| (low(&tracks[i].artists_line()), low(&tracks[i].full_title()))),
+            TrackSort::Album => indices.sort_by_cached_key(|&i| tracks[i].albums.first().map(|a| low(&a.title)).unwrap_or_default()),
+            TrackSort::Longest => indices.sort_by_key(|&i| std::cmp::Reverse(tracks[i].duration_ms.unwrap_or(0))),
+            TrackSort::Shortest => indices.sort_by_key(|&i| tracks[i].duration_ms.unwrap_or(u64::MAX)),
+        }
+    }
 }
 
 /// The order of an artist's releases.

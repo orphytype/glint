@@ -11,7 +11,7 @@ mod stage;
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use rune::compose::{Compositor, Frame};
 use rune_fx::{FxLayer, FxRenderer, FxSlot};
@@ -116,6 +116,16 @@ pub fn set_wave_pointer(x: f32, y: f32) {
 
 pub(super) static WANTS_TICK: AtomicBool = AtomicBool::new(false);
 pub(super) static TICK_ARMED: AtomicBool = AtomicBool::new(false);
+pub(super) static EFFECTS_OFF: AtomicBool = AtomicBool::new(false);
+pub(super) static LAST_DRAW_CLOCK: AtomicU64 = AtomicU64::new(0);
+pub(super) static STAT_PYR_COUNT: AtomicU32 = AtomicU32::new(0);
+pub(super) static STAT_PYR_BYTES: AtomicU64 = AtomicU64::new(0);
+pub(super) static STAT_UBUFS: AtomicU32 = AtomicU32::new(0);
+
+/// Latest compositor GPU resource counters: `(pyramid_count, pyramid_bytes, uniform_buffer_count)`.
+pub fn gpu_stats() -> (usize, usize, usize) {
+    (STAT_PYR_COUNT.load(Ordering::Relaxed) as usize, STAT_PYR_BYTES.load(Ordering::Relaxed) as usize, STAT_UBUFS.load(Ordering::Relaxed) as usize)
+}
 
 pub fn wants_tick() -> bool {
     WANTS_TICK.load(Ordering::Relaxed)
@@ -123,6 +133,18 @@ pub fn wants_tick() -> bool {
 
 pub fn arm_tick() {
     TICK_ARMED.store(true, Ordering::Relaxed);
+}
+
+pub fn disarm_tick() {
+    TICK_ARMED.store(false, Ordering::Relaxed);
+}
+
+pub fn last_draw_clock() -> f64 {
+    f64::from_bits(LAST_DRAW_CLOCK.load(Ordering::Relaxed))
+}
+
+pub fn set_effects_off(off: bool) {
+    EFFECTS_OFF.store(off, Ordering::Relaxed);
 }
 
 pub fn ready() -> bool {
@@ -141,9 +163,10 @@ pub fn set_resizing(active: bool) {
     RESIZING.set(active);
 }
 
-/// While the window edge moves, draw tinted panes without allocating a full-window backdrop.
+/// While the window edge moves or effects are turned off, draw plain tinted panes without
+/// allocating or copying a full-window backdrop.
 pub fn glass_enabled() -> bool {
-    glass_ready() && !RESIZING.get()
+    glass_ready() && !RESIZING.get() && !EFFECTS_OFF.load(Ordering::Relaxed)
 }
 
 pub fn shapes_ready() -> bool {
@@ -182,16 +205,15 @@ impl Slot for rune::El {
 }
 
 /// Seconds the page flows on its own before it slows down, and how long the slowing takes.
-pub(super) const FLOW_S: f32 = 40.0;
-pub(super) const FLOW_EASE_S: f32 = 4.0;
+pub(super) const FLOW_S: f32 = 2.5;
+pub(super) const FLOW_EASE_S: f32 = 1.5;
 
 pub struct Gfx {
     fx: Option<FxRenderer>,
-    fx_warm: bool,
-    born: Option<f64>,
     gpu: Option<Gpu>,
     smooth: Smooth,
     animating: bool,
+    drew_own: bool,
     field_t: f32,
     idle: f32,
     morph_t: f32,
@@ -229,11 +251,10 @@ impl Gfx {
     pub fn new() -> Gfx {
         Gfx {
             fx: None,
-            fx_warm: false,
-            born: None,
             gpu: None,
             smooth: Smooth::new(),
             animating: true,
+            drew_own: true,
             field_t: 0.0,
             idle: 0.0,
             morph_t: 0.0,
@@ -275,6 +296,10 @@ impl Compositor<State> for Gfx {
 
     fn animating(&self) -> bool {
         self.animating
+    }
+
+    fn draws_own(&self) -> bool {
+        self.drew_own
     }
 
     fn render(&mut self, f: &mut Frame<'_, State>) {

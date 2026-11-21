@@ -48,10 +48,14 @@ struct Spec {
 }
 
 const SPECS: [Spec; 4] = [
-    Spec { refr: 16.0, edge: 22.0, chroma: 0.38, blur: 12.0, sat: 1.10, ambient: 0.10, spec: 0.60, spec_exp: 22.0, rim: 0.42, shade: 0.16, tint: 0.34, cast: 0.0, reach: 0.0 },
-    Spec { refr: 10.0, edge: 16.0, chroma: 0.35, blur: 10.0, sat: 1.05, ambient: 0.08, spec: 0.45, spec_exp: 20.0, rim: 0.32, shade: 0.12, tint: 0.28, cast: 0.20, reach: 22.0 },
-    Spec { refr: 5.0, edge: 9.0, chroma: 0.20, blur: 6.0, sat: 1.05, ambient: 0.06, spec: 0.50, spec_exp: 20.0, rim: 0.38, shade: 0.08, tint: 0.24, cast: 0.0, reach: 0.0 },
-    Spec { refr: 2.0, edge: 8.0, chroma: 0.0, blur: 16.0, sat: 1.45, ambient: 0.02, spec: 0.18, spec_exp: 24.0, rim: 0.16, shade: 0.0, tint: 0.16, cast: 0.28, reach: 26.0 },
+    // Dock: deep optical frost with soft dispersion and subtle depth shadow.
+    Spec { refr: 14.0, edge: 20.0, chroma: 0.22, blur: 15.0, sat: 1.24, ambient: 0.12, spec: 0.52, spec_exp: 18.0, rim: 0.34, shade: 0.06, tint: 0.26, cast: 0.18, reach: 14.0 },
+    // Card
+    Spec { refr: 10.0, edge: 16.0, chroma: 0.20, blur: 12.0, sat: 1.18, ambient: 0.10, spec: 0.42, spec_exp: 18.0, rim: 0.28, shade: 0.05, tint: 0.24, cast: 0.20, reach: 20.0 },
+    // Chip: luminous liquid glass buttons and status pills.
+    Spec { refr: 6.5, edge: 11.0, chroma: 0.14, blur: 11.0, sat: 1.30, ambient: 0.14, spec: 0.54, spec_exp: 16.0, rim: 0.38, shade: 0.03, tint: 0.15, cast: 0.14, reach: 9.0 },
+    // Menu
+    Spec { refr: 2.0, edge: 8.0, chroma: 0.0, blur: 16.0, sat: 1.45, ambient: 0.04, spec: 0.20, spec_exp: 22.0, rim: 0.18, shade: 0.0, tint: 0.16, cast: 0.26, reach: 24.0 },
 ];
 
 pub(super) struct Job {
@@ -59,6 +63,8 @@ pub(super) struct Job {
     pub(super) u: usize,
     pub(super) region: Option<Region>,
     pub(super) tag: u8,
+    /// True when this job reuses a larger blur pyramid already built in the same `SNAP` scope.
+    pub(super) shared: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -100,6 +106,7 @@ pub(super) struct FrameCtx<'a> {
 pub(super) struct SlotSummary {
     pub(super) moving: bool,
     pub(super) flows: bool,
+    pub(super) audio_reactive: bool,
     pub(super) shapes_present: bool,
     pub(super) bars_n: usize,
 }
@@ -146,6 +153,10 @@ fn pyramid_tag(slot: u32, wanted: bool) -> u8 {
     if !wanted { 0 } else { 16 + (slot % 112) as u8 }
 }
 
+fn needed_levels(sigma: f32) -> u32 {
+    ((sigma / 1.58).max(1.0).log2().floor() as u32 + 2).max(1)
+}
+
 pub(super) fn ease_out(x: f32) -> f32 {
     1.0 - (1.0 - x).powi(3)
 }
@@ -162,8 +173,9 @@ impl Gfx {
         self.layers.clear();
         self.placements.clear();
 
-        let mut summary = SlotSummary { moving: false, flows: false, shapes_present: false, bars_n: 0 };
+        let mut summary = SlotSummary { moving: false, flows: false, audio_reactive: false, shapes_present: false, bars_n: 0 };
         let mut morph_stepped = false;
+        let mut active_pyrs: Vec<(Region, u8)> = Vec::new();
 
         for (n, i) in instances.iter().enumerate() {
             if i.params[1] != KIND_EFFECT {
@@ -178,26 +190,18 @@ impl Gfx {
             let d = i.uv;
             match kind {
                 FIELD => {
+                    if ctx.quality == Effects::Off {
+                        continue;
+                    }
                     let mut u = base(i, k, ctx.pass_size, ctx.srgb, 0.0, 0.0, true);
-                    let flat = ctx.quality == Effects::Off;
                     u.misc[2] = self.field_t;
-                    u.p0 = [
-                        if flat {
-                            0.0
-                        } else if theme::light() {
-                            0.09
-                        } else {
-                            0.12
-                        },
-                        1.0,
-                        self.smooth.level,
-                        self.smooth.beat,
-                    ];
+                    u.p0 = [if theme::light() { 0.09 } else { 0.12 }, 1.0, self.smooth.level, self.smooth.beat];
                     u.tint = rgb4(ctx.canvas, 1.0);
                     u.ink = rgb4(ctx.ink, 0.0);
                     let u = gpu.stage(ctx.device, &u);
-                    self.jobs.push((n as u32, Job { pipe: Pipe::Field, u, region: None, tag: 0 }));
-                    summary.moving |= ctx.playing_level && !flat && !ctx.reduced;
+                    self.jobs.push((n as u32, Job { pipe: Pipe::Field, u, region: None, tag: 0, shared: false }));
+                    summary.audio_reactive = true;
+                    summary.moving |= ctx.playing_level && !ctx.reduced;
                 }
                 GLASS => {
                     let s = &SPECS[(variant as usize).min(SPECS.len() - 1)];
@@ -205,7 +209,8 @@ impl Gfx {
                     if hide >= 0.999 {
                         continue;
                     }
-                    let (mut refr, mut chroma, mut blur) = (s.refr, s.chroma, s.blur);
+                    let has_snap = !self.snaps.is_empty();
+                    let (mut refr, mut chroma, mut blur) = if has_snap { (s.refr, s.chroma, s.blur) } else { (0.0, 0.0, 0.0) };
                     let mut tint = s.tint + 0.10 * hover + 0.16 * press;
                     match ctx.quality {
                         Effects::Off => {
@@ -221,19 +226,44 @@ impl Gfx {
                     let mut u = base(i, k, ctx.pass_size, ctx.srgb, ctx.t, s.reach * k, false);
                     let reach = refr * k + 8.0 * k;
                     let [x, y, w, h] = i.rect;
-                    let region = (blur > 0.0).then(|| Region::plan([x - reach, y - reach, x + w + reach, y + h + reach], ctx.pass_size, blur * k)).flatten();
+                    let (region, tag, shared) = if has_snap && blur > 0.0 {
+                        let pw = ctx.pass_size[0] as f32;
+                        let ph = ctx.pass_size[1] as f32;
+                        let want =
+                            [(x - reach).floor().clamp(0.0, pw), (y - reach).floor().clamp(0.0, ph), (x + w + reach).ceil().clamp(0.0, pw), (y + h + reach).ceil().clamp(0.0, ph)];
+                        let need = needed_levels(blur * k);
+                        if let Some(&(pr, ptag)) =
+                            active_pyrs.iter().find(|(pr, _)| pr.rect[0] <= want[0] && pr.rect[1] <= want[1] && pr.rect[2] >= want[2] && pr.rect[3] >= want[3] && pr.levels >= need)
+                        {
+                            (Some(pr), ptag, true)
+                        } else if let Some(r) = Region::plan(want, ctx.pass_size, blur * k) {
+                            let tag = pyramid_tag(n as u32, true);
+                            active_pyrs.push((r, tag));
+                            (Some(r), tag, false)
+                        } else {
+                            (None, 0, false)
+                        }
+                    } else {
+                        (None, 0, false)
+                    };
                     if let Some(r) = &region {
                         u.region = r.rect;
                     }
-                    u.p0 = [refr * k, s.edge * k, chroma, if region.is_some() { blur * k } else { 0.0 }];
+                    let sigma = if !has_snap {
+                        -1.0
+                    } else if region.is_some() {
+                        blur * k
+                    } else {
+                        0.0
+                    };
+                    u.p0 = [refr * k, s.edge * k, chroma, sigma];
                     u.p1 = [0.0, s.sat, 0.0, s.ambient];
                     u.p2 = [s.spec, s.spec_exp, s.rim, 1.0];
                     u.p3 = [s.shade, 1.0 - hide, -0.9, 3.0];
                     u.tint = rgb4(ctx.canvas, tint.clamp(0.0, 0.95));
                     u.ink = rgb4(ctx.ink, if theme::light() { s.cast * 0.36 } else { s.cast });
                     let u = gpu.stage(ctx.device, &u);
-                    let tag = pyramid_tag(n as u32, region.is_some());
-                    self.jobs.push((n as u32, Job { pipe: Pipe::Glass, u, region, tag }));
+                    self.jobs.push((n as u32, Job { pipe: Pipe::Glass, u, region, tag, shared }));
                 }
                 VEIL => {
                     if ctx.quality == Effects::Off || (d[0] == 0.0 && d[1] == 0.0) {
@@ -249,26 +279,30 @@ impl Gfx {
                     u.tint = rgb4(ctx.canvas, 1.0);
                     let u = gpu.stage(ctx.device, &u);
                     let tag = pyramid_tag(n as u32, region.is_some());
-                    self.jobs.push((n as u32, Job { pipe: Pipe::Veil, u, region, tag }));
+                    if let Some(r) = region {
+                        active_pyrs.push((r, tag));
+                    }
+                    self.jobs.push((n as u32, Job { pipe: Pipe::Veil, u, region, tag, shared: false }));
                 }
                 MORPH => {
-                    let run = d[0] > 0.5 && !ctx.reduced;
+                    let run = d[0] > 0.5 && !ctx.reduced && ctx.quality != Effects::Off;
                     let want = if run { 1.0 } else { 0.0 };
                     if !morph_stepped {
                         morph_stepped = true;
                         self.marker_run += (want - self.marker_run) * (1.0 - (-ctx.dt * 9.0).exp());
-                        if ctx.reduced {
+                        if ctx.reduced || ctx.quality == Effects::Off {
                             self.marker_run = want;
                         }
                     }
                     let mut u = base(i, k, ctx.pass_size, ctx.srgb, 0.0, 0.0, true);
-                    u.p0 = [self.morph_t, MORPH_SECS, if ctx.reduced { 0.0 } else { self.marker_run }, 0.0];
+                    u.p0 = [self.morph_t, MORPH_SECS, if ctx.reduced || ctx.quality == Effects::Off { 0.0 } else { self.marker_run }, 0.0];
                     u.p1 = [self.smooth.norm[0], self.smooth.norm[1], self.smooth.norm[2], 0.0];
                     summary.moving |= (self.marker_run - want).abs() > 0.002;
                     u.tint = rgb4(if d[1] > 0.5 { [1.0, 1.0, 1.0] } else { ctx.accent }, 1.0);
                     let u = gpu.stage(ctx.device, &u);
-                    self.jobs.push((n as u32, Job { pipe: Pipe::Morph, u, region: None, tag: 0 }));
+                    self.jobs.push((n as u32, Job { pipe: Pipe::Morph, u, region: None, tag: 0, shared: false }));
                     self.morph_on |= run;
+                    summary.audio_reactive |= run;
                     summary.moving |= run;
                 }
                 BARS => self.stage_bars(gpu, SlotRef { idx: n as u32, inst: i, scale: k, data: d }, ctx, &mut summary),
@@ -277,6 +311,7 @@ impl Gfx {
                 BUTTERFLY => self.stage_butterfly(gpu, SlotRef { idx: n as u32, inst: i, scale: k, data: d }, ctx, &mut summary),
                 SNAP => {
                     // Snapshot slots only trigger backdrop capture; nothing is staged or drawn.
+                    active_pyrs.clear();
                     self.snaps.push(n as u32);
                 }
                 _ => {
@@ -364,7 +399,8 @@ impl Gfx {
         u.p4 = [m.from, m.swap, appear, m.real + if self.wave_from_real { 2.0 } else { 0.0 }];
         u.tint = rgb4(ctx.ink, 1.0);
         u.ink = rgb4(ctx.ink, 0.28);
+        summary.audio_reactive |= !still && p.playing;
         let u = gpu.stage(ctx.device, &u);
-        self.jobs.push((slot_idx, Job { pipe: Pipe::Bars, u, region: None, tag: 0 }));
+        self.jobs.push((slot_idx, Job { pipe: Pipe::Bars, u, region: None, tag: 0, shared: false }));
     }
 }

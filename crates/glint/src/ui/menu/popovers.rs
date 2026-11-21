@@ -34,9 +34,17 @@ pub(super) fn liked_entries(s: &State) -> Vec<Entry> {
             let list = s.list(ListSrc::Liked);
             s.queue_many(list, false);
         })));
+        let settled = s.downloads_settled(tracks);
         let any_kept = tracks.iter().any(|t| matches!(s.downloads.get(&t.id), Some(DownloadState::Done)));
-        if any_kept && !s.downloads_settled(tracks) {
-            out.push(Entry::Divider);
+        out.push(Entry::Divider);
+        if !settled {
+            out.push(Entry::Row(menu_row("la-download", &icons::DOWNLOAD, S::DownloadAllLiked.get(lang), false).on_press(|s: &mut State| {
+                s.close_popover();
+                let list = s.library.tracks.get().cloned().unwrap_or_default();
+                s.ask_download(list);
+            })));
+        }
+        if settled || any_kept {
             out.push(Entry::Row(menu_row("la-undownload", &icons::TRASH, S::DeleteDownload.get(lang), false).on_press(|s: &mut State| {
                 s.close_popover();
                 let list: Vec<_> =
@@ -80,7 +88,7 @@ pub(super) fn action_entries(s: &State) -> Vec<Entry> {
             s.queue_many(list, false);
         })));
     }
-    if d.like_key.is_some() || d.artist.is_some() {
+    if d.like_key.is_some() || d.page.is_some() || !d.tracks.is_empty() || d.artist.is_some() {
         group(&mut out);
     }
     if let Some(key) = &d.like_key {
@@ -89,6 +97,34 @@ pub(super) fn action_entries(s: &State) -> Vec<Entry> {
         out.push(Entry::Row(menu_row("da-like", ic, name.get(lang), false).on_press(|s: &mut State| {
             s.close_popover();
             s.toggle_detail_like();
+        })));
+    }
+    if d.page.is_some() {
+        let pin_on = s.detail_is_pinned();
+        let (ic, name) = if pin_on { (&icons::PIN_OFF, S::Pinned) } else { (&icons::PIN, S::Pin) };
+        out.push(Entry::Row(menu_row("da-pin", ic, name.get(lang), pin_on).on_press(|s: &mut State| {
+            s.close_popover();
+            s.toggle_detail_pin();
+        })));
+    }
+    if !d.tracks.is_empty() {
+        let download_tracks: &[ym_api::Track] = if d.is_artist {
+            match &d.all_tracks {
+                crate::app::Load::Ready(tracks) => tracks.as_slice(),
+                _ => &[],
+            }
+        } else {
+            &d.tracks
+        };
+        let downloaded = s.downloads_settled(download_tracks);
+        let (ic, name) = if downloaded { (&icons::TRASH, S::DeleteDownload) } else { (&icons::DOWNLOAD, S::DownloadAll) };
+        out.push(Entry::Row(menu_row("da-download", ic, name.get(lang), false).on_press(move |s: &mut State| {
+            s.close_popover();
+            if downloaded {
+                s.delete_detail_downloads();
+            } else {
+                s.download_detail();
+            }
         })));
     }
     if let Some(id) = d.artist.clone() {
@@ -337,6 +373,11 @@ pub(super) fn track_sort_entries(s: &State) -> Vec<Entry> {
         .collect()
 }
 
+pub(super) fn lib_sort_entries(s: &State) -> Vec<Entry> {
+    let now = s.library.sort;
+    TrackSort::ALL.into_iter().map(|o| choice_row(format!("lsort-{o:?}"), o.name().get(s.lang), o == now, move |s: &mut State| s.set_library_sort(o))).collect()
+}
+
 pub(super) fn disc_sort_entries(s: &State) -> Vec<Entry> {
     let lang = s.lang;
     let (now, kind) = (s.detail.disc_sort, s.detail.disc_kind);
@@ -383,4 +424,69 @@ pub(super) fn quality_entries(s: &State) -> Vec<Entry> {
             )
         })
         .collect()
+}
+
+pub(super) const UPDATE_W: f32 = 312.0;
+
+pub(super) fn update_entries(s: &State) -> Vec<Entry> {
+    use crate::update::Ui;
+    let lang = s.lang;
+    let (release, status, progress): (Option<&glint_update::Release>, String, Option<f32>) = match &s.update {
+        Ui::Available(r) => (Some(r), S::UpdateMenuSub.get(lang).to_owned(), None),
+        Ui::Downloading { release, done, total } => {
+            let frac = if *total > 0 { (*done as f32 / *total as f32).clamp(0.0, 1.0) } else { 0.0 };
+            let pct = (frac * 100.0).round() as u32;
+            (Some(release), format!("{} · {pct}%", S::UpdateDownloading.get(lang)), Some(frac))
+        }
+        Ui::Installing => (None, S::UpdateInstalling.get(lang).to_owned(), Some(1.0)),
+        _ => return Vec::new(),
+    };
+    let ver = release.map_or_else(|| env!("CARGO_PKG_VERSION").to_owned(), |r| r.version.trim_start_matches('v').to_owned());
+    let head_h = 56.0;
+    let head =
+        row().key("upd-head").w_full().h(head_h).px(10.0).gap(12.0).items_center().child(settings::app_mark(38.0)).child(
+            col().grow(1.0).min_w(0.0).gap(2.0).child(label(format!("Glint {ver}"), th::BODY_M, th::text()).truncate()).child(label(status, th::SMALL, th::text2()).truncate()),
+        );
+    let mut out = vec![Entry::Block(head, head_h)];
+    if let Some(r) = release
+        && !r.notes.is_empty()
+    {
+        let text_w = UPDATE_W - 2.0 * super::PAD - 20.0;
+        let max_h = th::SMALL.line_height * 5.0;
+        let measured = rune::text::measure(&r.notes, &[], th::SMALL, Some(text_w)).1.ceil().min(max_h);
+        let block_h = measured + 10.0;
+        let notes =
+            col().key("upd-notes").w_full().h(block_h).px(10.0).pb(10.0).child(label(r.notes.clone(), th::SMALL, th::text2()).wrap().max_lines(5).align(rune::Align::Start));
+        out.push(Entry::Block(notes, block_h));
+    }
+    if let Some(frac) = progress {
+        let bar_h = 14.0;
+        let track_w = UPDATE_W - 2.0 * super::PAD - 20.0;
+        let fill_w = (track_w * frac).max(if frac > 0.0 { 4.0 } else { 0.0 });
+        let bar = row()
+            .key("upd-progress")
+            .w_full()
+            .h(bar_h)
+            .px(10.0)
+            .pb(8.0)
+            .items_center()
+            .child(el().w_full().h(4.0).radius(2.0).fill(th::veil(0.12)).child(el().w(fill_w).h(4.0).radius(2.0).fill(s.pal().accent)));
+        out.push(Entry::Block(bar, bar_h));
+    }
+    if let Some(r) = release {
+        let can_install = matches!(s.update, Ui::Available(_)) && s.update_method.can_install() && r.asset.is_some();
+        out.push(Entry::Divider);
+        if can_install {
+            out.push(Entry::Row(menu_row("upd-install", &icons::DOWNLOAD, S::UpdateInstall.get(lang), false).on_press(|s: &mut State| {
+                s.close_popover();
+                s.install_update();
+            })));
+        }
+        let url = r.page_url.clone();
+        out.push(Entry::Row(menu_row("upd-page", &icons::EXTERNAL, S::UpdateReleasePage.get(lang), false).on_press_tx(move |s: &mut State, tx: &mut rune::Tx| {
+            s.close_popover();
+            let _ = tx.open_url(&url);
+        })));
+    }
+    out
 }

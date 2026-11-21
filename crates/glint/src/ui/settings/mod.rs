@@ -89,12 +89,16 @@ impl State {
         self.menu_open = false;
         self.close_popover();
         self.settings_open = true;
+        crate::diag_log::event("ui", &format!("settings open tab={:?}", self.settings_tab));
+        self.log_mem("settings:open");
     }
 
     pub fn close_settings(&mut self) {
         self.settings_open = false;
         self.rebind = None;
         self.close_popover();
+        crate::diag_log::event("ui", "settings close");
+        self.log_mem("settings:close");
     }
 }
 
@@ -111,7 +115,7 @@ pub fn modal(s: &State, w: f32, h: f32) -> El {
     let lang = s.lang;
     let tab = s.settings_tab;
     let cw = 900.0_f32.min(w - 48.0).max(320.0);
-    let ch = 640.0_f32.min(h - 96.0).max(320.0);
+    let ch = 680.0_f32.min(h - 96.0).max(320.0);
     let narrow = cw < 700.0;
 
     let mut nav = col().key("set-nav").w(if narrow { 60.0 } else { 224.0 }).h_full().padding(10.0).gap(2.0).fill(veil(0.025));
@@ -160,7 +164,7 @@ pub fn modal(s: &State, w: f32, h: f32) -> El {
         SetTab::Equalizer => playback::equalizer(s, &k),
         SetTab::Cache => storage::cache(s),
         SetTab::Updates => storage::updates(s, &k),
-        SetTab::About => storage::about(s),
+        SetTab::About => storage::about(s, &k),
     };
     let list =
         col().key(format!("set-groups-{tab:?}")).w_full().gap(26.0).transition(Transition::opacity().combined(Transition::offset(0.0, 6.0)).springs(th::RISE)).children(groups);
@@ -174,16 +178,38 @@ pub fn modal(s: &State, w: f32, h: f32) -> El {
         .items_center()
         .child(label(tab.name().get(lang).to_owned(), th::H1, th::text()).grow(1.0).min_w(0.0).truncate())
         .child(close);
-    let pane = col().key("set-pane").grow(1.0).min_w(0.0).h_full().child(head).child(
-        col()
-            .key("set-scroll")
-            .w_full()
-            .grow(1.0)
-            .min_h(0.0)
-            .scroll(rune::ScrollSpec { stick_bottom: false })
-            .scroll_edge_fade(16.0)
-            .child(col().w_full().px(PANE_PAD).pt(4.0).pb(PANE_PAD).child(list)),
-    );
+    let scroll_key = format!("set-scroll-{tab:?}");
+    let watch_key = scroll_key.clone();
+    let vp_h = (ch - 64.0).max(120.0);
+    let scrollbar = crate::app::page_scroll(&scroll_key).filter(|[_, max]| *max > 2.0).map(|[offset, max]| {
+        let track_h = (vp_h - 16.0).max(40.0);
+        let total = vp_h + max;
+        let thumb_h = (track_h * (vp_h / total)).clamp(28.0, track_h);
+        let frac = (offset / max).clamp(0.0, 1.0);
+        let y = 8.0 + frac * (track_h - thumb_h);
+        el().key("set-scrollbar").pin(None, Some(y), Some(6.0), None).w(4.0).h(thumb_h).radius(2.0).fill(veil(0.22)).transition(Transition::none())
+    });
+    let scroll_wrap = el()
+        .key("set-scroll-wrap")
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .child(
+            col()
+                .key(scroll_key)
+                .absolute(0.0, 0.0)
+                .w_full()
+                .h_full()
+                .scroll(rune::ScrollSpec { stick_bottom: false })
+                .on_scroll_offset(move |p: rune::ScrollPos| {
+                    crate::app::PAGE_SCROLL.with_borrow_mut(|m| {
+                        m.insert(watch_key.clone(), [p.offset[1], p.max[1]]);
+                    });
+                })
+                .child(col().w_full().px(PANE_PAD).pt(12.0).pb(PANE_PAD).child(list)),
+        )
+        .children(scrollbar);
+    let pane = col().key("set-pane").grow(1.0).min_w(0.0).h_full().child(head).child(el().w_full().h(1.0).fill(th::hairline())).child(scroll_wrap);
     let card = row()
         .key("set-card")
         .role("dialog")
@@ -207,7 +233,7 @@ pub fn modal(s: &State, w: f32, h: f32) -> El {
         .h_full()
         .center()
         .fill(th::rgba(0x000000, if th::light() { 0.24 } else { 0.56 }))
-        .transition(Transition::opacity().springs(th::RISE))
+        .transition(Transition::none())
         .on_press(|s: &mut State| s.close_settings())
         .child(card)
 }
@@ -295,7 +321,7 @@ pub(super) fn figure(text: String) -> El {
 }
 
 /// Glint's app icon tile at `size` points, reusing cached pebble and glint outlines.
-pub(super) fn app_mark(size: f32) -> El {
+pub(crate) fn app_mark(size: f32) -> El {
     type MarkOutline = (Vec<[f32; 2]>, Vec<[f32; 2]>);
     static MARK: OnceLock<MarkOutline> = OnceLock::new();
     let (pebble, glint) = MARK.get_or_init(|| (crate::mark::pebble(160), crate::mark::glint(160)));

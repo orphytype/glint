@@ -1,14 +1,14 @@
 //! Track rows, queue rows, like/download row controls, and list playback sources.
 
 use crate::fx::Slot as _;
-use rune::{Color, Cursor, El, Icon, PopupAnchor, TextStyle, Transition, Tx, col, el, icon, row};
+use rune::{Align, Color, Cursor, El, Icon, PopupAnchor, TextStyle, Transition, Tx, col, el, icon, row};
 use ym_api::Track;
 
 use super::controls::{ctl_radius, ibtn, quiet_halo, swap_glyph};
 use super::marquee::{marquee, marquee_hover, marquee_on, measure_room, room};
 use super::media::{artists_row_in_width, cover};
 use super::{Hover as _, label};
-use crate::app::{DownloadState, FromName, Page, PlayingFrom, Source, State};
+use crate::app::{DownloadState, FromName, Page, PlayingFrom, Source, State, TrackSort};
 use crate::fx;
 use crate::i18n::S;
 use crate::theme::{self as th, veil};
@@ -16,11 +16,11 @@ use crate::ui::{icons, np_icons};
 
 pub const ROW_H: f32 = 56.0;
 pub const ROW_PAD: f32 = 8.0;
-const ROW_GAP: f32 = 12.0;
+const ROW_GAP: f32 = 10.0;
 const ROW_BTN: f32 = 32.0;
 const ROW_GLYPH: f32 = 16.0;
 const ROW_TIME: f32 = 44.0;
-const ROW_ACTIONS: f32 = ROW_BTN * 2.0 + 2.0 + 10.0 + ROW_TIME;
+const ROW_ACTIONS: f32 = ROW_BTN * 2.0 + 8.0 + ROW_TIME;
 pub const ROW_COVER: f32 = 44.0;
 pub const ROW_COVER_R: f32 = 7.0;
 
@@ -38,7 +38,11 @@ impl State {
         match src {
             ListSrc::Liked => {
                 let all = self.library.tracks.get().map_or(&[][..], Vec::as_slice);
-                if self.library.filter.text.trim().is_empty() { all.to_vec() } else { self.library.shown.borrow().iter().filter_map(|&i| all.get(i).cloned()).collect() }
+                if self.library.filter.text.trim().is_empty() && self.library.sort == TrackSort::Original {
+                    all.to_vec()
+                } else {
+                    self.library.shown.borrow().iter().filter_map(|&i| all.get(i).cloned()).collect()
+                }
             }
             ListSrc::Detail => self.detail.tracks.clone(),
             ListSrc::Search => self.search_view().map(|r| r.tracks.results.clone()).unwrap_or_default(),
@@ -50,8 +54,16 @@ impl State {
     pub fn play_from_list(&mut self, src: ListSrc, id: &str) {
         if src == ListSrc::Queue {
             if let Some(i) = self.player.queue.iter().position(|t| t.id == id) {
-                self.play_index(i);
+                if self.player.index == Some(i) && self.player.pending_index.is_none() {
+                    self.toggle_pause();
+                } else {
+                    self.play_index(i);
+                }
             }
+            return;
+        }
+        if self.player.pending_index.is_none() && self.current().is_some_and(|c| c.id == id) {
+            self.toggle_pause();
             return;
         }
         if src == ListSrc::Search {
@@ -199,7 +211,18 @@ fn row_cover(s: &State, t: &Track, playing: bool, queue: bool) -> El {
                 .child(icon(if s.player.playing { &icons::PAUSE } else { &icons::PLAY }, 16.0).color(th::rgb(0xffffff))),
         );
     } else if playing {
-        c = c.child(row().key("rc-mark").absolute(0.0, 0.0).w_full().h_full().center().transition(Transition::none()).child(marker(s)));
+        c = c.child(row().key("rc-mark").absolute(0.0, 0.0).w_full().h_full().center().transition(Transition::none()).gop(1.0, 0.0).child(marker(s))).child(
+            row()
+                .key("rc-toggle")
+                .absolute(0.0, 0.0)
+                .w_full()
+                .h_full()
+                .center()
+                .fill(th::rgba(0x000000, 0.36))
+                .radius(ROW_COVER_R)
+                .gop(0.0, 1.0)
+                .child(icon(if s.player.playing { &icons::PAUSE } else { &icons::PLAY }, 16.0).color(th::rgb(0xffffff))),
+        );
     } else {
         c = c.child(
             row()
@@ -221,7 +244,7 @@ fn download_action(s: &State, t: &Track) -> El {
     let state = s.downloads.get(&t.id).copied();
     let (mut ic, color, help) = match state {
         Some(DownloadState::Downloading) => (&icons::SPINNER, th::text2(), S::DownloadInProgress),
-        Some(DownloadState::Done) => (&icons::DOWNLOAD, th::rgb(0x4bd27e), S::DeleteDownload),
+        Some(DownloadState::Done) => (&icons::DOWNLOAD, th::rgb(0x4bd27e).alpha(0.75), S::DeleteDownload),
         Some(DownloadState::Failed) => (&icons::DOWNLOAD, th::rgb(0xf18a8a), S::DownloadFailed),
         None => (&icons::DOWNLOAD, th::text3(), S::Download),
     };
@@ -246,7 +269,8 @@ fn download_action(s: &State, t: &Track) -> El {
             .center()
             .child(icon(ic, ROW_GLYPH).color(color).looping(rune::LoopSpec::rotation(0.9)));
     }
-    let mut b = ibtn(format!("download-{}", t.id), ic, ROW_GLYPH, ROW_BTN, color, help_text);
+    let glyph_sz = if matches!(state, Some(DownloadState::Done)) { 14.0 } else { ROW_GLYPH };
+    let mut b = ibtn(format!("download-{}", t.id), ic, glyph_sz, ROW_BTN, color, help_text);
     if state.is_none() {
         b = b.gop(0.0, 1.0);
     }
@@ -260,14 +284,21 @@ fn download_action(s: &State, t: &Track) -> El {
 
 pub fn track_row(s: &State, t: &Track, n: usize, src: ListSrc) -> El {
     let qi = (src == ListSrc::Queue).then(|| s.player.queue.iter().position(|queued| queued.id == t.id).unwrap_or_else(|| n.saturating_sub(1)));
-    track_row_at(s, t, src, qi)
+    let num = (src == ListSrc::Detail && !s.detail.is_artist).then_some(n);
+    track_row_at(s, t, src, qi, num)
 }
 
 pub fn queue_row(s: &State, t: &Track, qi: usize) -> El {
-    track_row_at(s, t, ListSrc::Queue, Some(qi)).on_press(move |s: &mut State| s.play_index(qi))
+    track_row_at(s, t, ListSrc::Queue, Some(qi), None).on_press(move |s: &mut State| {
+        if s.player.index == Some(qi) && s.player.pending_index.is_none() {
+            s.toggle_pause();
+        } else {
+            s.play_index(qi);
+        }
+    })
 }
 
-fn track_row_at(s: &State, t: &Track, src: ListSrc, qi: Option<usize>) -> El {
+fn track_row_at(s: &State, t: &Track, src: ListSrc, qi: Option<usize>, num: Option<usize>) -> El {
     let queue = src == ListSrc::Queue;
     let playing = match (queue, qi) {
         (true, Some(i)) => s.player.index == Some(i),
@@ -292,19 +323,31 @@ fn track_row_at(s: &State, t: &Track, src: ListSrc, qi: Option<usize>) -> El {
     let heart = like_button(s, t, ROW_BTN, liked);
     let heart = if queue || liked { heart } else { heart.gop(0.0, 1.0) };
 
-    let time = row().w_full().h_full().pr(6.0).items_center().justify_end().gop(1.0, 0.0).child(label(crate::player::fmt_time(t.duration_ms.unwrap_or(0)), th::TIME, th::text3()));
-    let more = ibtn(more_key, &icons::MORE, ROW_GLYPH + 2.0, ROW_BTN, th::text2(), S::More.get(s.lang))
-        .absolute(ROW_TIME - ROW_BTN, 0.0)
-        .gop(0.0, 1.0)
-        .on_press(move |s: &mut State| open_track_menu(s, &t3, qi, more_anchor.clone()));
+    let time = row().absolute(0.0, 0.0).w_full().h_full().items_center().justify_end().gop(1.0, 0.0).child(label(
+        crate::player::fmt_time(t.duration_ms.unwrap_or(0)),
+        th::TIME,
+        th::text3(),
+    ));
+    let more = row().absolute(0.0, 0.0).w_full().h_full().items_center().justify_end().gop(0.0, 1.0).child(
+        ibtn(more_key, &icons::MORE, ROW_GLYPH + 2.0, ROW_BTN, th::text2(), S::More.get(s.lang)).on_press(move |s: &mut State| open_track_menu(s, &t3, qi, more_anchor.clone())),
+    );
+    let tail = el().key(format!("row-tail-{}", t.id)).w(ROW_TIME).h(ROW_BTN).child(time).child(more);
+    let lead_action = if let Some(i) = qi.filter(|&i| queue && Some(i) > s.player.index) {
+        ibtn(format!("q-rem-{i}-{}", t.id), &icons::CLOSE, 14.0, ROW_BTN, th::text3(), S::RemoveFromQueue.get(s.lang))
+            .gop(0.0, 1.0)
+            .on_press(move |s: &mut State| s.remove_from_queue(i))
+    } else {
+        download_action(s, t)
+    };
 
-    row()
+    let mut r = row()
         .key(hot.clone())
         .role("button")
         .label(title.as_str())
         .w_full()
         .h(ROW_H)
-        .px(ROW_PAD)
+        .pl(if num.is_some() { 4.0 } else { ROW_PAD })
+        .pr(ROW_PAD)
         .gap(ROW_GAP)
         .items_center()
         .radius(10.0)
@@ -315,19 +358,11 @@ fn track_row_at(s: &State, t: &Track, src: ListSrc, qi: Option<usize>) -> El {
         .on_press(move |s: &mut State| s.play_from_list(src, &id))
         .on_secondary_press(move |s: &mut State, press, _tx: &mut Tx| open_track_menu(s, &t2, qi, press))
         .hov_group()
-        .on_hover_change(marquee_hover(hot.clone()))
-        .child(row_cover(s, t, playing, queue))
+        .on_hover_change(marquee_hover(hot.clone()));
+    if let Some(n) = num {
+        r = r.child(label(n.to_string(), th::TIME, if playing { s.pal().accent } else { th::text3() }).w(20.0).align(Align::Center));
+    }
+    r.child(row_cover(s, t, playing, queue))
         .child(measure_room(col().grow(1.0).min_w(0.0).h_full().justify_center().gap(2.0).child(title_line(s, t, title, ink, room_w, moving)).child(meta), hot))
-        .child(
-            row()
-                .key(format!("row-actions-{}", t.id))
-                .w(ROW_ACTIONS)
-                .h(ROW_BTN)
-                .gap(2.0)
-                .justify_end()
-                .items_center()
-                .child(download_action(s, t))
-                .child(heart)
-                .child(el().key(format!("duration-{}", t.id)).w(ROW_TIME).h(ROW_BTN).ml(10.0).hov_group().child(time).child(more)),
-        )
+        .child(row().key(format!("row-actions-{}", t.id)).w(ROW_ACTIONS).h(ROW_BTN).gap(4.0).justify_end().items_center().child(lead_action).child(heart).child(tail))
 }

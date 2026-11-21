@@ -49,6 +49,16 @@ pub fn page(s: &State) -> El {
         .fill(veil(0.05))
         .border(1.0, veil(0.11))
         .child(field)
+        .child(kit::ibtn("paste-token", &icons::COPY, 16.0, 34.0, th::text3(), S::Paste.get(lang)).on_press_tx(|_s: &mut State, tx: &mut Tx| {
+            tx.read_clipboard(|s: &mut State, content, _| {
+                let pasted = content.text().trim();
+                if !pasted.is_empty() {
+                    s.login.token = rune::TextEdit::new(pasted);
+                    s.login.token.set_secure(!s.login.reveal);
+                    s.login.error = None;
+                }
+            });
+        }))
         .child(
             // Show or hide what was pasted. `secure` marks the edit itself, so showing has to
             // clear that mark on the edit, not only stop asking for it.
@@ -56,7 +66,7 @@ pub fn page(s: &State) -> El {
                 "reveal",
                 if s.login.reveal { &icons::EYE_OFF } else { &icons::EYE },
                 kit::GLYPH,
-                40.0,
+                36.0,
                 if s.login.reveal { th::text() } else { th::text3() },
                 if s.login.reveal { S::HideToken.get(lang) } else { S::ShowToken.get(lang) },
             )
@@ -80,7 +90,7 @@ pub fn page(s: &State) -> El {
         card = card.child(label(S::Welcome.get(lang), th::H1, th::text()).wrap().w_full()).child(label(S::LoginLead.get(lang), th::SMALL, th::text2()).wrap().w_full());
     }
     card = card
-        .child(step("1", S::OpenYandex.get(lang)))
+        .child(step("1", S::LoginStep1.get(lang)))
         .child(kit::btn_primary("open-yandex", S::OpenYandex.get(lang), Some(&icons::EXTERNAL)).w_full().on_press_tx(|_s: &mut State, tx: &mut Tx| {
             let _ = tx.open_url(&ym_api::auth::authorize_url());
         }))

@@ -9,7 +9,7 @@ use crate::theme as th;
 use crate::ui::{
     icons,
     kit::{MENU_ROW, label, menu_row},
-    np,
+    np, np_icons,
 };
 
 /// Yandex Music URL for a track.
@@ -167,13 +167,17 @@ fn track_entries(s: &State, m: &TrackMenu, h: f32) -> Vec<Entry> {
     })));
 
     out.push(Entry::Divider);
-    if m.player {
+    if m.player && s.np_open {
         let anchor = match &m.anchor {
             PopupAnchor::Key(key) => key.clone(),
             _ => "np-more".to_owned(),
         };
+        let look_anchor = anchor.clone();
         out.push(Entry::Row(row_of("tm-quality", &icons::EQ, S::Quality.get(lang)).on_press(move |s: &mut State| {
             s.open_popover(Popover::Quality { anchor: anchor.clone() });
+        })));
+        out.push(Entry::Row(row_of("tm-look", &np_icons::LOOK, S::StageLook.get(lang)).on_press(move |s: &mut State| {
+            s.open_popover(Popover::Stage { anchor: look_anchor.clone() });
         })));
     }
     let tr = t.clone();

@@ -207,13 +207,12 @@ fn chip(key: &'static str, name: &str) -> El {
         .child(kit::glass(Glass::Chip, CHIP * 0.5))
 }
 
-/// A new version, in a small glass pill beside the window's controls: what it is while it waits,
-/// how far it has come while it downloads. Pressing it opens Updates in Settings, where it is
-/// installed. Nothing while there is no new version.
+/// Circular liquid-glass button in the title bar when a newer version is available or installing.
+/// Pressing it opens the update summary popover.
 pub fn update_pill(s: &State) -> Option<El> {
     use crate::update::Ui;
     let lang = s.lang;
-    let text = match &s.update {
+    let tip = match &s.update {
         Ui::Available(r) => format!("{} {}", S::UpdateShort.get(lang), r.version.trim_start_matches('v')),
         Ui::Downloading { done, total, .. } => {
             let pct = if *total > 0 { (done * 100 / total).min(100) } else { 0 };
@@ -222,33 +221,13 @@ pub fn update_pill(s: &State) -> Option<El> {
         Ui::Installing => S::UpdateInstalling.get(lang).to_owned(),
         _ => return None,
     };
-    let tw = rune::text::measure(&text, &[], th::LABEL, None).0.ceil();
-    let accent = s.pal().accent;
-    Some(
-        row()
-            .key("update-pill")
-            .role("button")
-            .label(text.as_str())
-            .help(S::UpdateAvailable.get(lang))
-            .w(12.0 + 7.0 + 7.0 + tw + 14.0)
-            .h(CHIP - 4.0)
-            .pl(12.0)
-            .gap(7.0)
-            .radius((CHIP - 4.0) * 0.5)
-            .items_center()
-            .cursor(Cursor::Pointer)
-            .no_window_drag()
-            .press_scale(th::PRESS)
-            .hov(th::veil(0.06))
-            .transition(Transition::opacity().combined(Transition::scale(0.9)).springs(th::RISE))
-            .child(kit::glass(Glass::Chip, (CHIP - 4.0) * 0.5))
-            .child(el().w(7.0).h(7.0).radius(3.5).fill(accent).looping(rune::LoopSpec::opacity(1.6, 0.0, 0.45, 1.0)))
-            .child(label(text, th::LABEL, th::text()))
-            .on_press(|s: &mut State| {
-                s.settings_tab = crate::ui::settings::SetTab::Updates;
-                s.open_settings();
-            }),
-    )
+    let open = s.popover_open && matches!(s.popover, Some(Popover::Update { .. }));
+    let glyph = if matches!(s.update, Ui::Downloading { .. } | Ui::Installing) {
+        icon(&icons::SPINNER, 18.0).color(th::text()).looping(rune::LoopSpec::rotation(0.9))
+    } else {
+        icon(&icons::UPDATE_RING, 19.0).color(th::text())
+    };
+    Some(chip("update-pill", &tip).checked(open).hov(th::veil(0.06)).child(glyph).on_press(|s: &mut State| s.open_popover(Popover::Update { anchor: "update-pill".into() })))
 }
 
 /// A way back or forward: a glass chip, faint and deaf while there is nowhere to go.
@@ -397,27 +376,29 @@ fn playing(s: &State, width: f32) -> El {
     let middle = col().key("bar-mid").w(mid_w).gap(2.0).items_center().child(transport).child(seek);
 
     let mut right = row().key("bar-right").w(side_w).h(56.0).gap(2.0).justify_end().items_center();
+    let inline_vol = side_w >= 265.0;
+    let rbtn = if inline_vol { 34.0 } else { BTN };
     if !compact {
         let lyrics = if s.lyrics_missing() {
-            kit::quiet_off("bar-lyrics", &ni::LYRICS, 18.0, BTN, S::NoLyricsShort.get(lang))
+            kit::quiet_off("bar-lyrics", &ni::LYRICS, 18.0, rbtn, S::NoLyricsShort.get(lang))
         } else {
-            kit::quiet_btn("bar-lyrics", &ni::LYRICS, 18.0, BTN, th::text2(), S::Lyrics.get(lang)).on_press(|s: &mut State| {
+            kit::quiet_btn("bar-lyrics", &ni::LYRICS, 18.0, rbtn, th::text2(), S::Lyrics.get(lang)).on_press(|s: &mut State| {
                 s.np_tab = NpTab::Lyrics;
                 s.set_np(true);
             })
         };
-        right = right.child(lyrics).child(kit::quiet_btn("bar-queue", &ni::QUEUE, 18.0, BTN, th::text2(), S::Queue.get(lang)).on_press(|s: &mut State| {
+        right = right.child(lyrics).child(kit::quiet_btn("bar-queue", &ni::QUEUE, 18.0, rbtn, th::text2(), S::Queue.get(lang)).on_press(|s: &mut State| {
             s.np_tab = NpTab::Queue;
             s.set_np(true);
         }));
     }
     // The volume is right there in a wide bar (a slider beside the speaker, which mutes); in a
-    // narrow one the speaker opens the volume card.
-    right = right.child(quality_btn(s));
-    right = if side_w >= 330.0 { right.child(volume_inline(s)) } else { right.child(volume_btn(s)) };
+    // narrow one the speaker opens the volume card on hover and mutes on click.
+    right = right.child(quality_btn_at(s, "bar-quality"));
+    right = if inline_vol { right.child(volume_inline(s)) } else { right.child(volume_btn(s)) };
     // What can be done with the track (as the right click on it, or the open player's "more").
     right = right.child(
-        kit::quiet_btn("bar-more", &ni::MORE, 18.0, BTN, th::text2(), S::More.get(lang)).on_press(|s: &mut State| s.open_player_menu(rune::PopupAnchor::Key("bar-more".into()))),
+        kit::quiet_btn("bar-more", &ni::MORE, 18.0, rbtn, th::text2(), S::More.get(lang)).on_press(|s: &mut State| s.open_player_menu(rune::PopupAnchor::Key("bar-more".into()))),
     );
 
     row()
@@ -439,6 +420,26 @@ thread_local! {
     static UNMUTED: std::cell::Cell<f32> = const { std::cell::Cell::new(0.8) };
 }
 
+/// Nudges volume from a mouse wheel or trackpad event.
+pub(super) fn volume_wheel(s: &mut State, e: rune::WheelEvent, _tx: &mut Tx) -> bool {
+    if e.dy == 0.0 {
+        return false;
+    }
+    let step = if e.precise { -e.dy * 0.004 } else { -e.dy.signum() * 0.05 };
+    s.set_volume((s.player.volume + step).clamp(0.0, 1.0));
+    true
+}
+
+fn toggle_mute_remembered(s: &mut State) {
+    let v = s.player.volume;
+    if v > 0.01 {
+        UNMUTED.with(|c| c.set(v));
+        s.set_volume(0.0);
+    } else {
+        s.set_volume(UNMUTED.with(std::cell::Cell::get).max(0.05));
+    }
+}
+
 /// The speaker and a slider beside it: pressing the speaker mutes (and brings the volume back),
 /// dragging or pressing the slider sets it, the wheel over either nudges it.
 fn volume_inline(s: &State) -> El {
@@ -450,24 +451,8 @@ fn volume_inline(s: &State) -> El {
     } else {
         &ni::VOLUME
     };
-    let wheel = |s: &mut State, e: rune::WheelEvent, _tx: &mut Tx| {
-        if e.dy == 0.0 {
-            return false;
-        }
-        let step = if e.precise { -e.dy * 0.004 } else { -e.dy.signum() * 0.05 };
-        s.set_volume((s.player.volume + step).clamp(0.0, 1.0));
-        true
-    };
-    let speaker = kit::quiet_btn("vol-mute", ic, 18.0, 34.0, th::text2(), S::Volume.get(s.lang)).on_wheel(wheel).on_press(|s: &mut State| {
-        let v = s.player.volume;
-        if v > 0.01 {
-            UNMUTED.with(|c| c.set(v));
-            s.set_volume(0.0);
-        } else {
-            s.set_volume(UNMUTED.with(std::cell::Cell::get).max(0.05));
-        }
-    });
-    let w = 84.0;
+    let speaker = kit::quiet_btn("vol-mute", ic, 18.0, 32.0, th::text2(), S::Volume.get(s.lang)).on_wheel(volume_wheel).on_press(toggle_mute_remembered);
+    let w = 72.0;
     let slider = el()
         .key("vol-inline")
         .role("slider")
@@ -476,7 +461,7 @@ fn volume_inline(s: &State) -> El {
         .h(28.0)
         .cursor(Cursor::Pointer)
         .hov_group()
-        .on_wheel(wheel)
+        .on_wheel(volume_wheel)
         .on_drag(|s: &mut State, d: &mut Drag, _tx: &mut Tx| {
             let f = if d.w > 0.0 { (d.x / d.w).clamp(0.0, 1.0) } else { 0.0 };
             s.set_volume(f);
@@ -484,10 +469,10 @@ fn volume_inline(s: &State) -> El {
         .child(el().absolute(0.0, 12.0).w(w).h(4.0).radius(2.0).fill(th::veil(0.16)))
         .child(el().absolute(0.0, 12.0).w((w * v).max(4.0)).h(4.0).radius(2.0).fill(th::text2()).gcol(th::text()))
         .child(el().absolute((w * v - 6.0).clamp(0.0, w - 12.0), 8.0).w(12.0).h(12.0).radius(6.0).fill(th::text()).shadow(1.0, 3.0, th::rgba(0x000000, 0.3)).gop(0.0, 1.0));
-    row().key("vol-inline-row").gap(2.0).pr(6.0).items_center().child(speaker).child(slider)
+    row().key("vol-inline-row").gap(2.0).pr(4.0).items_center().child(speaker).child(slider)
 }
 
-/// The speaker opens the volume card on hover and keeps it alive while the pointer crosses to it.
+/// The speaker opens the volume card on hover, adjusts volume on wheel, and mutes on click.
 fn volume_btn(s: &State) -> El {
     let v = s.player.volume;
     let ic = if v < 0.01 {
@@ -500,6 +485,7 @@ fn volume_btn(s: &State) -> El {
     let on = s.vol_open;
     let b = kit::ibtn("vol-btn", ic, GLYPH, BTN, th::text2(), S::Volume.get(s.lang)).checked(on);
     (if on { b.fill(th::veil(0.10)) } else { b })
+        .on_wheel(volume_wheel)
         .on_hover_change(|s: &mut State, over: bool, _tx: &mut Tx| {
             s.vol_button_hover = over;
             if over {
@@ -509,14 +495,10 @@ fn volume_btn(s: &State) -> El {
                 s.vol_close_at = Some(s.now + 0.28);
             }
         })
-        .on_press(|s: &mut State| {
-            s.menu_open = false;
-            s.vol_open = true;
-            s.vol_close_at = None;
-        })
+        .on_press(toggle_mute_remembered)
 }
 
-fn quality_btn(s: &State) -> El {
+pub(super) fn quality_btn_at(s: &State, key: &'static str) -> El {
     let text = match s.settings.quality {
         QualityPref::Saver => S::QualityShortSaver,
         QualityPref::Balanced => S::QualityShortBalanced,
@@ -524,14 +506,14 @@ fn quality_btn(s: &State) -> El {
         QualityPref::Lossless => S::QualityShortLossless,
     };
     row()
-        .key("bar-quality")
+        .key(key)
         .role("button")
         .label(S::Quality.get(s.lang))
         .help(S::Quality.get(s.lang))
-        .h(26.0)
-        .min_w(38.0)
-        .px(8.0)
-        .mx(4.0)
+        .h(24.0)
+        .min_w(36.0)
+        .px(7.0)
+        .mx(3.0)
         .radius(7.0)
         .items_center()
         .justify_center()
@@ -539,7 +521,7 @@ fn quality_btn(s: &State) -> El {
         .border(1.0, th::veil(0.12))
         .hov(th::veil(0.06))
         .press(th::veil(0.10))
-        .on_press(|s: &mut State| s.open_popover(Popover::Quality { anchor: "bar-quality".into() }))
+        .on_press(move |s: &mut State| s.open_popover(Popover::Quality { anchor: key.into() }))
         .child(label(text.get(s.lang), th::MONO, th::text2()))
 }
 

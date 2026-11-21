@@ -131,6 +131,14 @@ fn fs_wave(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         } else {
             col = col + (bayer8(floor(p - u.rect.xy)) - 0.5) / 255.0;
         }
+        // Soft center readability scrim so the title and mood caption stay legible over bright covers.
+        let qr = q * vec2<f32>(1.15, 1.85);
+        let center = exp(-dot(qr, qr));
+        if (light) {
+            col = mix(col, vec3<f32>(0.97, 0.96, 0.95), center * 0.34);
+        } else {
+            col = col * (1.0 - (0.20 + 0.34 * center));
+        }
     }
     var gcol = select(sh_hsl(hue + 20.0, 0.75, 0.55), sh_hsl(hue + 20.0, 0.70, 0.62), light);
     if (hue < 0.0) {

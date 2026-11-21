@@ -51,6 +51,10 @@ impl State {
         self.menu_open = false;
         self.tmenu_open = false;
         self.close_volume();
+        if self.np_open != open {
+            crate::diag_log::event("ui", if open { "np open" } else { "np close" });
+            self.log_mem(if open { "np:open" } else { "np:close" });
+        }
         self.np_open = open;
     }
 
@@ -65,14 +69,31 @@ impl State {
 
     pub fn open_download_folder(&self) {
         let Some(path) = self.store.downloads_dir() else { return };
-        #[cfg(windows)]
-        let _ = std::process::Command::new("explorer").arg(path).spawn();
-        #[cfg(target_os = "macos")]
-        let _ = std::process::Command::new("open").arg(path).spawn();
-        #[cfg(all(unix, not(target_os = "macos")))]
-        let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+        open_folder(&path);
     }
 
+    pub fn open_logs_folder(&self) {
+        let Some(path) = self.store.logs_dir() else { return };
+        let _ = std::fs::create_dir_all(&path);
+        open_folder(&path);
+    }
+
+    /// Samples current memory and GPU/art counters into the local diagnostic log.
+    pub fn log_mem(&self, reason: &str) {
+        crate::diag_log::log_memory(reason, self.art.stats(), crate::fx::gpu_stats());
+    }
+}
+
+fn open_folder(path: &std::path::Path) {
+    #[cfg(windows)]
+    let _ = std::process::Command::new("explorer").arg(path).spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(path).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+}
+
+impl State {
     /// Whether `tracks` are downloaded as far as possible (at least one done, all others permanently unavailable).
     pub fn downloads_settled(&self, tracks: &[Track]) -> bool {
         let mut any = false;

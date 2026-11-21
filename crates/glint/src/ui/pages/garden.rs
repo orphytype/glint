@@ -115,14 +115,14 @@ pub(super) fn garden(s: &State, cw: f32) -> El {
     }
     let glyph = (title_size * 0.95).round();
     let play_icon = icon(if playing { &icons::PAUSE } else { &icons::PLAY }, glyph).color(th::text()).gop(0.86, 1.0);
-    let line_el = row().w_full().justify_center().child(label(line.clone(), th::wave_words(16.0), th::text2()).align(rune::Align::Center).max_lines(2).wrap().max_w(room_w));
+    let line_el = row().w_full().justify_center().child(label(line.clone(), th::SMALL, th::text().alpha(0.76)).align(rune::Align::Center).max_lines(2).wrap().max_w(room_w));
     let words = col()
         .absolute((big - room_w) * 0.5, 0.0)
         .w(room_w)
         .h(big)
         .justify_center()
         .items_center()
-        .gap(4.0)
+        .gap(2.0)
         .transition(Transition::none())
         .child(
             row()

@@ -1,20 +1,15 @@
 # Builds every download, and publishes them as a GitHub release when a `v*` tag is pushed.
-# Run it by hand (Actions → Release → Run workflow) to build without releasing; the
+# Run it by hand (Actions -> Release -> Run workflow) to build without releasing; the
 # files are then attached to the run as artifacts.
 #
-# A run started by a tag can read the caches saved on main, but not the ones saved by another
-# tag. So only runs on main save the build cache: a push to main that changes the dependencies
-# builds everything once, and the next tag starts from what that run compiled.
+# Tag runs can read the Rust build cache saved on main, but not caches saved by other tags.
+# Only runs on main (via workflow_dispatch) save the cache; tag runs restore it without
+# uploading a cache that future tags cannot reuse.
 name: Release
 
 on:
   push:
     tags: ["v*"]
-    branches: [main]
-    paths:
-      - Cargo.lock
-      - rust-toolchain.toml
-      - .github/workflows/release.yml
   workflow_dispatch:
 
 permissions:

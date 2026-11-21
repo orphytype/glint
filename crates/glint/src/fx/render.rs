@@ -5,12 +5,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use rune::compose::Frame;
 use rune::render::{EffectPhase, EffectSite, Instance};
-use rune_fx::{FxFrame, FxLayer, FxOptions, FxRenderer, FxSlot, Shape};
+use rune_fx::{FxFrame, FxOptions, FxRenderer};
 
 use super::gpu::{Binds, Gpu, Pipe};
-use super::slots::{APPEAR_S, BarMem, FrameCtx, layer};
+use super::slots::{APPEAR_S, BarMem, FrameCtx};
 use super::stage::find_cover_rect;
-use super::{BARS, BUTTERFLY, FLOW_EASE_S, FLOW_S, GLASS_READY, GPU_UP, Gfx, MORPH, OFF_FPS, READY, SHAPES_READY, SPARKLES, TICK_ARMED, WANTS_TICK, off_mask};
+use super::{
+    BARS, BUTTERFLY, FLOW_EASE_S, FLOW_S, GLASS_READY, GPU_UP, Gfx, LAST_DRAW_CLOCK, MORPH, OFF_FPS, READY, SHAPES_READY, STAT_PYR_BYTES, STAT_PYR_COUNT, STAT_UBUFS, TICK_ARMED,
+    WANTS_TICK, off_mask,
+};
 use crate::app::State;
 use crate::store::Effects;
 use crate::theme;
@@ -42,6 +45,9 @@ fn look_of(f: &Frame<'_, State>, limit: usize) -> u64 {
     eat(u64::from(f.size.0) << 32 | u64::from(f.size.1));
     eat(st.settings.effects as u64 | u64::from(st.settings.reduce_motion) << 8 | u64::from(theme::light()) << 9);
     for (n, instance) in f.rt.instances.iter().take(limit).enumerate() {
+        if instance.rect[2] <= 0.0 || instance.rect[3] <= 0.0 {
+            continue;
+        }
         let mark = f.rt.marks.get(n).copied().unwrap_or(0);
         if matches!(mark & 0xff, BARS | MORPH | BUTTERFLY) {
             continue;
@@ -56,6 +62,7 @@ fn look_of(f: &Frame<'_, State>, limit: usize) -> u64 {
 
 impl Gfx {
     pub(super) fn draw(&mut self, f: &mut Frame<'_, State>) {
+        LAST_DRAW_CLOCK.store(f.rt.clock.to_bits(), Ordering::Relaxed);
         let (device, queue, size) = (f.device, f.queue, f.size);
         let pass_size = [size.0, size.1];
         let st = &f.rt.state;
@@ -154,7 +161,7 @@ impl Gfx {
         let pyramid_key = if fast_dynamic {
             look ^ ((f.rt.clock * 12.0) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
         } else if field_dynamic {
-            look ^ ((f.rt.clock * 4.0) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            look ^ ((f.rt.clock * 2.0) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
         } else {
             look
         };
@@ -173,35 +180,26 @@ impl Gfx {
                 self.shapes.clear();
             }
         }
-        let want_tick = !self.fx_warm || summary.moving || self.smooth.level > 0.002 || self.smooth.beat > 0.01 || self.smooth.stirring();
+        let audio_live = quality != Effects::Off && !reduced && summary.audio_reactive && (self.smooth.level > 0.002 || self.smooth.beat > 0.01 || self.smooth.stirring());
+        let want_tick = summary.moving || audio_live;
         let armed = TICK_ARMED.swap(false, Ordering::Relaxed);
         WANTS_TICK.store(want_tick, Ordering::Relaxed);
         let need_kick = want_tick && !armed;
         let ui_moving = st.ui_animating || st.menu_moving() || st.scroll_restore.is_some();
         self.animating = building || came_up || ui_moving || need_kick;
+        self.drew_own = !self.jobs.is_empty() || !self.layers.is_empty();
         if fps_on {
             self.log_fps(f.rt.clock);
         }
 
-        let born = *self.born.get_or_insert(f.rt.clock);
-        let warm_fx = !self.fx_warm && f.rt.clock - born > 1.5;
-        if warm_fx || !self.layers.is_empty() {
+        if !self.layers.is_empty() {
             let fx = self.fx.get_or_insert_with(|| {
                 let mut r = FxRenderer::new(device, f.format, FxOptions { dither: true });
                 r.add_format(device, wgpu::TextureFormat::Rgba16Float);
                 r
             });
             fx.set_srgb_blend(srgb);
-            if warm_fx {
-                self.fx_warm = true;
-                let spot = Shape::rounded(1.0, 1.0, 2.0, 2.0, 1.0);
-                let warm: Vec<FxLayer> = [layer(SPARKLES, [t, 1.0, 0.5, 0.0], spot, t, accent)].into_iter().flatten().collect();
-                let slots: Vec<FxSlot> = warm.iter().map(|_| FxSlot::default()).collect();
-                fx.prepare_with_slots(device, queue, &FxFrame { viewport: [size.0, size.1], scale: 1.0, layers: &warm, backdrop: None, sources: &[] }, &slots);
-            }
-            if !self.layers.is_empty() {
-                fx.prepare_with_slots(device, queue, &FxFrame { viewport: [size.0, size.1], scale: 1.0, layers: &self.layers, backdrop: None, sources: &[] }, &self.placements);
-            }
+            fx.prepare_with_slots(device, queue, &FxFrame { viewport: [size.0, size.1], scale: 1.0, layers: &self.layers, backdrop: None, sources: &[] }, &self.placements);
         }
 
         let clear = f.rt.clear_color();
@@ -228,7 +226,9 @@ impl Gfx {
                         if *n >= next {
                             break;
                         }
-                        if let Some(r) = &other.region {
+                        if !other.shared
+                            && let Some(r) = &other.region
+                        {
                             gpu.pyramid(device, enc, bd, other.u, r, other.tag, pyramid_key);
                         }
                     }
@@ -239,7 +239,7 @@ impl Gfx {
             if let Ok(pos) = jobs.binary_search_by_key(&s.index, |(n, _)| *n) {
                 let job = &jobs[pos].1;
                 if s.in_layer {
-                    if matches!(job.pipe, Pipe::Glass | Pipe::Veil) {
+                    if job.pipe == Pipe::Veil || (job.pipe == Pipe::Glass && job.region.is_some()) {
                         return;
                     }
                     if let EffectPhase::Draw(pass) = phase
@@ -253,7 +253,7 @@ impl Gfx {
                 }
                 if let EffectPhase::Draw(pass) = phase {
                     let reads_backdrop = matches!(job.pipe, Pipe::Glass | Pipe::Veil);
-                    if reads_backdrop && snap.is_none() {
+                    if job.pipe == Pipe::Veil && snap.is_none() {
                         return;
                     }
                     let b = Binds { bd: if reads_backdrop { snap.as_ref() } else { None }, pyr: job.region.map(|r| r.dims), tag: job.tag };
@@ -273,6 +273,10 @@ impl Gfx {
             }
         });
         gpu.finish(device, queue, pass_size);
+        let (pyrs, pyr_bytes, ubufs) = gpu.stats();
+        STAT_PYR_COUNT.store(pyrs, Ordering::Relaxed);
+        STAT_PYR_BYTES.store(pyr_bytes, Ordering::Relaxed);
+        STAT_UBUFS.store(ubufs, Ordering::Relaxed);
         self.gpu = Some(gpu);
         if let (true, Some(p)) = (timing, self.prof.as_mut()) {
             f.encoder.write_timestamp(&p.set, 1);

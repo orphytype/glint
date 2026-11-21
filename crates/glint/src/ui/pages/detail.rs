@@ -2,7 +2,6 @@
 //! and similar artists.
 
 use rune::{Cursor, El, Transition, Tx, col, el, icon, row};
-use ym_api::Track;
 
 use super::shared::{GRID_GAP, album_card, artist_card, column, facts_line, fit, heading_side, hscroll, play_button, row_arrows, track_list};
 use crate::app::{DiscKind, DiscSort, Load, Page, Popover, Sheet, State, Station, TrackSort};
@@ -17,9 +16,8 @@ use crate::ui::{
 pub(super) const HEAD_SIDE: f32 = 176.0;
 pub(super) const HEAD_SIDE_S: f32 = 140.0;
 pub(crate) const HEAD_COVER_R: f32 = 18.0;
-pub(super) const HEAD_STEP_TITLE: f32 = 6.0;
 pub(super) const HEAD_STEP_BY: f32 = 6.0;
-pub(super) const HEAD_STEP_BUTTONS: f32 = 10.0;
+pub(super) const HEAD_STEP_BUTTONS: f32 = 14.0;
 pub(super) const HEAD_GAP: f32 = 28.0;
 
 fn head_picture(s: &State, side: f32) -> El {
@@ -129,11 +127,11 @@ fn head_backdrop(s: &State, w: f32, side: f32) -> Option<El> {
     )
 }
 
-fn head_facts(s: &State) -> String {
+fn head_facts(s: &State, kind: S) -> String {
     let lang = s.lang;
     let d = &s.detail;
     let one = d.facts.iter().any(|(n, v)| *n == S::Tracks && v.trim() == "1");
-    let mut parts = Vec::new();
+    let mut parts = vec![kind.get(lang).to_owned()];
     if let Some(y) = d.year {
         parts.push(y.to_string());
     }
@@ -153,19 +151,17 @@ fn head_facts(s: &State) -> String {
 fn head_buttons(s: &State) -> El {
     let lang = s.lang;
     let d = &s.detail;
-    let mut first = row().gap(8.0).items_center();
-    let mut has_first = false;
+    let mut bar = row().key("d-buttons").w_full().gap(8.0).items_center().flex_wrap();
     if !d.tracks.is_empty() {
-        first = first
+        bar = bar
             .child(play_button(s, "d-play", d.page.clone(), false, |s| {
                 let list = s.detail.tracks.clone();
                 s.play_all(list, false);
             }))
-            .child(kit::btn_soft("d-shuffle", S::Shuffle.get(lang), Some(&icons::SHUFFLE)).on_press(|s: &mut State| {
+            .child(kit::round("d-shuffle", kit::Weight::Soft, &icons::SHUFFLE, kit::BTN_H, 18.0, S::Shuffle.get(lang)).on_press(|s: &mut State| {
                 let list = s.detail.tracks.clone();
                 s.play_all(list, true);
             }));
-        has_first = true;
     }
     let wave = match &d.page {
         Some(Page::Artist(id)) => Some(kit::wave_button(s, "d-wave", S::WaveByArtist.get(lang), &d.title, Station::Artist(id.clone()), kit::BTN_H)),
@@ -173,72 +169,30 @@ fn head_buttons(s: &State) -> El {
         _ => None,
     };
     if let Some(w) = wave {
-        first = first.child(w);
-        has_first = true;
+        bar = bar.child(w);
     }
-    let mut rest = row().gap(8.0).items_center();
-    if d.page.is_some() {
-        let pin_on = s.detail_is_pinned();
-        let pin_name = if pin_on { S::Pinned } else { S::Pin };
-        let pin_icon = if pin_on { &icons::PIN_OFF } else { &icons::PIN };
-        let mut pin = kit::pill_icon("d-pin", kit::Weight::Soft, pin_icon, kit::BTN_H, 20.0, pin_name.get(lang)).checked(pin_on);
-        if pin_on {
-            pin = pin.fill(th::veil(0.14));
-        }
-        rest = rest.child(pin.on_press(|s: &mut State| s.toggle_detail_pin()));
-    }
-    let download_tracks: &[Track] = if d.is_artist {
-        match &d.all_tracks {
-            Load::Ready(tracks) => tracks.as_slice(),
-            _ => &[],
-        }
-    } else {
-        &d.tracks
-    };
-    if !d.tracks.is_empty() {
-        let downloaded = s.downloads_settled(download_tracks);
-        let (icon, label) = if downloaded { (&icons::TRASH, S::DeleteDownload) } else { (&icons::DOWNLOAD, S::DownloadAll) };
-        rest = rest.child(kit::pill_icon("d-download", kit::Weight::Soft, icon, kit::BTN_H, 20.0, label.get(lang)).on_press(move |s: &mut State| {
-            if downloaded {
-                s.delete_detail_downloads();
-            } else {
-                s.download_detail();
-            }
-        }));
-    }
-    let about_tip = if d.is_artist { S::AboutArtist } else { S::Details }.get(lang);
-    rest = rest.child(kit::pill_icon("d-info", kit::Weight::Soft, &icons::INFO, kit::BTN_H, 18.0, about_tip).on_press(|s: &mut State| s.open_sheet(Sheet::Page)));
     let on = s.popover_open && matches!(s.popover, Some(Popover::Actions { .. }));
-    rest = rest.child(
+    bar.child(
         kit::pill_icon("d-more", kit::Weight::Soft, &icons::MORE, kit::BTN_H, 20.0, S::More.get(lang))
             .checked(on)
             .on_press(|s: &mut State| s.open_popover(Popover::Actions { anchor: "d-more".into() })),
-    );
-    let mut bar = row().key("d-buttons").w_full().gap(8.0).items_center().flex_wrap();
-    if has_first {
-        bar = bar.child(first).child(el().w(1.0).h(20.0).mx(4.0).fill(th::hairline()));
-    }
-    bar.child(rest)
+    )
 }
 
 fn head_button_bones(s: &State) -> El {
     let d = &s.detail;
-    let mut first = row()
+    let mut bar = row()
+        .key("d-buttons-bone")
+        .w_full()
         .gap(8.0)
         .items_center()
+        .flex_wrap()
         .child(kit::button_bone("d-play-bone", kit::button_width(S::Play.get(s.lang), true)))
-        .child(kit::button_bone("d-shuffle-bone", kit::button_width(S::Shuffle.get(s.lang), true)));
+        .child(kit::button_bone("d-shuffle-bone", kit::BTN_H));
     if matches!(d.page, Some(Page::Artist(_) | Page::Album(_))) {
-        first = first.child(kit::button_bone("d-wave-bone", kit::BTN_H));
+        bar = bar.child(kit::button_bone("d-wave-bone", kit::BTN_H));
     }
-    let rest = row()
-        .gap(8.0)
-        .items_center()
-        .child(kit::button_bone("d-pin-bone", kit::BTN_H))
-        .child(kit::button_bone("d-download-bone", kit::BTN_H))
-        .child(kit::button_bone("d-info-bone", kit::BTN_H))
-        .child(kit::button_bone("d-more-bone", kit::BTN_H));
-    row().key("d-buttons-bone").w_full().gap(8.0).items_center().flex_wrap().child(first).child(el().w(1.0).h(20.0).mx(4.0).fill(th::hairline())).child(rest)
+    bar.child(kit::button_bone("d-more-bone", kit::BTN_H))
 }
 
 pub(super) fn detail(s: &State, w: f32) -> El {
@@ -269,10 +223,11 @@ pub(super) fn detail(s: &State, w: f32) -> El {
         } else {
             label(d.title.clone(), title_style, th::text()).max_lines(2).w_full()
         };
-        let mut meta = col().key("d-meta").min_w(0.0).child(kit::caps(kind.get(lang), th::text3())).child(name.mt(4.0));
+        let mut meta = col().key("d-meta").min_w(0.0).child(name);
         let by_w = if wide { (cw - side - HEAD_GAP).max(180.0) } else { cw.max(180.0) };
+        let has_by = !d.artists.is_empty() || !d.subtitle.is_empty();
         if !d.artists.is_empty() {
-            meta = meta.child(el().key("d-by").w_full().min_w(0.0).mt(6.0).child(kit::artists_row_in_width(
+            meta = meta.child(el().key("d-by").w_full().min_w(0.0).mt(HEAD_STEP_BY).child(kit::artists_row_in_width(
                 s,
                 &d.artists,
                 th::BYLINE_M,
@@ -283,21 +238,21 @@ pub(super) fn detail(s: &State, w: f32) -> El {
                 true,
             )));
         } else if !d.subtitle.is_empty() {
-            meta = meta.child(label(d.subtitle.clone(), th::BYLINE_M, th::text2()).truncate().min_w(0.0).mt(6.0));
+            meta = meta.child(label(d.subtitle.clone(), th::BYLINE_M, th::text2()).truncate().min_w(0.0).mt(HEAD_STEP_BY));
         }
         if !coming {
-            let facts = head_facts(s);
+            let facts = head_facts(s, kind);
             if !facts.is_empty() {
-                let (style, color, gap) = if d.is_artist { (th::BODY, th::text2(), 6.0) } else { (th::SMALL, th::text3(), 5.0) };
+                let (style, color, gap) = if d.is_artist { (th::BODY, th::text2(), 6.0) } else { (th::SMALL, th::text3(), if has_by { 4.0 } else { 6.0 }) };
                 meta = meta.child(label(facts, style, color).truncate().min_w(0.0).mt(gap));
             }
         } else {
             meta = meta.child(kit::text_bone("d-by-bone", th::BYLINE_M.line_height, 12.0, 200.0).mt(6.0));
         }
         if coming {
-            meta = meta.child(head_button_bones(s).mt(16.0));
+            meta = meta.child(head_button_bones(s).mt(HEAD_STEP_BUTTONS));
         } else if !d.tracks.is_empty() || d.like_key.is_some() || !d.facts.is_empty() {
-            meta = meta.child(head_buttons(s).mt(16.0));
+            meta = meta.child(head_buttons(s).mt(HEAD_STEP_BUTTONS));
         }
         let fold = Transition::asymmetric(Transition::none(), Transition::opacity().combined(Transition::scale(0.94)).combined(Transition::offset(0.0, -16.0))).springs(th::RISE);
         let head = if wide {
@@ -323,8 +278,6 @@ pub(super) fn detail(s: &State, w: f32) -> El {
                         .key("d-tracks-h")
                         .w_full()
                         .h(32.0)
-                        .pl(12.0)
-                        .pr(4.0)
                         .gap(12.0)
                         .items_center()
                         .child(label(S::AllTracks.get(lang), th::SECTION, th::text()))

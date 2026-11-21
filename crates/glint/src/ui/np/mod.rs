@@ -12,7 +12,7 @@ use super::dock;
 use super::kit::{self, BTN, PAGE_PAD, TITLE_H, label};
 use super::np_icons;
 use super::shapes::Ill;
-use crate::app::{NpTab, Popover, State, Station, WaveChoice};
+use crate::app::{NpTab, State, Station, WaveChoice};
 use crate::fx;
 use crate::i18n::S;
 use crate::store::{PlayerLayout, Repeat};
@@ -136,7 +136,7 @@ pub fn page(s: &State, w: f32, h: f32, come: f32, front: bool) -> El {
 
     let artist = kit::artist_line_width(s, t, th::BODY, true, "np-art", ctl);
     let mine = row().items_center().child(kit::np_like_button(s, t, SMALL_BTN, SMALL_GLYPH)).child(
-        kit::quiet_btn("np-more", &np_icons::MORE_V, SMALL_GLYPH, SMALL_BTN, th::text3(), S::More.get(lang))
+        kit::quiet_btn("np-more", &np_icons::MORE, SMALL_GLYPH, SMALL_BTN, th::text3(), S::More.get(lang))
             .on_press(|s: &mut State| s.open_player_menu(rune::PopupAnchor::Key("np-more".into()))),
     );
     let inset = (SMALL_BTN - SMALL_GLYPH) * 0.5;
@@ -156,16 +156,12 @@ pub fn page(s: &State, w: f32, h: f32, come: f32, front: bool) -> El {
         .child(label("0:00", th::MONO, th::text3()).live_text(&s.lives.clock))
         .child(label("-0:00", th::MONO, th::text3()).live_text(&s.lives.remaining));
     let edge = (MODE_BTN - MODE_GLYPH) * 0.5;
-    let align_inset = MODE_GLYPH * 0.5 + MODE_BTN;
-    let min_span = 30.0 + TRANSPORT_GAP + (BTN + 4.0) + MODE_BTN * 0.5;
-    let mode_gap = (ctl * 0.5 - align_inset - min_span).max(12.0);
     let repeat_icon = if s.player.repeat == Repeat::One { &np_icons::REPEAT_ONE } else { &np_icons::REPEAT };
     let transport = row()
         .w(ctl + 2.0 * edge)
         .h(56.0)
         .items_center()
-        .justify_center()
-        .gap(mode_gap)
+        .justify_between()
         .child(kit::quiet_toggle("np-shuffle", &np_icons::SHUFFLE, MODE_GLYPH, MODE_BTN, s.player.shuffle, S::Shuffle.get(lang)).on_press(|s: &mut State| s.toggle_shuffle()))
         .child(
             row()
@@ -198,10 +194,9 @@ pub fn page(s: &State, w: f32, h: f32, come: f32, front: bool) -> El {
         .h(40.0)
         .items_center()
         .child(kit::quiet_btn("np-mute", vol_icon, MODE_GLYPH, MODE_BTN, th::text3(), S::Mute.get(lang)).on_press(|s: &mut State| s.toggle_mute()))
-        .child(row().grow(1.0).min_w(0.0).ml(4.0).mr(16.0).child(kit::slider("vol", &s.lives.volume, 3.0, th::text2(), |s: &mut State, f: f32, _| s.set_volume(f))))
+        .child(row().grow(1.0).min_w(0.0).ml(4.0).mr(8.0).child(kit::slider("vol", &s.lives.volume, 3.0, th::text2(), |s: &mut State, f: f32, _| s.set_volume(f))))
         .child(lyrics_btn)
-        .child(panel_toggle("np-queue-btn", &np_icons::QUEUE, S::Queue.get(lang), NpTab::Queue))
-        .child(look_button(s));
+        .child(panel_toggle("np-queue-btn", &np_icons::QUEUE, S::Queue.get(lang), NpTab::Queue));
 
     let slide = if s.is_resizing() { rune::Spring::NONE } else { th::SLIDE };
     let mut left = col()
@@ -275,12 +270,6 @@ pub fn page(s: &State, w: f32, h: f32, come: f32, front: bool) -> El {
         );
     }
     root
-}
-
-fn look_button(s: &State) -> El {
-    let open = s.popover_open && matches!(s.popover, Some(Popover::Stage { .. }));
-    kit::quiet_toggle("np-look", &np_icons::LOOK, MODE_GLYPH, MODE_BTN, open, S::StageLook.get(s.lang))
-        .on_press(|s: &mut State| s.open_popover(Popover::Stage { anchor: "np-look".into() }))
 }
 
 pub(super) fn notice(p: &Pal, x: f32, w: f32, h: f32, art: Ill, msg: &str) -> El {

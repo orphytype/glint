@@ -10,10 +10,10 @@ use crate::theme as th;
 use crate::ui::{
     icons,
     kit::{self, Hover as _, label},
-    np, settings, wave_title,
+    np, settings,
 };
 
-pub(super) const STAGE_W: f32 = 440.0;
+pub(super) const TUNE_W: f32 = 428.0;
 const STAGE_MIN: f32 = 260.0;
 const STAGE_INLINE: f32 = 400.0;
 const STAGE_ROW: f32 = 46.0;
@@ -24,10 +24,12 @@ const PICK_SEG_MIN: f32 = 58.0;
 const STAGE_CAPTION: f32 = 30.0;
 const STAGE_AFTER: f32 = 8.0;
 const STAGE_HEAD: f32 = 56.0;
+const TUNE_HEAD: f32 = 44.0;
+const TUNE_PAD_X: f32 = 12.0;
+const TUNE_PICK_W: f32 = TUNE_W - 2.0 * PAD - 2.0 * TUNE_PAD_X;
 const STAGE_MARGIN: f32 = 2.0 * EDGE + 2.0 * PAD + 8.0;
 const PICK_SPRING: rune::Spring = rune::Spring::new(0.34, 0.12);
 const LYRIC_FACES: [&str; 3] = ["Plex Mono", "Commissioner", "Cormorant"];
-const WIDE_PICK: f32 = STAGE_W - 2.0 * PAD - 8.0 - 12.0 - 7.0;
 
 pub fn stage_rows() -> [(S, [S; 3]); 1] {
     [(S::Effects, [S::StageOff, S::StageCalm, S::StageLively])]
@@ -73,14 +75,12 @@ enum Face {
     Size,
     Align,
     Font,
-    Serif,
 }
 
 fn face(f: Face, j: usize, name: &str, on: bool) -> El {
     let ink = if on { th::text() } else { th::text2() };
     match f {
         Face::Word => label(name.to_owned(), th::SMALL, ink).truncate(),
-        Face::Serif => label(name.to_owned(), th::wave_words(16.0), ink).truncate(),
         Face::Size => {
             let px = [11.0, 14.0, 17.5][j.min(2)];
             label("Aa".to_owned(), rune::TextStyle::new(px, 600.0).family(th::SANS).lh(20.0), ink)
@@ -148,7 +148,7 @@ fn picker(key: &str, width: f32, names: &[&str], current: usize, look: Face, i: 
             .hov(th::veil(if on { 0.0 } else { 0.05 }))
             .on_press(move |s: &mut State| set(s, i, j))
             .child(face(look, j, name, on));
-        if !matches!(look, Face::Word | Face::Serif) {
+        if !matches!(look, Face::Word) {
             c = c.help(name);
         }
         line = line.child(c);
@@ -327,17 +327,10 @@ pub(super) fn stage_entries(s: &State, pw: f32, win_h: f32) -> Vec<Entry> {
 }
 
 fn tune_row(name: &str, control: El) -> (El, f32) {
-    let h = STAGE_ROW - 10.0 + PICK_H + 10.0;
-    (
-        col()
-            .w_full()
-            .h(h)
-            .pl(12.0)
-            .pr(7.0)
-            .child(row().w_full().h(STAGE_ROW - 10.0).items_center().child(label(name.to_owned(), th::wave_words(18.0), th::text()).truncate()))
-            .child(control),
-        h,
-    )
+    const LABEL_H: f32 = 24.0;
+    const GAP_BOTTOM: f32 = 10.0;
+    let h = LABEL_H + PICK_H + GAP_BOTTOM;
+    (col().w_full().h(h).px(TUNE_PAD_X).child(row().w_full().h(LABEL_H).items_center().child(label(name.to_owned(), th::LABEL, th::text2()).truncate())).child(control), h)
 }
 
 fn set_wave_knob(s: &mut State, i: usize, v: usize) {
@@ -366,7 +359,7 @@ pub(super) fn wave_tune_entries(s: &State, win_h: f32) -> Vec<Entry> {
     let tune = s.wave_tune(id);
     let tunable = WaveTune::applies(id);
     let changed = (tunable && tune != WaveTune::of(id)) || s.settings.wave_look != WaveLook::default();
-    let mut reset = row().key("wt-reset").role("button").label(S::StageReset.get(lang)).h(28.0).px(12.0).radius(14.0).center().transition(Transition::none());
+    let mut reset = row().key("wt-reset").role("button").label(S::StageReset.get(lang)).h(26.0).px(11.0).radius(13.0).center().transition(Transition::none());
     reset = if changed {
         reset.cursor(Cursor::Pointer).fill(th::veil(0.07)).hov(th::veil(0.11)).press(th::veil(0.15)).press_scale(th::PRESS).on_press(|s: &mut State| {
             let id = s.wave_choice.clone();
@@ -377,56 +370,57 @@ pub(super) fn wave_tune_entries(s: &State, win_h: f32) -> Vec<Entry> {
     } else {
         reset.disabled(true)
     };
-    let reset = reset.child(label(S::StageReset.get(lang).to_owned(), th::SMALL, if changed { th::text() } else { th::text3().alpha(0.6) }));
+    let reset = reset.child(label(S::StageReset.get(lang).to_owned(), th::SMALL, if changed { th::text() } else { th::text3().alpha(0.55) }));
     let head = row()
         .w_full()
-        .h(STAGE_HEAD)
-        .pl(8.0)
-        .pr(6.0)
-        .gap(12.0)
+        .h(TUNE_HEAD)
+        .pl(TUNE_PAD_X)
+        .pr(8.0)
+        .gap(10.0)
         .items_center()
-        .child(row().w(34.0).h(34.0).radius(10.0).center().fill(th::veil(0.07)).child(rune::icon(&icons::TUNE, 18.0).color(th::text())))
-        .child(
-            col()
-                .grow(1.0)
-                .min_w(0.0)
-                .child(label(S::WaveTitle.get(lang).to_owned(), th::wave_words(22.0), th::text()))
-                .child(label(format!("{} · {}", S::WaveTuneOf.get(lang), wave_title(id).get(lang)), th::wave_words(15.0), th::text3()).truncate()),
-        )
+        .child(label(S::WaveTitle.get(lang).to_owned(), th::H3, th::text()).truncate().grow(1.0).min_w(0.0))
         .child(reset);
-    let caption = |t: S| label(t.get(lang).to_owned(), th::wave_words(16.0), th::text3());
-    let (knobs, knobs_h) = if tunable {
+
+    let mut body = col().w_full().pt(6.0);
+    let mut body_h = 6.0;
+    if tunable {
         let divs = [S::WaveAnyOne, S::WaveFavorite, S::WaveDiscover, S::WavePopular].map(|n| n.get(lang));
         let moods = [S::WaveAnyMood, S::WaveEnergetic, S::WaveFun, S::WaveCalm, S::WaveSad].map(|n| n.get(lang));
         let langs = [S::WaveAnyOne, S::WaveRussian, S::WaveForeign, S::WaveNoWords].map(|n| n.get(lang));
-        let rows = vec![
-            tune_row(S::WaveCharacter.get(lang), picker("wt-div", WIDE_PICK, &divs, usize::from(tune.diversity), Face::Serif, 0, set_wave_knob)),
-            tune_row(S::Mood.get(lang), picker("wt-mood", WIDE_PICK, &moods, usize::from(tune.mood), Face::Serif, 1, set_wave_knob)),
-            tune_row(S::WaveLanguage.get(lang), picker("wt-lang", WIDE_PICK, &langs, usize::from(tune.language), Face::Serif, 2, set_wave_knob)),
-        ];
-        look_group("wt-knobs", caption(S::WaveTitle), rows)
+        for (el_row, rh) in [
+            tune_row(S::WaveCharacter.get(lang), picker("wt-div", TUNE_PICK_W, &divs, usize::from(tune.diversity), Face::Word, 0, set_wave_knob)),
+            tune_row(S::Mood.get(lang), picker("wt-mood", TUNE_PICK_W, &moods, usize::from(tune.mood), Face::Word, 1, set_wave_knob)),
+            tune_row(S::WaveLanguage.get(lang), picker("wt-lang", TUNE_PICK_W, &langs, usize::from(tune.language), Face::Word, 2, set_wave_knob)),
+        ] {
+            body = body.child(el_row);
+            body_h += rh;
+        }
     } else {
-        let note =
-            (row().w_full().h(STAGE_ROW).pl(12.0).items_center().child(label(S::WaveTuneNone.get(lang).to_owned(), th::wave_words(16.0), th::text2()).truncate()), STAGE_ROW);
-        look_group("wt-knobs", caption(S::WaveTitle), vec![note])
-    };
+        let note = row().w_full().h(38.0).px(TUNE_PAD_X).items_center().child(label(S::WaveTuneNone.get(lang).to_owned(), th::SMALL, th::text3()).truncate());
+        body = body.child(note);
+        body_h += 38.0;
+    }
+
+    let sep = row().w_full().h(9.0).px(TUNE_PAD_X).items_center().child(el().w_full().h(1.0).fill(th::hairline()));
+    let look_cap = row().w_full().h(26.0).px(TUNE_PAD_X).items_center().child(kit::caps(S::WaveLook.get(lang), th::text3()));
+    body = body.child(sep).child(look_cap);
+    body_h += 9.0 + 26.0;
+
     let look = s.settings.wave_look;
     let forms = [S::FormLiquid, S::FormFlower, S::FormPinwheel, S::FormCloud].map(|n| n.get(lang));
     let prints = [S::PrintSmooth, S::PrintDither, S::PrintDots, S::PrintLines].map(|n| n.get(lang));
-    let (looks, looks_h) = look_group(
-        "wt-look",
-        caption(S::WaveLook),
-        vec![
-            tune_row(S::WaveForm.get(lang), picker("wt-form", WIDE_PICK, &forms, usize::from(look.form), Face::Serif, 3, set_wave_knob)),
-            tune_row(S::WavePrint.get(lang), picker("wt-print", WIDE_PICK, &prints, usize::from(look.print), Face::Serif, 4, set_wave_knob)),
-        ],
-    );
-    let body_h = knobs_h + looks_h;
-    let room = (win_h - STAGE_MARGIN - STAGE_HEAD).max(160.0);
-    let body = col().w_full().child(knobs).child(looks);
+    for (el_row, rh) in [
+        tune_row(S::WaveForm.get(lang), picker("wt-form", TUNE_PICK_W, &forms, usize::from(look.form), Face::Word, 3, set_wave_knob)),
+        tune_row(S::WavePrint.get(lang), picker("wt-print", TUNE_PICK_W, &prints, usize::from(look.print), Face::Word, 4, set_wave_knob)),
+    ] {
+        body = body.child(el_row);
+        body_h += rh;
+    }
+
+    let room = (win_h - STAGE_MARGIN - TUNE_HEAD - 9.0).max(160.0);
     if body_h <= room {
-        return vec![Entry::Block(head, STAGE_HEAD), Entry::Block(body.h(body_h), body_h)];
+        return vec![Entry::Block(head, TUNE_HEAD), Entry::Divider, Entry::Block(body.h(body_h), body_h)];
     }
     let scroll = col().key("wt-scroll").w_full().h(room).scroll(rune::ScrollSpec { stick_bottom: false }).scroll_edge_fade(12.0).child(body);
-    vec![Entry::Block(head, STAGE_HEAD), Entry::Block(scroll, room)]
+    vec![Entry::Block(head, TUNE_HEAD), Entry::Divider, Entry::Block(scroll, room)]
 }

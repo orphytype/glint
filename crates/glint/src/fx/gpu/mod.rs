@@ -238,6 +238,20 @@ impl Gpu {
         }
     }
 
+    /// Diagnostic counters: `(pyramid_count, pyramid_bytes, uniform_buffer_count)`.
+    pub fn stats(&self) -> (u32, u64, u32) {
+        let mut pyr_bytes = 0u64;
+        for (&(w, h, _), p) in &self.pyrs {
+            for m in 0..p.mips.len() as u32 {
+                let mw = u64::from((w >> m).max(1));
+                let mh = u64::from((h >> m).max(1));
+                // Rgba16Float = 8 bytes per texel.
+                pyr_bytes = pyr_bytes.saturating_add(mw * mh * 8);
+            }
+        }
+        (self.pyrs.len() as u32, pyr_bytes, self.ubufs.len() as u32)
+    }
+
     /// Number of uniform blocks staged for this frame.
     pub fn used(&self) -> usize {
         self.used

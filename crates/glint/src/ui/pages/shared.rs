@@ -326,7 +326,11 @@ impl State {
         match src {
             ListSrc::Liked => {
                 let v = self.library.tracks.get()?;
-                if self.library.filter.text.trim().is_empty() { v.get(i) } else { self.library.shown.borrow().get(i).and_then(|&j| v.get(j)) }
+                if self.library.filter.text.trim().is_empty() && self.library.sort == crate::app::TrackSort::Original {
+                    v.get(i)
+                } else {
+                    self.library.shown.borrow().get(i).and_then(|&j| v.get(j))
+                }
             }
             ListSrc::Detail => self.detail.tracks.get(i),
             ListSrc::Search => self.search_view().and_then(|r| r.tracks.results.get(i)),

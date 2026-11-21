@@ -1,5 +1,5 @@
 ; The Windows installer, built with Inno Setup 6 by scripts/dist-windows.ps1:
-;   iscc /DAppVersion=0.9.0 /DSourceExe=..\..\target\release\glint.exe /DOutDir=..\..\dist packaging\windows\glint.iss
+;   iscc /DAppVersion=0.9.1 /DSourceExe=..\..\target\release\glint.exe /DOutDir=..\..\dist packaging\windows\glint.iss
 ; Installs for the current user in the fixed per-user Programs directory, in Russian, without
 ; asking anything, and opens Glint when it is done (also after an update, which runs it /SILENT).
 ; The user's data (%APPDATA%\Glint, %LOCALAPPDATA%\Glint) stays when Glint is removed.

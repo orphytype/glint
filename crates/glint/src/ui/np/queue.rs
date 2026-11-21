@@ -2,10 +2,10 @@
 
 use std::borrow::Cow;
 
-use rune::{Cursor, El, GrowthSpec, ScrollSpec, col, el, icon, row};
+use rune::{El, GrowthSpec, ScrollSpec, col, el, row};
 
 use super::notice;
-use crate::app::{FromName, State};
+use crate::app::State;
 use crate::i18n::S;
 use crate::theme::{self as th, Pal};
 use crate::ui::icons;
@@ -69,16 +69,19 @@ pub(super) fn queue_view(s: &State, p: &Pal, x: f32, w: f32, h: f32) -> El {
                 QueueItem::Now => now_heading(s),
                 QueueItem::Next => {
                     let after = s.player.queue.len().saturating_sub(cur + 1);
+                    let clear = kit::ibtn("q-clear", &icons::TRASH, 15.0, 28.0, th::text3(), S::ClearQueue.get(s.lang)).on_press(State::clear_up_next);
                     row()
                         .key("q-next-h")
                         .w_full()
-                        .h(52.0)
+                        .h(ROW_H)
                         .px(kit::ROW_PAD)
                         .pt(18.0)
+                        .gap(6.0)
                         .items_center()
                         .child(label(S::UpNext.get(s.lang), th::H3, th::text()))
                         .child(el().grow(1.0))
                         .child(label(s.lang.tracks(after), th::SMALL, th::text3()))
+                        .child(clear)
                 }
             })
         },
@@ -90,39 +93,10 @@ pub(super) fn queue_view(s: &State, p: &Pal, x: f32, w: f32, h: f32) -> El {
         .h(h)
         .motion(rune::Spring::NONE)
         .scroll(ScrollSpec { stick_bottom: false })
-        .scroll_edge_fade(28.0)
+        .scroll_edge_fade(44.0)
         .child(col().w_full().pt(QUEUE_TOP).pb((h * 0.5).max(72.0)).child(rows))
 }
 
 fn now_heading(s: &State) -> El {
-    let lang = s.lang;
-    let (caption, name, page) = match &s.playing_from {
-        Some(from) => {
-            let name = match &from.name {
-                FromName::Text(t) => t.trim().to_owned(),
-                FromName::Word(w) => w.get(lang).to_owned(),
-            };
-            let kind = from.kind.get(lang);
-            if name.is_empty() || name.to_lowercase() == kind.to_lowercase() {
-                (S::NowPlaying.get(lang).to_owned(), kind.to_owned(), from.page.clone())
-            } else {
-                (format!("{} · {}", S::NowPlaying.get(lang), kind.to_lowercase()), name, from.page.clone())
-            }
-        }
-        None => (String::new(), S::NowPlaying.get(lang).to_owned(), None),
-    };
-    let mut title = row().key("q-now-name").min_w(0.0).child(label(name, th::SHEET_TITLE, th::text()).truncate().min_w(0.0));
-    if let Some(page) = page {
-        title = title
-            .role("link")
-            .cursor(Cursor::Pointer)
-            .hov_group()
-            .on_press(move |s: &mut State| s.go(page.clone()))
-            .child(icon(&icons::CHEVRON_RIGHT, 18.0).color(th::text3()).gcol(th::text()).ml(4.0));
-    }
-    let mut c = col().key("q-now-h").w_full().px(kit::ROW_PAD).pt(20.0).pb(10.0).gap(2.0);
-    if !caption.is_empty() {
-        c = c.child(label(caption, th::SMALL, th::text2()));
-    }
-    c.child(title.items_center())
+    row().key("q-now-h").w_full().h(ROW_H).px(kit::ROW_PAD).pt(18.0).items_center().child(label(S::NowPlaying.get(s.lang), th::H3, th::text()))
 }

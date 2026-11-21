@@ -204,6 +204,8 @@ pub struct Settings {
     pub show_tray: bool,
     /// Look for a newer version on GitHub when Glint starts (nothing is installed unasked).
     pub auto_update: bool,
+    /// Write anonymized local diagnostic logs (capped at 1 MiB) and a hardware summary.
+    pub logging: bool,
     /// The close button hides the window and leaves the music playing (needs the tray icon).
     pub close_to_tray: bool,
     /// Glint starts when the user signs in to the computer (`autostart.rs`).
@@ -264,6 +266,7 @@ impl Default for Settings {
             wave_look: WaveLook::default(),
             show_tray: true,
             auto_update: true,
+            logging: true,
             close_to_tray: false,
             autostart: false,
             autostart_hidden: true,
