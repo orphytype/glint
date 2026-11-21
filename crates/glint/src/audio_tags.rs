@@ -25,17 +25,17 @@ fn metadata(track: &Track) -> (String, String, Option<String>, Option<String>, S
 fn embed_mp3(audio: &[u8], track: &Track, cover: Option<&[u8]>) -> Vec<u8> {
     let (title, artist, year, genre, album) = metadata(track);
     let mut tag = Vec::new();
-    text_frame(&mut tag, b"TIT2", &title);
-    text_frame(&mut tag, b"TPE1", &artist);
+    text_frame(&mut tag, *b"TIT2", &title);
+    text_frame(&mut tag, *b"TPE1", &artist);
     if !album.is_empty() {
-        text_frame(&mut tag, b"TALB", &album);
+        text_frame(&mut tag, *b"TALB", &album);
     }
     if let Some(year) = year {
-        text_frame(&mut tag, b"TDRC", &year);
-        text_frame(&mut tag, b"TYER", &year);
+        text_frame(&mut tag, *b"TDRC", &year);
+        text_frame(&mut tag, *b"TYER", &year);
     }
     if let Some(genre) = genre {
-        text_frame(&mut tag, b"TCON", &genre);
+        text_frame(&mut tag, *b"TCON", &genre);
     }
     if let Some(image) = cover.filter(|bytes| !bytes.is_empty()) {
         let mut frame = vec![3];
@@ -44,7 +44,7 @@ fn embed_mp3(audio: &[u8], track: &Track, cover: Option<&[u8]>) -> Vec<u8> {
         frame.push(3);
         frame.push(0);
         frame.extend_from_slice(image);
-        frame_with_payload(&mut tag, b"APIC", &frame);
+        frame_with_payload(&mut tag, *b"APIC", &frame);
     }
 
     let mut out = Vec::with_capacity(10 + tag.len() + audio.len());
@@ -57,14 +57,14 @@ fn embed_mp3(audio: &[u8], track: &Track, cover: Option<&[u8]>) -> Vec<u8> {
     out
 }
 
-fn text_frame(tag: &mut Vec<u8>, id: &[u8; 4], value: &str) {
+fn text_frame(tag: &mut Vec<u8>, id: [u8; 4], value: &str) {
     let mut payload = vec![3];
     payload.extend_from_slice(value.as_bytes());
     frame_with_payload(tag, id, &payload);
 }
 
-fn frame_with_payload(tag: &mut Vec<u8>, id: &[u8; 4], payload: &[u8]) {
-    tag.extend_from_slice(id);
+fn frame_with_payload(tag: &mut Vec<u8>, id: [u8; 4], payload: &[u8]) {
+    tag.extend_from_slice(&id);
     // ID3v2.4 frame sizes are syncsafe (seven bits per byte), unlike the plain 32-bit sizes of
     // v2.3. Writing one where the other is read makes players see a different frame length.
     tag.extend_from_slice(&syncsafe(payload.len() as u32));

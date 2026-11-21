@@ -2,22 +2,31 @@
 //! first; with [`DiskCache::UNLIMITED`], nothing is ever evicted.
 //!
 //! Files are written to a temporary name and renamed into place, so a crash or a second process
-//! never sees half a file. Reading a file refreshes its modification time, which is the "recently
-//! used" clock.
+//! never sees half a file. An in-memory index tracks file sizes and recency so reads never write
+//! metadata back to disk and writes do not scan the whole folder.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const EXT: &str = "bin";
+
+struct Index {
+    loaded: bool,
+    total: u64,
+    tick: u64,
+    entries: HashMap<PathBuf, (u64, u64)>,
+}
 
 pub struct DiskCache {
     dir: PathBuf,
     max_bytes: u64,
-    /// Serialises writes and evictions within the process.
-    write: Mutex<()>,
+    index: Mutex<Index>,
+    seq: AtomicU64,
 }
 
 /// FNV-1a: only used to keep different odd keys apart, not for security.
@@ -25,10 +34,8 @@ fn fnv(s: &str) -> u64 {
     s.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
 }
 
-fn touch(path: &Path) {
-    if let Ok(f) = fs::OpenOptions::new().write(true).open(path) {
-        let _ = f.set_modified(SystemTime::now());
-    }
+fn mtime_secs(t: SystemTime) -> u64 {
+    t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 impl DiskCache {
@@ -40,14 +47,39 @@ impl DiskCache {
     pub fn open(dir: impl Into<PathBuf>, max_bytes: u64) -> io::Result<DiskCache> {
         let dir = dir.into();
         fs::create_dir_all(&dir)?;
-        let cache = DiskCache { dir, max_bytes, write: Mutex::new(()) };
-        // Leftovers of an interrupted write.
-        for entry in fs::read_dir(&cache.dir)?.flatten() {
-            if entry.path().extension().is_some_and(|e| e == "tmp") {
-                let _ = fs::remove_file(entry.path());
+        Ok(DiskCache { dir, max_bytes, index: Mutex::new(Index { loaded: false, total: 0, tick: 0, entries: HashMap::new() }), seq: AtomicU64::new(0) })
+    }
+
+    /// Removes temporary files left by an interrupted write and preloads the directory index.
+    pub fn sweep_tmp(&self) {
+        let Ok(entries) = fs::read_dir(&self.dir) else { return };
+        let mut map = HashMap::new();
+        let mut max_tick = 0u64;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let ext = path.extension().and_then(|e| e.to_str());
+            if ext == Some("tmp") {
+                let _ = fs::remove_file(&path);
+            } else if ext == Some(EXT)
+                && let Ok(meta) = entry.metadata()
+            {
+                let len = meta.len();
+                let stamp = mtime_secs(meta.modified().unwrap_or(UNIX_EPOCH));
+                max_tick = max_tick.max(stamp);
+                map.insert(path, (len, stamp));
             }
         }
-        Ok(cache)
+        let mut idx = self.index.lock().unwrap_or_else(PoisonError::into_inner);
+        if !idx.loaded {
+            for (path, (len, stamp)) in map {
+                if let std::collections::hash_map::Entry::Vacant(slot) = idx.entries.entry(path) {
+                    slot.insert((len, stamp));
+                    idx.total = idx.total.saturating_add(len);
+                }
+            }
+            idx.tick = idx.tick.max(max_tick);
+            idx.loaded = true;
+        }
     }
 
     pub fn dir(&self) -> &Path {
@@ -66,8 +98,44 @@ impl DiskCache {
         self.dir.join(format!("{name}.{EXT}"))
     }
 
+    fn ensure_loaded(&self, idx: &mut Index) {
+        if idx.loaded {
+            return;
+        }
+        let Ok(dir) = fs::read_dir(&self.dir) else {
+            idx.loaded = true;
+            return;
+        };
+        let mut max_tick = idx.tick;
+        for entry in dir.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|x| x == EXT)
+                && let Ok(meta) = entry.metadata()
+            {
+                let len = meta.len();
+                let stamp = mtime_secs(meta.modified().unwrap_or(UNIX_EPOCH));
+                max_tick = max_tick.max(stamp);
+                if let Some((old, _)) = idx.entries.insert(path, (len, stamp)) {
+                    idx.total = idx.total.saturating_sub(old);
+                }
+                idx.total = idx.total.saturating_add(len);
+            }
+        }
+        idx.tick = max_tick;
+        idx.loaded = true;
+    }
+
     pub fn contains(&self, key: &str) -> bool {
-        self.max_bytes > 0 && self.path(key).is_file()
+        if self.max_bytes == 0 {
+            return false;
+        }
+        let path = self.path(key);
+        let idx = self.index.lock().unwrap_or_else(PoisonError::into_inner);
+        if idx.loaded {
+            return idx.entries.contains_key(&path);
+        }
+        drop(idx);
+        path.is_file()
     }
 
     pub fn get(&self, key: &str) -> Option<Arc<[u8]>> {
@@ -76,7 +144,16 @@ impl DiskCache {
         }
         let path = self.path(key);
         let bytes = fs::read(&path).ok()?;
-        touch(&path);
+        let len = bytes.len() as u64;
+        let mut idx = self.index.lock().unwrap_or_else(PoisonError::into_inner);
+        idx.tick = idx.tick.wrapping_add(1);
+        let tick = idx.tick;
+        if let Some(entry) = idx.entries.get_mut(&path) {
+            entry.1 = tick;
+        } else if idx.loaded {
+            idx.total = idx.total.saturating_add(len);
+            idx.entries.insert(path, (len, tick));
+        }
         Some(bytes.into())
     }
 
@@ -84,66 +161,82 @@ impl DiskCache {
         if self.max_bytes == 0 || bytes.len() as u64 > self.max_bytes || bytes.is_empty() {
             return Ok(());
         }
-        let _guard = self.write.lock().unwrap_or_else(PoisonError::into_inner);
         let path = self.path(key);
-        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+        let n = self.seq.fetch_add(1, Ordering::Relaxed);
+        let tmp = path.with_extension(format!("{}-{n}.tmp", std::process::id()));
         fs::write(&tmp, bytes)?;
         if let Err(e) = fs::rename(&tmp, &path) {
             let _ = fs::remove_file(&tmp);
             return Err(e);
         }
-        self.evict();
+        let len = bytes.len() as u64;
+        let to_remove = {
+            let mut idx = self.index.lock().unwrap_or_else(PoisonError::into_inner);
+            if self.max_bytes != Self::UNLIMITED {
+                self.ensure_loaded(&mut idx);
+            }
+            idx.tick = idx.tick.wrapping_add(1);
+            let tick = idx.tick;
+            if let Some((old, _)) = idx.entries.insert(path, (len, tick)) {
+                idx.total = idx.total.saturating_sub(old);
+            }
+            idx.total = idx.total.saturating_add(len);
+            if self.max_bytes != Self::UNLIMITED && idx.total > self.max_bytes {
+                // Evict down to 7/8 of the limit so full caches do not evict on every write.
+                let target = self.max_bytes - self.max_bytes / 8;
+                let mut by_age: Vec<(u64, u64, PathBuf)> = idx.entries.iter().map(|(p, &(l, t))| (t, l, p.clone())).collect();
+                by_age.sort_unstable_by_key(|e| e.0);
+                let mut drop_paths = Vec::new();
+                for (_, item_len, p) in by_age {
+                    if idx.total <= target {
+                        break;
+                    }
+                    idx.entries.remove(&p);
+                    idx.total = idx.total.saturating_sub(item_len);
+                    drop_paths.push(p);
+                }
+                drop_paths
+            } else {
+                Vec::new()
+            }
+        };
+        for p in to_remove {
+            let _ = fs::remove_file(p);
+        }
         Ok(())
     }
 
-    fn entries(&self) -> Vec<(SystemTime, u64, PathBuf)> {
-        let Ok(dir) = fs::read_dir(&self.dir) else { return Vec::new() };
-        dir.flatten()
-            .filter(|e| e.path().extension().is_some_and(|x| x == EXT))
-            .filter_map(|e| {
-                let meta = e.metadata().ok()?;
-                Some((meta.modified().unwrap_or(SystemTime::UNIX_EPOCH), meta.len(), e.path()))
-            })
-            .collect()
-    }
-
     pub fn total_bytes(&self) -> u64 {
-        self.entries().iter().map(|e| e.1).sum()
+        let mut idx = self.index.lock().unwrap_or_else(PoisonError::into_inner);
+        self.ensure_loaded(&mut idx);
+        idx.total
     }
 
     pub fn len(&self) -> usize {
-        self.entries().len()
+        let mut idx = self.index.lock().unwrap_or_else(PoisonError::into_inner);
+        self.ensure_loaded(&mut idx);
+        idx.entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// Deletes the least recently used files until the cache fits.
-    fn evict(&self) {
-        if self.max_bytes == Self::UNLIMITED {
-            return;
-        }
-        let mut files = self.entries();
-        let mut total: u64 = files.iter().map(|f| f.1).sum();
-        if total <= self.max_bytes {
-            return;
-        }
-        files.sort_by_key(|f| f.0);
-        for (_, len, path) in files {
-            if total <= self.max_bytes {
-                break;
-            }
-            if fs::remove_file(&path).is_ok() {
-                total -= len;
-            }
-        }
-    }
-
     pub fn clear(&self) -> io::Result<()> {
-        let _guard = self.write.lock().unwrap_or_else(PoisonError::into_inner);
-        for (_, _, path) in self.entries() {
-            fs::remove_file(path)?;
+        let paths: Vec<PathBuf> = {
+            let mut idx = self.index.lock().unwrap_or_else(PoisonError::into_inner);
+            self.ensure_loaded(&mut idx);
+            let list = idx.entries.keys().cloned().collect();
+            idx.entries.clear();
+            idx.total = 0;
+            list
+        };
+        for path in paths {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
         }
         Ok(())
     }

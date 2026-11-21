@@ -172,13 +172,22 @@ impl Catalog {
         let mut tracks = Vec::new();
         for (ai, spec) in SPECS.iter().enumerate() {
             // An artist's picture is the cover of their first album.
-            let artist = Artist { id: format!("da{ai}"), name: spec.name.into(), og_image: Some(cover_template(spec.hue, spec.style, ai as u64 * 2 + 1)), ..Artist::default() };
+            let artist = Artist {
+                id: format!("da{ai}"),
+                name: spec.name.into(),
+                og_image: Some(cover_template(spec.hue, spec.style, ai as u64 * 2 + 1)),
+                genres: vec![spec.style.name().into(), "electronic".into()],
+                ..Artist::default()
+            };
             for (bi, (album_title, titles)) in spec.albums.iter().enumerate() {
                 let album_seed = (ai * 2 + bi) as u64 + 1;
+                let year = 2021 + ((ai + bi) % 5) as i32;
                 let mut album = Album {
                     id: format!("db{ai}{bi}"),
                     title: (*album_title).into(),
-                    year: Some(2021 + ((ai + bi) % 5) as i32),
+                    year: Some(year),
+                    release_date: Some(format!("{year}-08-14")),
+                    labels: vec!["Example Records".into()],
                     cover_uri: Some(cover_template(spec.hue + bi as f32 * 24.0, spec.style, album_seed)),
                     genre: Some(spec.style.name().into()),
                     track_count: Some(titles.len() as u32),
@@ -343,7 +352,10 @@ impl Catalog {
         // Made up, as the rest: something to say about them, their pages and a way to support them.
         let n = id.bytes().fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(u64::from(b)));
         let mut artist = artist;
-        artist.description = Some(ym_api::ArtistDescription { text: format!("{} is a made-up artist. Every release here is invented and the covers are drawn by the app.", artist.name), uri: None });
+        artist.description = Some(ym_api::ArtistDescription {
+            text: format!("{} is a made-up artist. Every release here is invented and the covers are drawn by the app.", artist.name),
+            uri: None,
+        });
         let link = |title: &str, href: &str, kind: &str, net: Option<&str>| ym_api::ArtistLink {
             title: title.into(),
             href: href.into(),
@@ -352,9 +364,15 @@ impl Catalog {
         };
         artist.links = vec![
             link("example.com", "https://example.com/", "official", None),
-            link("Telegram", "https://t.me/", "social", Some("telegram")),
-            link("YouTube", "https://www.youtube.com/", "social", Some("youtube")),
-            link("VK", "https://vk.com/", "social", Some("vk")),
+            link("@novakestrel", "https://tiktok.com/@novakestrel", "social", None),
+            link("artist/nova_kestrel_12345", "https://vk.ru/artist/nova_kestrel_12345", "official", None),
+            link("novakestrel", "https://t.me/novakestrel", "social", None),
+            link("@novakestrel", "https://www.youtube.com/@novakestrel", "social", Some("youtube")),
+            link("novakestrel", "https://instagram.com/novakestrel", "social", None),
+            link("novakestrel", "https://x.com/novakestrel", "social", None),
+            link("novakestrel", "https://twitch.tv/novakestrel", "social", None),
+            link("novakestrel", "https://soundcloud.com/novakestrel", "social", None),
+            link("novakestrel", "https://open.spotify.com/artist/12345", "social", None),
         ];
         let delta = (n % 40_000) as i64 - 12_000;
         let stats = Some(ym_api::ArtistStats { last_month_listeners: Some(12_000 + n % 900_000), last_month_listeners_delta: Some(delta) });
@@ -362,7 +380,7 @@ impl Catalog {
         // Their "photos": the covers of their releases, drawn by the app as the rest.
         let all_covers = std::iter::once(artist.cover.clone())
             .flatten()
-            .chain(albums.iter().filter_map(|a: &Album| a.cover_uri.clone()).map(|uri| ym_api::ImageRef { kind: Some("pic".into()), uri: Some(uri), items_uri: Vec::new() }))
+            .chain(albums.iter().filter_map(|a: &Album| a.cover_uri.clone()).map(|uri| ImageRef { kind: Some("pic".into()), uri: Some(uri), items_uri: Vec::new() }))
             .take(5)
             .collect();
         let bandlink_scanner_link =
@@ -675,4 +693,3 @@ fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     let t = t.clamp(0.0, 1.0);
     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
 }
-

@@ -240,7 +240,9 @@ fn kmeans(points: &[[f32; 3]], k: usize) -> Vec<([f32; 3], f32)> {
         let mut sums = vec![[0.0f32; 3]; centres.len()];
         counts.iter_mut().for_each(|c| *c = 0);
         for p in points {
-            let (i, _) = centres.iter().enumerate().map(|(i, c)| (i, dist2(p, c))).min_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
+            let Some((i, _)) = centres.iter().enumerate().map(|(i, c)| (i, dist2(p, c))).min_by(|a, b| a.1.total_cmp(&b.1)) else {
+                continue;
+            };
             sums[i][0] += p[0];
             sums[i][1] += p[1];
             sums[i][2] += p[2];

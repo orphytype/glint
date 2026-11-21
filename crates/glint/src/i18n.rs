@@ -139,6 +139,7 @@ fn windows_locale() -> Option<Lang> {
         fn GetUserDefaultLocaleName(name: *mut u16, len: i32) -> i32;
     }
     let mut buf = [0u16; 85];
+    // SAFETY: `buf` is a writable 85-u16 buffer (LOCALE_NAME_MAX_LENGTH) matching `buf.len()`.
     let n = unsafe { GetUserDefaultLocaleName(buf.as_mut_ptr(), buf.len() as i32) };
     if n <= 0 {
         return None;
@@ -275,15 +276,11 @@ strings! {
     ByRelease => "By release", "По релизу";
     MoreWaves => "More waves", "Другие волны";
     StageLook => "Player look", "Вид плеера";
-    StageFlash => "Flash", "Вспышка";
-    StageReact => "Reaction", "Реакция";
     StageOff => "Off", "Выкл.";
-    StageSoft => "Subtle", "Мягкая";
-    StageBright => "Vibrant", "Яркая";
     StageCalm => "Calm", "Спокойно";
     StageLively => "Lively", "Живо";
     StageReset => "Reset", "Сбросить";
-    StageResetNote => "Puts the lyrics, the flash, the reaction and the background back to how they were. Your own picture is removed.", "Возвращает исходный вид текста, вспышки, реакции и фона. Своя картинка убирается.";
+    StageResetNote => "Puts the lyrics, the visual effects and the background back to how they were. Your own picture is removed.", "Возвращает исходный вид текста, визуальных эффектов и фона. Своя картинка убирается.";
     StageBack => "Background", "Фон";
     Listen => "Listen", "Слушать";
     Pin => "Pin", "Закрепить";
@@ -310,6 +307,7 @@ strings! {
     CopyTitle => "Copy title", "Скопировать название";
     TitleCopied => "Title copied", "Название скопировано";
     CopyLink => "Copy link", "Скопировать ссылку";
+    OpenInYandexMusic => "Open in Yandex Music", "Открыть в Яндекс Музыке";
     Explicit => "Explicit", "Ненормативная лексика";
     ExplicitHint => "Explicit: contains strong language", "Содержит ненормативную лексику";
     CleanLoaded => "Uncensored version loaded (FckCensor)", "Загружена версия без цензуры (FckCensor)";

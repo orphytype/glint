@@ -26,13 +26,13 @@ const BASELINE: f32 = 0.5;
 /// `MOVE`, and the screen stays at least `HOLD`. Once the app is ready it waits `SETTLE` more, so
 /// what came in under it has finished moving. It goes after `GIVE_UP` whatever happens, and fades
 /// out over `FADE`.
-const APPEAR: f64 = 0.18;
-const MOVE_AT: f64 = 0.10;
-const MOVE: f64 = 0.42;
-const HOLD: f64 = 0.55;
-const SETTLE: f64 = 0.25;
-const GIVE_UP: f64 = 6.0;
-const FADE: f64 = 0.28;
+const APPEAR: f64 = 0.16;
+const MOVE_AT: f64 = 0.06;
+const MOVE: f64 = 0.36;
+const HOLD: f64 = 0.48;
+const SETTLE: f64 = 0.08;
+const GIVE_UP: f64 = 5.0;
+const FADE: f64 = 0.24;
 
 /// Where the launch screen is, in the app's clock.
 #[derive(Clone, Copy, Debug, Default)]
@@ -49,7 +49,7 @@ pub struct Launch {
 /// the launch screen waits for it: run while nobody looks, it would be over by the time the tray
 /// brings the window up.
 fn window_shown(s: &State) -> bool {
-    s.app.as_ref().is_none_or(|app| app.is_visible())
+    s.headless || s.app.as_ref().is_none_or(rune::AppHandle::is_visible)
 }
 
 /// The launch screen is waiting for the window to be shown (the caller checks again soon).
@@ -57,13 +57,29 @@ pub fn waiting(s: &State) -> bool {
     s.launch.is_some_and(|l| l.start.is_none()) && !window_shown(s)
 }
 
+/// The launch screen holds its static mark while the CPU window waits to hand over to the GPU.
+pub fn awaiting_gpu(s: &State) -> bool {
+    s.launch.is_some() && !s.headless && !fx::gpu_up() && window_shown(s)
+}
+
 /// Moves the launch screen on. Returns whether it is still on screen, so the next frame comes.
 pub fn step(s: &mut State) -> bool {
-    let steady = fx::ready() && (s.session == Session::LoggedOut || !matches!(s.home, Load::Loading));
-    let now = s.now;
     if waiting(s) {
         return false;
     }
+    if s.launch.is_none() {
+        return false;
+    }
+    let gpu_up = s.headless || fx::gpu_up();
+    if !gpu_up {
+        if s.now >= GIVE_UP {
+            s.launch = None;
+            return true;
+        }
+        return false;
+    }
+    let steady = (s.headless || fx::glass_ready()) && (s.session == Session::LoggedOut || !matches!(s.home, Load::Loading));
+    let now = s.now;
     let Some(l) = s.launch.as_mut() else { return false };
     let t = now - *l.start.get_or_insert(now);
     if steady && l.ready.is_none() {
@@ -89,7 +105,7 @@ pub fn view(s: &State) -> Option<El> {
     let l = s.launch?;
     let t = l.start.map_or(0.0, |start| s.now - start);
     let reduce = s.settings.reduce_motion;
-    let appear = ease_out_cubic(t / APPEAR);
+    let appear = if s.headless { ease_out_cubic(t / APPEAR) } else { 1.0 };
     let moved = if reduce { 1.0 } else { ease_out_back((t - MOVE_AT) / MOVE) };
     let gone = l.leave.map_or(0.0, |at| ease_in_out((t - at) / FADE));
 
@@ -123,10 +139,13 @@ pub fn view(s: &State) -> Option<El> {
         shape = shape.fill(place_word(c), ink);
     }
     // The word comes out from behind the mark: nothing of it shows left of the mark's right edge.
-    // A canvas doesn't clip, so the cover reaches as far left as the word ever is.
-    let cut = ox + mark_x * CAP + (right - mid[0]) * scale;
-    let far = ox - (wordmark::BOX[2] + width) * CAP;
-    shape = shape.fill(vec![[far, 0.0], [cut, 0.0], [cut, ch], [far, ch]], ink);
+    // A canvas doesn't clip, so the cover reaches as far left as the word ever is. Once the word
+    // has emerged, omit the cover so it no longer extends the shape bounds to the left.
+    if moved < 0.999 {
+        let cut = ox + mark_x * CAP + (right - mid[0]) * scale;
+        let far = ox - (wordmark::BOX[2] + width) * CAP;
+        shape = shape.fill(vec![[far, 0.0], [cut, 0.0], [cut, ch], [far, ch]], ink);
+    }
     let mark_a = paper.alpha(appear);
     shape = shape.fill(place_mark(pebble), mark_a).fill(place_mark(mark::glint(192)), ink);
 
@@ -136,11 +155,10 @@ pub fn view(s: &State) -> Option<El> {
             .w_full()
             .h_full()
             .center()
-            .fill(ink)
-            .opacity(1.0 - gone)
+            .fill(ink.alpha(1.0 - gone))
             .transition(Transition::none())
             .on_press(|_s: &mut State| {})
-            .child(rune::canvas(shape).w(cw).h(ch)),
+            .child(rune::canvas(shape).w(cw).h(ch).opacity(1.0 - gone)),
     )
 }
 

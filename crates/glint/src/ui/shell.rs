@@ -29,14 +29,33 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     cx.reduced_motion(s.settings.reduce_motion);
     cx.foreground(th::text());
     cx.caption_color(th::text2());
-    let [w, h] = cx.layout_size("app").unwrap_or([1280.0, 800.0]);
-    if let Some([bw, _]) = cx.layout_size("seek-track") {
-        s.bar_w.set(bw);
+    let measured = cx.layout_size("app");
+    let [w, h] = measured.unwrap_or([1280.0, 800.0]);
+    if let Some(size) = measured {
+        let prev = s.win_size.replace(size);
+        if prev != [0.0, 0.0] && ((prev[0] - w).abs() > 0.5 || (prev[1] - h).abs() > 0.5) {
+            if !s.is_resizing()
+                && let Some(app) = &s.app
+            {
+                app.wake();
+            }
+            s.resized_at.set(s.now);
+        }
     }
+    fx::set_resizing(s.is_resizing());
     if let Some([bw, _]) = cx.layout_size("vol-track") {
         s.vol_w.set(bw);
     }
     s.win_w.set(w);
+    // Until the GPU takes over, the launch screen covers the whole window, so the page under it is
+    // left out. Its turned mood names would stop the CPU from painting the first frame, and its
+    // skeleton shimmer would hold back the hand-over to the GPU.
+    if !s.headless
+        && !fx::gpu_up()
+        && let Some(launch) = super::splash::view(s)
+    {
+        return col().key("app").w_full().h_full().fill(th::bg()).child(launch);
+    }
     if s.bugs_alive() {
         measure_bugs(s, cx, h);
     }
@@ -210,7 +229,7 @@ fn np_source(s: &State, w: f32, h: f32, t: f32) -> El {
     let Some(from) = &s.playing_from else { return el() };
     let t = t.clamp(0.0, 1.0);
     let text = from.line(s.lang);
-    let (x, side, _, _) = super::np::columns(s, w, h, s.np_panel() != crate::app::NpTab::Closed);
+    let (x, side, _, _) = np::columns(s, w, h, s.np_panel() != crate::app::NpTab::Closed);
     // Keep the source badge inside the cover column. The icon and padding consume 56 px,
     // leaving the rest for the single-line title; the label itself truncates at that width.
     let max_text = (side - 56.0).max(0.0);

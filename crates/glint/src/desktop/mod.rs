@@ -30,6 +30,8 @@ mod icon;
 mod mpris;
 pub mod place;
 #[cfg(windows)]
+mod resize;
+#[cfg(windows)]
 mod smtc;
 
 /// The platform's media session: one type with the same few calls on each OS.

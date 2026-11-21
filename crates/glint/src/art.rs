@@ -1,31 +1,45 @@
 //! Cover art. A view asks for a picture by URL and gets a `Pixels` handle straight away; the
-//! image arrives later (fetched, decoded and, for demo covers, painted on a worker) and RUNE
-//! redraws the picture without running the view again.
+//! image arrives later (loaded from disk or network and decoded on a worker) and RUNE redraws the
+//! picture without running the view again.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use rune::Pixels;
 
 use crate::palette::Palette;
+
+/// Single cover size used everywhere in the app (list rows, cards, headers, player and media card)
+/// so the same artwork is never downloaded or decoded twice at different sizes.
+pub const COVER_PX: u32 = 300;
 
 #[derive(Clone)]
 pub struct ArtCache(Arc<Mutex<Inner>>);
 
 struct Inner {
     map: HashMap<String, Entry>,
+    /// Compact compressed bytes kept in RAM (300x300 JPEGs are ~15-25 KB each) so revisiting
+    /// evicted pages, upgrading a playing cover to sharp, or sending a media card cover avoids
+    /// touching disk or network.
+    raw: HashMap<String, (Arc<[u8]>, u64)>,
+    raw_bytes: usize,
     wanted: Vec<String>,
+    /// Already-loaded covers that now play and need their 256px sharp copy for My Wave.
+    sharp_wanted: Vec<String>,
+    sharp_in_flight: HashSet<String>,
+    sharp_failed: HashMap<String, Instant>,
+    in_flight: HashSet<String>,
+    failed: HashMap<String, Instant>,
     tick: u64,
     /// Bumped every time the view is built: what the last views asked for is on screen, and is
-    /// never let go of to make room (it would only be asked for again, load, fade in, push out
-    /// another, and so on: covers blinking forever on a page with many of them).
+    /// never let go of to make room.
     view: u64,
-    /// Bumped every time a picture lands, so the app knows to build the view again (a cover that
-    /// arrives fades in instead of appearing in one frame).
-    landed: u64,
-    /// Pictures a shader draws as well (an artist in a shape): a copy of their pixels is kept,
-    /// since the one RUNE holds cannot be read back.
-    keep: HashSet<String>,
+    /// Keys whose palette or soft backdrop was asked for while not yet decoded.
+    watched: HashSet<String>,
+    /// Bumped only when a watched or playing cover lands, so loading list covers never forces a
+    /// full view rebuild.
+    watched_landed: u64,
     /// Playing covers that need the 256px sharp copy (at most two: current and previous).
     want_sharp: Vec<String>,
 }
@@ -33,25 +47,20 @@ struct Inner {
 struct Entry {
     pixels: Pixels,
     palette: Option<Palette>,
-    /// A tiny copy of the picture, for the shader behind the player (the picture RUNE holds cannot
-    /// be read back).
+    /// A tiny copy of the picture, for the shaders (the picture RUNE holds cannot be read back).
     thumb: Option<Arc<Thumb>>,
     ready: bool,
-    /// When the picture landed.
-    done: Option<std::time::Instant>,
     used: u64,
     /// The view that last asked for it.
     seen: u64,
     /// What the decoded picture takes in memory.
     bytes: usize,
-    /// The pixels again, for a picture in `Inner::keep`.
-    full: Option<Arc<Decoded>>,
     /// The picture melted into its colours (`ArtCache::soft`), made the first time it is asked for.
     soft: Option<Pixels>,
 }
 
 /// A cover shrunk for the shaders (sRGB, RGBA, square): `THUMB` texels a side for the blurred
-/// backdrop, and a sharper copy (`sharp_side`, up to `SHARP`) for the morph between two covers.
+/// backdrop, and a sharper copy (`sharp_side`, up to `SHARP`) for My Wave's cover fill.
 pub struct Thumb {
     pub width: u32,
     pub height: u32,
@@ -63,8 +72,7 @@ pub struct Thumb {
 /// The thumbnail's side in texels: small on purpose, it is only ever seen through a heavy blur.
 pub const THUMB: u32 = 40;
 
-/// The sharper copy's side at most: the morph is over in about a second and breaks the picture
-/// into blocks for most of it, so this is plenty.
+/// The sharper copy's side at most, for the playing cover inside My Wave.
 pub const SHARP: u32 = 256;
 
 impl Thumb {
@@ -86,11 +94,6 @@ impl Thumb {
     pub fn bytes(&self) -> usize {
         self.rgba.len() + self.sharp.len()
     }
-}
-
-/// [`shrink`] for a square picture `side` texels a side.
-pub fn shrink_square(side: u32, rgba: &[u8], n: u32) -> Vec<u8> {
-    shrink(side, side, rgba, n)
 }
 
 /// An area average of `rgba` (`w` x `h`) to `n` texels a side.
@@ -164,14 +167,57 @@ pub struct Decoded {
     pub rgba: Vec<u8>,
 }
 
-/// Finished pictures kept, most; and the memory they may take together before the oldest go.
-/// Each live `Pixels` also keeps a copy in RUNE's CPU and GPU image atlas, so keep this compact.
-const KEEP: usize = 96;
-const BUDGET: usize = 24 << 20;
+/// Decoded covers kept in RUNE's atlas and RAM (at 300x300 RGBA, 48 MiB holds ~135 covers).
+const KEEP: usize = 160;
+const BUDGET: usize = 48 << 20;
+/// Compressed cover bytes kept in RAM (~400 covers in 8 MiB).
+const RAW_KEEP: usize = 512;
+const RAW_BUDGET: usize = 8 << 20;
+/// Wait before retrying a cover that failed to load, so broken URLs do not spin every frame.
+const FAIL_COOLDOWN: Duration = Duration::from_secs(20);
+
+impl Inner {
+    fn put_raw(&mut self, key: &str, bytes: Arc<[u8]>) {
+        self.tick += 1;
+        let tick = self.tick;
+        let len = bytes.len();
+        if let Some((old, _)) = self.raw.insert(key.to_owned(), (bytes, tick)) {
+            self.raw_bytes = self.raw_bytes.saturating_sub(old.len());
+        }
+        self.raw_bytes = self.raw_bytes.saturating_add(len);
+        if self.raw.len() > RAW_KEEP + 32 || self.raw_bytes > RAW_BUDGET {
+            let mut by_use: Vec<(u64, String)> = self.raw.iter().map(|(k, (_, u))| (*u, k.clone())).collect();
+            by_use.sort_unstable();
+            for (_, k) in by_use {
+                if self.raw.len() <= RAW_KEEP && self.raw_bytes <= RAW_BUDGET * 3 / 4 {
+                    break;
+                }
+                if let Some((old, _)) = self.raw.remove(&k) {
+                    self.raw_bytes = self.raw_bytes.saturating_sub(old.len());
+                }
+            }
+        }
+    }
+}
 
 impl ArtCache {
     pub fn new() -> ArtCache {
-        ArtCache(Arc::new(Mutex::new(Inner { map: HashMap::new(), wanted: Vec::new(), tick: 0, view: 1, landed: 0, keep: HashSet::new(), want_sharp: Vec::new() })))
+        ArtCache(Arc::new(Mutex::new(Inner {
+            map: HashMap::new(),
+            raw: HashMap::new(),
+            raw_bytes: 0,
+            wanted: Vec::new(),
+            sharp_wanted: Vec::new(),
+            sharp_in_flight: HashSet::new(),
+            sharp_failed: HashMap::new(),
+            in_flight: HashSet::new(),
+            failed: HashMap::new(),
+            tick: 0,
+            view: 1,
+            watched: HashSet::new(),
+            watched_landed: 0,
+            want_sharp: Vec::new(),
+        })))
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -180,7 +226,9 @@ impl ArtCache {
 
     /// A new view is being built: what it asks for counts as on screen.
     pub fn begin_view(&self) {
-        self.lock().view += 1;
+        let mut g = self.lock();
+        g.view += 1;
+        g.watched.clear();
     }
 
     /// The picture for `key` (a cover URL). The first ask schedules the load.
@@ -193,17 +241,27 @@ impl ArtCache {
             e.seen = view;
             return e.pixels.clone();
         }
+        if let Some(&at) = g.failed.get(key) {
+            if at.elapsed() < FAIL_COOLDOWN {
+                return Pixels::new();
+            }
+            g.failed.remove(key);
+        }
         let pixels = Pixels::new();
-        g.map.insert(
-            key.to_owned(),
-            Entry { pixels: pixels.clone(), palette: None, thumb: None, ready: false, done: None, used: tick, seen: view, bytes: 0, full: None, soft: None },
-        );
-        g.wanted.push(key.to_owned());
+        g.map.insert(key.to_owned(), Entry { pixels: pixels.clone(), palette: None, thumb: None, ready: false, used: tick, seen: view, bytes: 0, soft: None });
+        if g.in_flight.insert(key.to_owned()) {
+            g.wanted.push(key.to_owned());
+        }
         pixels
     }
 
     pub fn palette(&self, key: &str) -> Option<Palette> {
-        self.lock().map.get(key).and_then(|e| e.palette)
+        let mut g = self.lock();
+        if let Some(p) = g.map.get(key).and_then(|e| e.palette) {
+            return Some(p);
+        }
+        g.watched.insert(key.to_owned());
+        None
     }
 
     /// Whether the picture is decoded and handed to its `Pixels`.
@@ -211,19 +269,35 @@ impl ArtCache {
         self.lock().map.get(key).is_some_and(|e| e.ready)
     }
 
-    /// Whether the picture landed just now (a view built now shows it for the first time, so it
-    /// fades in; one built later shows it at once).
-    pub fn fresh(&self, key: &str) -> bool {
-        self.lock().map.get(key).and_then(|e| e.done).is_some_and(|d| d.elapsed().as_secs_f32() < 0.5)
+    /// How many watched or playing pictures have landed so far.
+    pub fn watched_landed(&self) -> u64 {
+        self.lock().watched_landed
     }
 
-    /// How many pictures have landed so far.
-    pub fn landed(&self) -> u64 {
-        self.lock().landed
+    /// Compressed bytes in RAM for `key`, if still warm.
+    pub fn encoded(&self, key: &str) -> Option<Arc<[u8]>> {
+        let mut g = self.lock();
+        g.tick += 1;
+        let tick = g.tick;
+        let entry = g.raw.get_mut(key)?;
+        entry.1 = tick;
+        Some(entry.0.clone())
     }
 
-    /// Marks `key` as a playing cover that needs the 256px sharp copy (for the cover morph and
-    /// My Wave). Drops sharp copies from older covers so only the last two stay in RAM.
+    /// Saves compressed bytes in the RAM cache.
+    pub fn store_encoded(&self, key: &str, bytes: Arc<[u8]>) {
+        self.lock().put_raw(key, bytes);
+    }
+
+    /// Clears the in-memory compressed byte cache (called when the user deletes cached content).
+    pub fn clear_raw(&self) {
+        let mut g = self.lock();
+        g.raw.clear();
+        g.raw_bytes = 0;
+    }
+
+    /// Marks `key` as a playing cover that needs the 256px sharp copy (for My Wave).
+    /// Drops sharp copies from older covers so only the last two stay in RAM.
     pub fn want_sharp(&self, key: &str) {
         let mut g = self.lock();
         if let Some(pos) = g.want_sharp.iter().position(|k| k == key) {
@@ -242,45 +316,37 @@ impl ArtCache {
                 }
             }
         }
-        // If this cover was already decoded for a page without its sharp copy, reload it from disk.
-        let needs_reload = g.map.get(key).is_some_and(|e| e.ready && e.thumb.as_ref().is_none_or(|t| t.sharp.is_empty()));
-        if needs_reload && !g.wanted.iter().any(|k| k == key) {
-            g.wanted.push(key.to_owned());
-        }
-    }
-
-    /// The pixels of `key` for a shader, once they are in. Asking marks the picture as one whose
-    /// pixels are kept; ask before it lands (when the view first shows it), or it is loaded again.
-    pub fn full(&self, key: &str) -> Option<Arc<Decoded>> {
-        let mut g = self.lock();
-        if g.keep.insert(key.to_owned()) {
-            // Only the last two are kept: a shape shows one picture at a time.
-            if g.keep.len() > 2 {
-                let drop: Vec<String> = g.keep.iter().filter(|k| *k != key).take(g.keep.len() - 2).cloned().collect();
-                for k in drop {
-                    g.keep.remove(&k);
-                    if let Some(e) = g.map.get_mut(&k)
-                        && let Some(f) = e.full.take()
-                    {
-                        e.bytes = e.bytes.saturating_sub(f.rgba.len());
-                    }
+        // Already decoded for a list or card without its sharp copy: upgrade thumb only, never
+        // touching the live `Pixels` or re-downloading over the network.
+        let needs_sharp = g.map.get(key).is_some_and(|e| e.ready && e.thumb.as_ref().is_none_or(|t| t.sharp.is_empty()));
+        if needs_sharp && !g.in_flight.contains(key) && !g.sharp_in_flight.contains(key) {
+            if let Some(&at) = g.sharp_failed.get(key) {
+                if at.elapsed() < FAIL_COOLDOWN {
+                    return;
                 }
+                g.sharp_failed.remove(key);
+            }
+            if g.sharp_in_flight.insert(key.to_owned()) {
+                g.sharp_wanted.push(key.to_owned());
             }
         }
-        g.map.get(key).and_then(|e| e.full.clone())
     }
 
     /// The picture of `key` melted into its colours: its thumbnail blurred far past recognition
-    /// and a little richer, for a page to lay behind its head. Drawn as large as a window, it stays
-    /// smooth (there is nothing sharp left in it to show its few texels). `None` until the picture
-    /// is in.
+    /// and a little richer, for a page to lay behind its head. `None` until the picture is in.
     pub fn soft(&self, key: &str) -> Option<Pixels> {
         let mut g = self.lock();
-        let e = g.map.get_mut(key)?;
+        let Some(e) = g.map.get_mut(key) else {
+            g.watched.insert(key.to_owned());
+            return None;
+        };
         if let Some(p) = &e.soft {
             return Some(p.clone());
         }
-        let t = e.thumb.clone()?;
+        let Some(t) = e.thumb.clone() else {
+            g.watched.insert(key.to_owned());
+            return None;
+        };
         let px = Pixels::new();
         e.soft = Some(px.clone());
         drop(g);
@@ -297,13 +363,38 @@ impl ArtCache {
         std::mem::take(&mut self.lock().wanted)
     }
 
-    /// Stores a loaded image (or, with `None`, gives up on the key) and works out its palette.
-    ///
-    /// A failed load is forgotten rather than kept as an entry: the next view that asks for the
-    /// picture schedules it again, instead of waiting forever on a load that already gave up.
-    pub fn finish(&self, key: &str, image: Option<Decoded>) {
+    /// Already-loaded keys that now need a 256px sharp thumb for My Wave.
+    pub fn take_sharp_wanted(&self) -> Vec<String> {
+        std::mem::take(&mut self.lock().sharp_wanted)
+    }
+
+    /// Attaches a sharp thumb to an already-loaded cover without replacing its `Pixels`.
+    pub fn finish_sharp(&self, key: &str, image: Option<Decoded>) {
+        let thumb = image.and_then(|img| Thumb::from_rgba(img.width, img.height, &img.rgba, true).map(Arc::new));
+        let mut g = self.lock();
+        g.sharp_in_flight.remove(key);
+        let Some(thumb) = thumb else {
+            g.sharp_failed.insert(key.to_owned(), Instant::now());
+            return;
+        };
+        g.sharp_failed.remove(key);
+        if let Some(e) = g.map.get_mut(key) {
+            let old = e.thumb.as_ref().map_or(0, |t| t.bytes());
+            e.bytes = e.bytes.saturating_sub(old).saturating_add(thumb.bytes());
+            e.thumb = Some(thumb);
+            if g.want_sharp.iter().any(|k| k == key) {
+                g.watched_landed += 1;
+            }
+        }
+    }
+
+    /// Stores a loaded image (or, with `None`, records a short backoff) and works out its palette.
+    pub fn finish(&self, key: &str, image: Option<Decoded>, raw: Option<Arc<[u8]>>) {
         let Some(image) = image else {
-            self.lock().map.remove(key);
+            let mut g = self.lock();
+            g.in_flight.remove(key);
+            g.map.remove(key);
+            g.failed.insert(key.to_owned(), Instant::now());
             return;
         };
         let with_sharp = self.lock().want_sharp.iter().any(|k| k == key);
@@ -311,29 +402,29 @@ impl ArtCache {
         let thumb = Thumb::from_rgba(image.width, image.height, &image.rgba, with_sharp).map(Arc::new);
         let thumb_bytes = thumb.as_ref().map_or(0, |t| t.bytes());
         let mut g = self.lock();
-        let full = g.keep.contains(key).then(|| Arc::new(Decoded { width: image.width, height: image.height, rgba: image.rgba.clone() }));
-        let full_bytes = full.as_ref().map_or(0, |f| f.rgba.len());
+        g.in_flight.remove(key);
+        g.failed.remove(key);
+        if let Some(bytes) = raw {
+            g.put_raw(key, bytes);
+        }
         let Some(e) = g.map.get_mut(key) else { return };
         let was_ready = e.ready;
         let pixels = e.pixels.clone();
         e.palette = Some(palette);
         e.thumb = thumb;
         e.ready = true;
-        if !was_ready {
-            e.done = Some(std::time::Instant::now());
+        e.bytes = image.rgba.len() + thumb_bytes;
+        let need_rebuild = g.watched.remove(key) || g.want_sharp.iter().any(|k| k == key);
+        if need_rebuild {
+            g.watched_landed += 1;
         }
-        e.bytes = image.rgba.len() + thumb_bytes + full_bytes;
-        e.full = full;
-        g.landed += 1;
         // Keep memory bounded: drop the least recently used finished pictures, by how many there
-        // are and by what they take (a few large covers weigh as much as hundreds of thumbnails).
-        // A picture on screen is held by its view as well, so it outlives its place here.
+        // are and by what they take. On-screen and currently playing covers stay pinned.
         let total: usize = g.map.values().map(|e| e.bytes).sum();
         if g.map.len() > KEEP + 24 || total > BUDGET {
-            // Only what the last two views did not ask for can go: the page on screen keeps all
-            // of its pictures, even past the budget.
             let recent = g.view.saturating_sub(1);
-            let mut by_use: Vec<(u64, String)> = g.map.iter().filter(|(_, e)| e.ready && e.seen < recent).map(|(k, e)| (e.used, k.clone())).collect();
+            let mut by_use: Vec<(u64, String)> =
+                g.map.iter().filter(|(k, e)| e.ready && e.seen < recent && !g.want_sharp.iter().any(|w| w == *k)).map(|(k, e)| (e.used, k.clone())).collect();
             by_use.sort_unstable();
             let (mut count, mut total) = (g.map.len(), total);
             for (_, k) in by_use {
@@ -369,8 +460,12 @@ pub fn decode(bytes: &[u8], max_side: u32) -> Option<Decoded> {
 }
 
 pub fn encode_png(image: &Decoded) -> Option<Vec<u8>> {
-    let rgba = image::RgbaImage::from_raw(image.width, image.height, image.rgba.clone())?;
-    let mut out = std::io::Cursor::new(Vec::new());
-    image::DynamicImage::ImageRgba8(rgba).write_to(&mut out, image::ImageFormat::Png).ok()?;
-    Some(out.into_inner())
+    use image::ImageEncoder as _;
+    let expected = (image.width as usize).checked_mul(image.height as usize)?.checked_mul(4)?;
+    if image.rgba.len() < expected {
+        return None;
+    }
+    let mut out = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut out).write_image(&image.rgba[..expected], image.width, image.height, image::ExtendedColorType::Rgba8).ok()?;
+    Some(out)
 }

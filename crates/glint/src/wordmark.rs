@@ -1,7 +1,7 @@
 //! The word "glint" in Fraunces 800, as `brand/svg/wordmark-ink.svg` has it: flat outlines in cap
 //! heights, the baseline at 0 and y down. Written by `scripts/icons.py`; change it there.
 // Some coordinates come out close to well-known constants; they are only coordinates.
-#![allow(clippy::approx_constant)]
+#![expect(clippy::approx_constant, reason = "SVG path coordinates from the logo outline")]
 
 /// The outlines to fill.
 #[rustfmt::skip]

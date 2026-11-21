@@ -5,7 +5,6 @@
 //! colours flow, so the same seed draws the same garden; a new start of the app, or the button
 //! that rolls them, draws another.
 
-use crate::fx::Slot as _;
 use rune::{El, Transition, el};
 
 use crate::fx;
@@ -46,8 +45,6 @@ impl Rng {
 pub enum Family {
     /// Ribbons of light flowing across a dithered gradient (it fills its box): a wave card.
     Ribbon = 17,
-    /// An artist's picture: nearly a circle, its edge breathing a very little (`avatar`).
-    Avatar = 18,
     /// My Wave: glowing liquid whose edge swells with the music, with a glow just outside.
     Liquid = 19,
     /// A rounder, calmer pebble of the same liquid.
@@ -140,7 +137,7 @@ const SHAPE_MARGIN: f32 = 8.5;
 pub fn radius(family: Family, side: f32) -> f32 {
     match family {
         Family::Liquid => side * 0.40,
-        Family::Ribbon | Family::Avatar => side * 0.5 / 1.045,
+        Family::Ribbon => side * 0.5 / 1.045,
         // As `shape_r` in the shader: a part of the box, with room for the ring.
         f => {
             let base = match f {
@@ -176,8 +173,6 @@ pub enum Fill {
     /// The playing cover, whole at once rather than washing over the one before (the first
     /// cover after its own colour).
     CoverNow(f32),
-    /// The picture `State::pic_key` names, as it is (that hue until it is in).
-    Picture(f32),
 }
 
 impl Fill {
@@ -186,9 +181,12 @@ impl Fill {
             Fill::Hue(h) => h.rem_euclid(360.0),
             Fill::Cover(h) => -(h.rem_euclid(360.0) + 1.0),
             Fill::CoverNow(h) => -(h.rem_euclid(360.0) + 501.0),
-            Fill::Picture(h) => -(h.rem_euclid(360.0) + 1000.0),
         }
     }
+}
+
+fn shape_slot(base: El, data: [f32; 4]) -> El {
+    if fx::shapes_ready() { base.effect(fx::SHAPE).effect_data(data) } else { base }
 }
 
 /// A wave card's ground filling its parent: ribbons of light in `hue` and its neighbours flowing
@@ -200,29 +198,17 @@ pub fn ribbon(key: impl Into<String>, seed: f32, hue: f32, sat: f32, light: f32,
     let look = Look { chosen: on, hovered, order: 0 };
     let (sq, lq) = ((sat.clamp(0.0, 1.0) * 15.0).round(), (light.clamp(0.0, 1.0) * 15.0).round());
     let packed = hue.rem_euclid(360.0).min(359.9) + 360.0 * (sq + 16.0 * lq);
-    el().key(key).absolute(0.0, 0.0).w_full().h_full().transition(Transition::none()).fx(fx::SHAPE).fx_data([Family::Ribbon as u32 as f32, seed, packed, look.flags()])
-}
-
-/// The seed and the stand-in hue of the artist's picture on the page keyed `page_key`.
-pub fn avatar_seed(page_key: &str) -> (f32, f32) {
-    let h = page_key.bytes().fold(2166136261u32, |a, b| (a ^ u32::from(b)).wrapping_mul(16777619));
-    (1.0 + (h % 997) as f32 + 0.37, (h % 360) as f32)
-}
-
-/// An artist's picture (`Fill::Picture`) in their shape, `side` points across: nearly a circle,
-/// and a rounded square as `square` goes to 1 (it rides in the family number's fraction).
-pub fn avatar(key: impl Into<String>, seed: f32, fill: Fill, look: Look, square: f32, side: f32) -> El {
-    el().key(key).w(side).h(side).transition(Transition::none()).fx(fx::SHAPE).fx_data([Family::Avatar as u32 as f32 + square.clamp(0.0, 0.99), seed, fill.data(), look.flags()])
+    shape_slot(el().key(key).absolute(0.0, 0.0).w_full().h_full().transition(Transition::none()), [Family::Ribbon as u32 as f32, seed, packed, look.flags()])
 }
 
 /// My Wave's shape (`Family::Liquid`) filling a `side` box, in the form and print the user picked
 /// (`WaveLook`): they ride in the family number's fraction, as `(form + 8 * print + 0.5) / 64`.
 pub fn wave(key: impl Into<String>, seed: f32, fill: Fill, look: Look, wave: crate::store::WaveLook, side: f32) -> El {
     let code = f32::from(wave.form.min(7)) + 8.0 * f32::from(wave.print.min(7));
-    el().key(key).w(side).h(side).transition(Transition::none()).fx(fx::SHAPE).fx_data([Family::Liquid as u32 as f32 + (code + 0.5) / 64.0, seed, fill.data(), look.flags()])
+    shape_slot(el().key(key).w(side).h(side).transition(Transition::none()), [Family::Liquid as u32 as f32 + (code + 0.5) / 64.0, seed, fill.data(), look.flags()])
 }
 
 /// One shape filling a `w` by `h` box.
 pub fn shape(key: impl Into<String>, family: Family, seed: f32, fill: Fill, look: Look, w: f32, h: f32) -> El {
-    el().key(key).w(w).h(h).transition(Transition::none()).fx(fx::SHAPE).fx_data([family as u32 as f32, seed, fill.data(), look.flags()])
+    shape_slot(el().key(key).w(w).h(h).transition(Transition::none()), [family as u32 as f32, seed, fill.data(), look.flags()])
 }

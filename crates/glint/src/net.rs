@@ -17,7 +17,10 @@ pub type Result<T> = std::result::Result<T, ym_api::Error>;
 /// The runtime every background job runs on.
 pub fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-    RT.get_or_init(|| tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().thread_name("glint-net").build().expect("tokio runtime"))
+    RT.get_or_init(|| {
+        let workers = std::thread::available_parallelism().map_or(2, std::num::NonZero::get).clamp(2, 4);
+        tokio::runtime::Builder::new_multi_thread().worker_threads(workers).enable_all().thread_name("glint-net").build().expect("tokio runtime")
+    })
 }
 
 pub fn spawn<T: Send + 'static>(fut: impl Future<Output = T> + Send + 'static) -> tokio::task::JoinHandle<T> {
@@ -51,10 +54,7 @@ fn sniff_ext(bytes: &[u8]) -> &'static str {
         [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'A', b'V', b'E', ..] => "wav",
         // ISO base media (`ftyp` at offset 4): M4A/AAC in practice.
         [_, _, _, _, b'f', b't', b'y', b'p', ..] => "m4a",
-        [b'I', b'D', b'3', ..] => "mp3",
-        // An MPEG audio frame: eleven sync bits set.
-        [0xff, b, ..] if b & 0xe0 == 0xe0 => "mp3",
-        // Unknown: most of what the service serves under an MP3 URL really is MP3.
+        // ID3 tag, MPEG sync frame, or unknown container: Yandex serves MP3 by default.
         _ => "mp3",
     }
 }
@@ -62,6 +62,15 @@ fn sniff_ext(bytes: &[u8]) -> &'static str {
 fn limiter() -> &'static Semaphore {
     static S: OnceLock<Semaphore> = OnceLock::new();
     S.get_or_init(|| Semaphore::new(6))
+}
+
+/// Limits concurrent disk reads and image decodes so fast scrolling never floods weak CPUs or HDDs.
+pub fn decode_limiter() -> &'static Semaphore {
+    static S: OnceLock<Semaphore> = OnceLock::new();
+    S.get_or_init(|| {
+        let n = std::thread::available_parallelism().map_or(2, std::num::NonZero::get).clamp(2, 4);
+        Semaphore::new(n)
+    })
 }
 
 fn no_session() -> ym_api::Error {
@@ -393,15 +402,13 @@ impl Backend {
     /// The audio file of `track`, from the downloaded-track store when it is there. Playback reads
     /// existing downloads without adding ordinary listening to the offline library. `exact`: only a
     /// copy in `quality` counts (a download in a new quality must fetch it, not copy an old one).
-    #[allow(clippy::too_many_arguments)]
     pub async fn audio(
         &self,
         track: &Track,
         quality: ym_api::Quality,
-        downloads: Option<std::sync::Arc<DownloadStore>>,
+        downloads: Option<Arc<DownloadStore>>,
         fkcensor: &crate::fkcensor::FkCensor,
         fkcensor_on: bool,
-        persist: bool,
         exact: bool,
     ) -> Result<Audio> {
         match self {
@@ -410,7 +417,6 @@ impl Backend {
             Backend::Live(c) => {
                 let replacement = fkcensor_on.then(|| fkcensor.replacement(&track.id)).flatten();
                 let q = format!("{quality:?}");
-                let (original_key, replacement_key) = (format!("{}-{q}-original", track.id), format!("{}-{q}-replacement", track.id));
                 // A downloaded copy in any quality plays before anything is asked of the network,
                 // so downloads play offline whatever the quality setting is now.
                 let find = |variant: &str| {
@@ -436,16 +442,8 @@ impl Backend {
                 if let Some(replacement) = replacement
                     && let Ok(Ok(data)) = tokio::time::timeout(wait, c.fetch_fkcensor_audio(&replacement.url)).await
                 {
-                    let bytes: std::sync::Arc<[u8]> = data.into();
+                    let bytes: Arc<[u8]> = data.into();
                     let ext = sniff_ext(&bytes);
-                    if persist && let Some(disk) = downloads.clone() {
-                        let (k, b) = (replacement_key, bytes.clone());
-                        tokio::task::spawn_blocking(move || disk.put_audio(&k, &b))
-                            .await
-                            .ok()
-                            .and_then(|result| result.ok())
-                            .ok_or_else(|| ym_api::Error::Api("download storage failed".into()))?;
-                    }
                     return Ok(Audio { bytes, ext, clean: true });
                 }
                 if let Some(bytes) = local {
@@ -464,25 +462,26 @@ impl Backend {
                 } else {
                     sniff_ext(&bytes)
                 };
-                if persist && let Some(disk) = downloads {
-                    let (k, b) = (original_key, bytes.clone());
-                    tokio::task::spawn_blocking(move || disk.put_audio(&k, &b))
-                        .await
-                        .ok()
-                        .and_then(|result| result.ok())
-                        .ok_or_else(|| ym_api::Error::Api("download storage failed".into()))?;
-                }
                 Ok(Audio { bytes, ext, clean: false })
             }
             Backend::None => Err(no_session()),
         }
     }
 
-    /// A cover as pixels: fetched and decoded (the scenes' made-up covers are painted instead).
-    pub async fn image(&self, url: &str, max_side: u32) -> Option<Decoded> {
+    /// Raw image bytes from the CDN (JPEG/WebP/PNG), without decoding or re-encoding.
+    pub async fn image_bytes(&self, url: &str) -> Option<Arc<[u8]>> {
         let _permit = limiter().acquire().await.ok()?;
+        let Backend::Live(c) = self else { return None };
+        let bytes = c.fetch_image(url).await.ok()?;
+        Some(bytes.into())
+    }
+
+    /// A cover as pixels, for fixtures or callers that need decoded RGBA directly.
+    pub async fn image(&self, url: &str, max_side: u32) -> Option<Decoded> {
+        let max_side = max_side.min(art::COVER_PX);
         #[cfg(feature = "tooling")]
         if let Some((hue, style, seed, size)) = fixtures::parse_cover_url(url) {
+            let _permit = decode_limiter().acquire().await.ok()?;
             return tokio::task::spawn_blocking(move || {
                 let size = size.min(max_side);
                 Decoded { width: size, height: size, rgba: fixtures::cover_rgba(hue, style, seed, size) }
@@ -490,8 +489,8 @@ impl Backend {
             .await
             .ok();
         }
-        let Backend::Live(c) = self else { return None };
-        let bytes = c.fetch_image(url).await.ok()?;
+        let bytes = self.image_bytes(url).await?;
+        let _permit = decode_limiter().acquire().await.ok()?;
         tokio::task::spawn_blocking(move || art::decode(&bytes, max_side)).await.ok().flatten()
     }
 }

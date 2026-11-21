@@ -97,17 +97,15 @@ pub fn page(s: &State) -> El {
     if let Some(e) = s.login.error {
         card = card.child(label(e.get(lang), th::SMALL, th::rgb(0xe5503f)).wrap().w_full());
     }
-    card = card
-        .child(el().w_full().h(1.0).my(8.0).fill(th::hairline()))
-        .child(
-            row()
-                .w_full()
-                .gap(10.0)
-                .items_start()
-                .mt(4.0)
-                .child(icon(&icons::LOCK, 16.0).color(th::text3()))
-                .child(label(if cfg!(windows) { S::PrivacyNote } else { S::PrivacyNoteFile }.get(lang), th::SMALL, th::text3()).wrap().grow(1.0)),
-        );
+    card = card.child(el().w_full().h(1.0).my(8.0).fill(th::hairline())).child(
+        row()
+            .w_full()
+            .gap(10.0)
+            .items_start()
+            .mt(4.0)
+            .child(icon(&icons::LOCK, 16.0).color(th::text3()))
+            .child(label(if cfg!(windows) { S::PrivacyNote } else { S::PrivacyNoteFile }.get(lang), th::SMALL, th::text3()).wrap().grow(1.0)),
+    );
 
     let welcome = col()
         .w(440.0)

@@ -7,7 +7,7 @@
 //! [`Command`]s. With no session bus (a bare X server, a container) there is simply no session.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -67,6 +67,10 @@ impl Model {
 }
 
 type Shared = Arc<Mutex<Model>>;
+
+fn lock_model(model: &Shared) -> MutexGuard<'_, Model> {
+    model.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// The handle the UI thread keeps: a queue into the bus thread.
 pub struct Mpris {
@@ -143,7 +147,7 @@ impl Mpris {
             artists: t.artists.iter().map(|a| a.name.clone()).filter(|n| !n.is_empty()).collect(),
             album: t.album().map(|a| a.title.clone()).unwrap_or_default(),
             // The desktop fetches the cover itself, by URL (the PNG the Windows card takes is not used).
-            art: t.cover_url(400),
+            art: t.cover_url(crate::art::COVER_PX),
         }));
     }
 
@@ -185,7 +189,7 @@ async fn apply(conn: &Connection, model: &Shared, msg: Msg) {
     }
     let mut changed = Changed::default();
     {
-        let mut m = model.lock().unwrap();
+        let mut m = lock_model(model);
         match msg {
             Msg::Track(meta) => {
                 m.meta = Some(meta);
@@ -302,7 +306,7 @@ struct Player {
 
 impl Player {
     fn has_track(&self) -> bool {
-        self.model.lock().unwrap().meta.is_some()
+        lock_model(&self.model).meta.is_some()
     }
 }
 
@@ -329,7 +333,7 @@ impl Player {
     /// Moves by `offset` microseconds from where the track is now.
     fn seek(&self, offset: i64) {
         let (at, dur) = {
-            let m = self.model.lock().unwrap();
+            let m = lock_model(&self.model);
             if m.meta.is_none() {
                 return;
             }
@@ -345,7 +349,7 @@ impl Player {
     /// Jumps to `position` microseconds, if `track_id` is still the track playing.
     fn set_position(&self, track_id: OwnedObjectPath, position: i64) {
         let dur = {
-            let m = self.model.lock().unwrap();
+            let m = lock_model(&self.model);
             match &m.meta {
                 Some(meta) if track_path(&meta.id) == track_id.as_str() => m.dur_ms,
                 _ => return,
@@ -359,7 +363,7 @@ impl Player {
 
     #[zbus(property)]
     fn playback_status(&self) -> &'static str {
-        status_name(self.model.lock().unwrap().status)
+        status_name(lock_model(&self.model).status)
     }
     #[zbus(property)]
     fn loop_status(&self) -> &str {
@@ -375,7 +379,7 @@ impl Player {
     }
     #[zbus(property)]
     fn metadata(&self) -> HashMap<String, OwnedVariant> {
-        let m = self.model.lock().unwrap();
+        let m = lock_model(&self.model);
         metadata(m.meta.as_ref(), m.dur_ms)
     }
     #[zbus(property)]
@@ -386,7 +390,7 @@ impl Player {
     /// them when that stopped holding).
     #[zbus(property(emits_changed_signal = "false"))]
     fn position(&self) -> i64 {
-        micros(self.model.lock().unwrap().position_ms(Instant::now()))
+        micros(lock_model(&self.model).position_ms(Instant::now()))
     }
     #[zbus(property)]
     fn minimum_rate(&self) -> f64 {
@@ -398,7 +402,7 @@ impl Player {
     }
     #[zbus(property)]
     fn can_go_next(&self) -> bool {
-        let m = self.model.lock().unwrap();
+        let m = lock_model(&self.model);
         m.meta.is_some() && m.can_next
     }
     #[zbus(property)]
@@ -415,7 +419,7 @@ impl Player {
     }
     #[zbus(property)]
     fn can_seek(&self) -> bool {
-        let m = self.model.lock().unwrap();
+        let m = lock_model(&self.model);
         m.meta.is_some() && m.dur_ms > 0
     }
     #[zbus(property(emits_changed_signal = "const"))]

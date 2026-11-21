@@ -51,7 +51,7 @@ pub fn system_light() -> bool {
         let sub: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0".encode_utf16().collect();
         let val: Vec<u16> = "AppsUseLightTheme\0".encode_utf16().collect();
         let mut data: u32 = 0;
-        let mut size = std::mem::size_of::<u32>() as u32;
+        let mut size = size_of::<u32>() as u32;
         // SAFETY: both names are NUL-terminated and `data` is a DWORD-sized out buffer.
         let rc = unsafe { RegGetValueW(HKEY_CURRENT_USER, sub.as_ptr(), val.as_ptr(), RRF_RT_REG_DWORD, std::ptr::null_mut(), (&mut data as *mut u32).cast(), &mut size) };
         rc == 0 && data != 0

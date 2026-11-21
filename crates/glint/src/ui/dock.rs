@@ -25,7 +25,7 @@ const PINNED_BTN: f32 = 34.0;
 const NAV_GLYPH: f32 = 20.0;
 /// The two buttons at the rail's foot (downloads, settings): together as tall as the bar, so
 /// they stand level with it.
-const FOOT_BTN: f32 = kit::BAR_H * 0.5;
+const FOOT_BTN: f32 = BAR_H * 0.5;
 /// The cover in the bar: nearly as tall as the bar, a little room above and below.
 const BAR_COVER: f32 = 56.0;
 /// The plate under a place on the rail: under the pointer, and (a little stronger) under the one open.
@@ -46,7 +46,7 @@ pub fn rail(s: &State, w: f32) -> El {
     let here = s.page.rail();
     let mut places = col().key("rail-places").w_full().gap(4.0).items_center();
     for (page, off, on_icon, name) in items {
-        let on = here == page && s.page != Page::Settings;
+        let on = here == page;
         let target = page.clone();
         let mut b = row()
             .key(format!("nav-{}", page.key()))
@@ -105,7 +105,7 @@ pub fn rail(s: &State, w: f32) -> El {
     // column free (a wide window), the two foot buttons stand level with the bar, top to bottom;
     // with one that runs under the rail, just above it.
     let bar = s.current().is_some();
-    let level = bar && bar_span(w).0 >= kit::RAIL_W - 2.0;
+    let level = bar && bar_span(w).0 >= RAIL_W - 2.0;
     let foot = if level {
         BAR_GAP
     } else if bar {
@@ -288,9 +288,7 @@ fn profile(s: &State) -> El {
         .checked(s.menu_open)
         .hov_group()
         .on_press(|s: &mut State| {
-            s.vol_open = false;
-            s.vol_button_hover = false;
-            s.vol_card_hover = false;
+            s.close_volume();
             s.menu_open = !s.menu_open;
         })
         .child(account_picture(s, CHIP, &initial(&account_name(s))))
@@ -327,11 +325,11 @@ pub fn bar(s: &State, w: f32) -> El {
 /// Where the bar starts and how wide it is in a window `w` wide.
 pub fn bar_span(w: f32) -> (f32, f32) {
     let max = kit::PAGE_MAX - 2.0 * kit::PAGE_PAD + 2.0 * BAR_GAP + 32.0;
-    if w - 2.0 * BAR_GAP <= max || w - kit::RAIL_W < kit::PAGE_MAX {
+    if w - 2.0 * BAR_GAP <= max || w - RAIL_W < kit::PAGE_MAX {
         return (BAR_GAP, w - 2.0 * BAR_GAP);
     }
     // Centred on the page's column, which is centred right of the rail.
-    let centre = kit::RAIL_W + (w - kit::RAIL_W) * 0.5;
+    let centre = RAIL_W + (w - RAIL_W) * 0.5;
     (centre - max * 0.5, max)
 }
 
@@ -354,14 +352,14 @@ fn playing(s: &State, width: f32) -> El {
         .items_center()
         .cursor(Cursor::Pointer)
         .on_press(|s: &mut State| s.set_np(true))
-        .on_secondary_press(|s: &mut State, press, _tx: &mut rune::Tx| s.open_player_menu(press.into()))
+        .on_secondary_press(|s: &mut State, press, _tx: &mut Tx| s.open_player_menu(press.into()))
         // While the player is open (or coming over) the cover is up there, so it is not here: the
         // two share one id and the cover flies between them. (Two keys: the cover has to leave
         // the tree for the flight to start, not just lose its id.)
         .child(if s.np_open {
             el().key("bar-cover-gap").w(BAR_COVER).h(BAR_COVER)
         } else {
-            kit::playing_cover(s, t, BAR_COVER, 10.0, "bar-cover-morph", 3.0).key("bar-cover").matched("np-cover").motion(th::FLIGHT)
+            kit::playing_cover(s, t, BAR_COVER, 10.0, "bar-cover-mark").key("bar-cover").matched("np-cover").motion(th::FLIGHT)
         })
         .child(
             col()

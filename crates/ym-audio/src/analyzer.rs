@@ -218,7 +218,7 @@ fn band_levels(bins: &[Complex<f32>], rate: f32, out: &mut [f32]) {
         let peak = slice.iter().map(|c| c.norm()).fold(0.0f32, f32::max) * norm;
         // A narrow peak catches tonal content, while the energy term keeps short bass hits and
         // bright transients visible even when their energy falls between FFT bins.
-        let energy = (slice.iter().map(|c| c.norm_sqr()).sum::<f32>() / slice.len().max(1) as f32).sqrt() * norm * 1.8;
+        let energy = (slice.iter().map(Complex::norm_sqr).sum::<f32>() / slice.len().max(1) as f32).sqrt() * norm * 1.8;
         let amplitude = peak.max(energy);
         // Tilt: music has far less energy up high; +3 dB per octave keeps the right side alive.
         let centre = (f0 * f1).sqrt();

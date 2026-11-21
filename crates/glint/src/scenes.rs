@@ -523,8 +523,7 @@ fn np_waves(s: &mut State) {
 /// The look of the open player, its popover open from the corner button, a few things changed.
 fn np_look(s: &mut State) {
     nowplaying(s);
-    s.settings.stage.flash = 2;
-    s.settings.stage.react = 2;
+    s.settings.stage.effects = 2;
     s.open_popover(crate::app::Popover::Stage { anchor: "np-look".into() });
     s.pop.t = 1.0;
 }
@@ -571,7 +570,6 @@ fn sheet_artist(s: &mut State) {
     s.open_sheet(crate::app::Sheet::Page);
     s.sheet_pop.t = 1.0;
 }
-
 
 /// An artist's page listing every one of their tracks.
 fn artist_all(s: &mut State) {

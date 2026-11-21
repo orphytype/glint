@@ -1,7 +1,7 @@
 //! The outline of a shape of Home worked out on the CPU, from the same functions the shader
-//! draws it with (`gfx.wgsl`: `sh_f`, the mood pictures and `wave_form`), with the same seed, size
-//! and tilt. Before the compositor is up, a shape's stand-in is that outline filled with its
-//! colour, so when the real one comes in over it nothing changes place.
+//! draws it with (`sh_f`, the mood pictures and `wave_form`), with the same seed, size and tilt.
+//! Before the shape shaders compile, a shape's stand-in uses that outline as a gray skeleton so
+//! when the real shape comes in over it nothing changes place.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -379,16 +379,4 @@ fn trace(family: Family, form: u8, seed: f32, side: f32) -> Vec<[f32; 2]> {
         }
     }
     best
-}
-
-/// The colour a shape of `hue` mostly shows on the page (`lq_color` at rest, its middle calmed),
-/// for its stand-in.
-pub fn color(hue: f32) -> rune::Color {
-    let (s, l): (f32, f32) = if crate::theme::light() { (0.70, 0.82) } else { (0.62, 0.36) };
-    let a = s * l.min(1.0 - l);
-    let ch = |n: f32| {
-        let k = (n + fract(hue / 360.0) * 12.0) % 12.0;
-        l - a * (k - 3.0).min(9.0 - k).clamp(-1.0, 1.0)
-    };
-    crate::theme::srgb([ch(0.0), ch(8.0), ch(4.0)])
 }

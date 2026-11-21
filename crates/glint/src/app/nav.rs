@@ -1,0 +1,245 @@
+//! Page navigation, history stack, scroll memory, pinning, sorting, and collection likes.
+
+use ym_api::{Album, Track};
+
+use super::{DiscSort, Load, PAGE_SCROLL, Page, PinnedItem, Session, State, TrackSort, page_scroll};
+use crate::i18n::S;
+
+impl State {
+    pub fn go(&mut self, page: Page) {
+        if self.page == Page::Search && page != Page::Search {
+            self.remember_search();
+        }
+        self.menu_open = false;
+        self.tmenu_open = false;
+        self.close_volume();
+        if page == Page::Search {
+            self.focus_search = true;
+        }
+        self.np_open = false;
+        self.sheet_open = false;
+        if self.page == page {
+            return;
+        }
+        self.history.push(self.page.clone());
+        if self.history.len() > 40 {
+            self.history.remove(0);
+        }
+        self.forward.clear();
+        self.glide.active = false;
+        self.keep_scroll(&page);
+        self.page = page.clone();
+        self.enter(page);
+    }
+
+    /// Remembers the current scroll offset and schedules restoration for `to`.
+    fn keep_scroll(&mut self, to: &Page) {
+        let from = self.page.key();
+        if let Some([offset, _]) = page_scroll(&from) {
+            self.scroll_memory.insert(from, offset);
+        }
+        let key = to.key();
+        PAGE_SCROLL.with_borrow_mut(|m| m.remove(&key));
+        self.scroll_restore = self.scroll_memory.get(&key).copied().filter(|y| *y > 1.0).map(|y| (key, y, self.now + 4.0));
+    }
+
+    /// Whether there is a page to go back to (or an artist's full track list to collapse).
+    pub fn can_back(&self) -> bool {
+        !self.history.is_empty() || (self.detail.showing_all && matches!(self.page, Page::Artist(_)))
+    }
+
+    pub fn can_forward(&self) -> bool {
+        !self.forward.is_empty()
+    }
+
+    pub fn back(&mut self) {
+        if self.detail.showing_all && matches!(self.page, Page::Artist(_)) {
+            self.show_all_artist_tracks(false);
+            return;
+        }
+        if let Some(p) = self.history.pop() {
+            self.forward.push(self.page.clone());
+            self.leave_to(p);
+        }
+    }
+
+    pub fn go_forward(&mut self) {
+        if let Some(p) = self.forward.pop() {
+            self.history.push(self.page.clone());
+            self.leave_to(p);
+        }
+    }
+
+    /// Switches to `p` during back/forward navigation without pushing to history.
+    fn leave_to(&mut self, p: Page) {
+        if self.page == Page::Search && p != Page::Search {
+            self.remember_search();
+        }
+        self.menu_open = false;
+        self.tmenu_open = false;
+        self.close_volume();
+        self.np_open = false;
+        self.glide.active = false;
+        let same = self.page == p;
+        if !same {
+            self.keep_scroll(&p);
+        }
+        self.page = p.clone();
+        if !same {
+            self.enter(p);
+        }
+    }
+
+    /// Triggers initial data loading when entering a page.
+    fn enter(&mut self, page: Page) {
+        let detail = !page.is_root();
+        match page {
+            Page::Library => self.load_library_tab(self.library.tab),
+            Page::Album(id) => self.open_album(&id),
+            Page::Playlist(uid, kind) => self.open_playlist(uid, kind),
+            Page::Artist(id) => self.open_artist(&id),
+            _ => {}
+        }
+        if detail {
+            self.ensure_likes();
+        }
+    }
+
+    /// Fetches liked album, artist, and playlist keys once per session.
+    pub fn ensure_likes(&mut self) {
+        if self.likes_loaded || self.session == Session::LoggedOut {
+            return;
+        }
+        self.likes_loaded = true;
+        let (b, uid) = (self.backend.clone(), self.account.as_ref().map_or(0, |a| a.uid));
+        self.job(async move { b.liked_items(uid).await }, |s, _, res| match res {
+            Ok(keys) => s.liked_items.extend(keys),
+            Err(_) => s.likes_loaded = false,
+        });
+    }
+
+    pub fn is_item_liked(&self, key: &str) -> bool {
+        self.liked_items.contains(key)
+    }
+
+    /// Toggles the collection like for the currently open album, playlist, or artist.
+    pub fn toggle_detail_like(&mut self) {
+        let Some(key) = self.detail.like_key.clone() else { return };
+        let like = !self.liked_items.contains(&key);
+        let (what, id) = match key.split_once(':') {
+            Some(("album", id)) => (ym_api::Likeable::Album, id.to_owned()),
+            Some(("artist", id)) => (ym_api::Likeable::Artist, id.to_owned()),
+            Some(("playlist", id)) => (ym_api::Likeable::Playlist, id.to_owned()),
+            _ => return,
+        };
+        if like {
+            self.liked_items.insert(key.clone());
+        } else {
+            self.liked_items.remove(&key);
+        }
+        match what {
+            ym_api::Likeable::Album => self.library.albums = Load::Idle,
+            ym_api::Likeable::Artist => self.library.artists = Load::Idle,
+            ym_api::Likeable::Playlist => self.library.playlists = Load::Idle,
+        }
+        let text = self.tr(if like { S::AddedToCollection } else { S::RemovedFromCollection });
+        self.toast(text);
+        let (b, uid) = (self.backend.clone(), self.account.as_ref().map_or(0, |a| a.uid));
+        self.job(async move { b.set_item_like(uid, what, &id, like).await }, move |s, _, res| {
+            if let Err(e) = res {
+                if like {
+                    s.liked_items.remove(&key);
+                } else {
+                    s.liked_items.insert(key);
+                }
+                s.error_toast(&e);
+            }
+        });
+    }
+
+    /// Whether the open detail page is pinned in the navigation rail.
+    pub fn detail_is_pinned(&self) -> bool {
+        self.detail.page.as_ref().is_some_and(|page| self.pinned_items.iter().any(|item| item.page == *page))
+    }
+
+    /// Sorts the open page's tracks while preserving original order to restore later.
+    pub fn set_track_sort(&mut self, sort: TrackSort) {
+        let d = &mut self.detail;
+        d.sort = sort;
+        if sort == TrackSort::Original {
+            if let Some(base) = d.unsorted.take() {
+                d.tracks = base;
+            }
+            return;
+        }
+        let base = d.unsorted.get_or_insert_with(|| d.tracks.clone());
+        d.tracks = sort.apply(base);
+    }
+
+    /// Re-applies the active sort after replacing the open page's track list.
+    pub(crate) fn detail_tracks_changed(&mut self) {
+        self.detail.unsorted = None;
+        let sort = self.detail.sort;
+        if sort != TrackSort::Original {
+            self.set_track_sort(sort);
+        }
+    }
+
+    /// Appends a track to the open playlist, keeping it at the end of the original order.
+    pub(crate) fn push_detail_track(&mut self, t: Track) {
+        if let Some(base) = &mut self.detail.unsorted {
+            base.push(t);
+            let sort = self.detail.sort;
+            self.set_track_sort(sort);
+        } else {
+            self.detail.tracks.push(t);
+        }
+    }
+
+    /// Returns the open artist's releases filtered by kind and sorted by the selected order.
+    pub fn shown_albums(&self) -> Vec<&Album> {
+        let d = &self.detail;
+        let mut v: Vec<&Album> = d.albums.iter().filter(|a| d.disc_kind.holds(a.kind.as_deref())).collect();
+        match d.disc_sort {
+            DiscSort::Newest => {
+                v.sort_by(|a, b| (b.year.unwrap_or(0), b.release_date.as_deref().unwrap_or("")).cmp(&(a.year.unwrap_or(0), a.release_date.as_deref().unwrap_or(""))))
+            }
+            DiscSort::Oldest => {
+                v.sort_by(|a, b| (a.year.unwrap_or(i32::MAX), a.release_date.as_deref().unwrap_or("")).cmp(&(b.year.unwrap_or(i32::MAX), b.release_date.as_deref().unwrap_or(""))))
+            }
+            DiscSort::Title => v.sort_by_cached_key(|a| a.title.to_lowercase()),
+        }
+        v
+    }
+
+    pub fn toggle_detail_pin(&mut self) {
+        let Some(page) = self.detail.page.clone() else { return };
+        let key = page.key();
+        if let Some(i) = self.pinned_items.iter().position(|item| item.key() == key) {
+            self.pinned_items.remove(i);
+            let text = self.tr(S::Unpinned);
+            self.toast(text);
+            self.mark_settings_dirty();
+            return;
+        }
+        if self.detail.title.is_empty() || self.detail.state.is_loading() {
+            return;
+        }
+        self.pinned_items.push(PinnedItem { page, title: self.detail.title.clone(), cover: self.detail.cover.clone(), artist: self.detail.is_artist });
+        let text = self.tr(S::Pinned);
+        self.toast(text);
+        self.mark_settings_dirty();
+    }
+
+    /// Removes a pinned item by its stable page key.
+    pub fn remove_pinned(&mut self, key: &str) {
+        let before = self.pinned_items.len();
+        self.pinned_items.retain(|item| item.key() != key);
+        if self.pinned_items.len() != before {
+            self.close_popover();
+            let text = self.tr(S::Unpinned);
+            self.toast(text);
+            self.mark_settings_dirty();
+        }
+    }
+}

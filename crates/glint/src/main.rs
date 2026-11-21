@@ -32,6 +32,10 @@ mod ui;
 mod update;
 mod wordmark;
 
+#[cfg(feature = "diag")]
+#[global_allocator]
+static ALLOC: procwatch::alloc::Counting = procwatch::alloc::Counting::system();
+
 use std::time::Duration;
 
 use rune::{Key, KeyEvent, Tx};
@@ -67,6 +71,10 @@ fn main() {
         rune::set_app_id("glint");
         desktop::set_window_icon();
     }
+    rune::prewarm_gpu();
+    // Where the window was last closed, if that is still on a display.
+    let store = if headless { Store::none() } else { Store::open() };
+    let settings = store.load();
     let spec = rune::AppSpec {
         min_size: Some((960.0, 640.0)),
         #[cfg(feature = "tooling")]
@@ -75,16 +83,11 @@ fn main() {
         families: ("Commissioner", "IBM Plex Mono"),
         poll: Some(poll),
         on_key: Some(on_key),
-        ..rune::AppSpec::new("Glint", (1320.0, 820.0), || State::new(None, Store::none(), true), ui::view)
+        ..rune::AppSpec::new("Glint", (1320.0, 820.0), || State::new(None, Store::none(), store::Settings::default(), true), ui::view)
     };
-    // Where the window was last closed, if that is still on a display.
-    let store = (!headless).then(Store::open);
-    let saved = store.as_ref().and_then(|s| s.load_window()).filter(desktop::place::on_screen);
+    let saved = (!headless).then(|| store.load_window()).flatten().filter(desktop::place::on_screen);
     // Started at login with "start in the tray" on: the window waits until the tray opens it.
-    let hidden = store.as_ref().is_some_and(|s| {
-        let set = s.load();
-        autostart::started_at_login() && set.autostart && set.autostart_hidden && set.show_tray
-    });
+    let hidden = !headless && autostart::started_at_login() && settings.autostart && settings.autostart_hidden && settings.show_tray;
     let mut app = rune::App::new(spec);
     let mut options = rune::WindowOptions { visible: !hidden, ..Default::default() };
     if let Some(w) = &saved {
@@ -116,9 +119,18 @@ fn main() {
         });
     let handle = app.handle();
     app.init(move || {
-        let store = if headless { Store::none() } else { Store::open() };
-        let mut state = State::new(Some(handle), store, headless);
+        let mut state = State::new(Some(handle), store, settings, headless);
         if !headless {
+            #[cfg(feature = "diag")]
+            if let Ok(name) = std::env::var("GLINT_DIAG_SCENE")
+                && let Some((_, apply)) = scenes::SCENES.iter().find(|(k, _)| *k == name)
+            {
+                apply(&mut state);
+                state.player.sim_started = true;
+            } else {
+                state.boot();
+            }
+            #[cfg(not(feature = "diag"))]
             state.boot();
         }
         state
@@ -130,21 +142,40 @@ fn main() {
 fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
     let mut changed = s.tick(t);
     startup_report(tx);
-    // The compositor came up: build the view again, with its effect slots this time.
+    // The compositor tiers came up: rebuild the view with glass or shape slots as each finishes.
     {
         use std::sync::atomic::{AtomicBool, Ordering};
+        static GPU: AtomicBool = AtomicBool::new(false);
+        static GLASS: AtomicBool = AtomicBool::new(false);
+        static SHAPES: AtomicBool = AtomicBool::new(false);
         static SLOTS: AtomicBool = AtomicBool::new(false);
-        if fx::ready() && !SLOTS.swap(true, Ordering::Relaxed) {
+        if !GPU.load(Ordering::Relaxed) && fx::gpu_up() && !GPU.swap(true, Ordering::Relaxed) {
+            changed = true;
+        }
+        if !GLASS.load(Ordering::Relaxed) && fx::glass_ready() && !GLASS.swap(true, Ordering::Relaxed) {
+            changed = true;
+        }
+        if !SHAPES.load(Ordering::Relaxed) && fx::shapes_ready() && !SHAPES.swap(true, Ordering::Relaxed) {
+            changed = true;
+        }
+        if !SLOTS.load(Ordering::Relaxed) && fx::ready() && !SLOTS.swap(true, Ordering::Relaxed) {
             changed = true;
         }
     }
+    let visible = s.app.as_ref().is_none_or(rune::AppHandle::is_visible);
     // The launch screen moves every frame until it has faded out.
-    if ui::splash::step(s) {
-        tx.wake_after(Duration::from_millis(16));
+    let splash_moving = ui::splash::step(s);
+    if splash_moving {
+        if !visible {
+            tx.wake_after(Duration::from_millis(50));
+        }
         changed = true;
     } else if ui::splash::waiting(s) {
         // Started in the tray: the launch screen begins once the window is shown.
         tx.wake_after(Duration::from_millis(250));
+    } else if ui::splash::awaiting_gpu(s) {
+        // Safety wake if GPU init takes unusually long; far enough out to keep CPU handover quiet.
+        tx.wake_after(Duration::from_secs(2));
     }
 
     // A hidden window (closed to the tray) is only woken when asked: keep the player's clock, the
@@ -153,80 +184,93 @@ fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
         tx.wake_after(Duration::from_secs_f64((desktop::glue::DESKTOP_AFTER_S - s.now).max(0.0) + 0.02));
     }
     if s.player.playing || s.player.loading {
-        tx.wake_after(std::time::Duration::from_millis(250));
+        tx.wake_after(Duration::from_millis(250));
     }
-    // The page's own wheel scrolling eases toward where the wheel sent it.
     let dt = (s.now - s.prev_now).clamp(0.0, 0.05) as f32;
-    // Passive shader effects (stage glow, garden, seek bars) and butterflies tick at 30 Hz instead
-    // of spinning at display refresh rate; input, scrolling and UI transitions still render at full
-    // rate. Touching `fx_pulse` wakes a repaint without rebuilding the view or layout.
+    // Passive shader effects, butterflies, and word-by-word lyrics share one 30 Hz cadence.
     const FX_STEP: f64 = 1.0 / 30.0;
-    let visible = s.app.as_ref().is_none_or(|app| app.is_visible());
+    let resizing = s.is_resizing();
+    // Rebuild the glass once the last size holds, even on a paused or otherwise idle page.
+    if resizing {
+        tx.wake_after(Duration::from_secs_f64(s.resize_settles_in()));
+    } else if s.resized_at.replace(f64::NEG_INFINITY).is_finite() {
+        changed = true;
+    }
+    // A page come back to goes to where it was left, once it is tall enough for that (a list
+    // that loads again grows in a moment); after a while it settles for as far as it goes.
+    if let Some((key, y, until)) = s.scroll_restore.as_ref() {
+        let (y, late) = (*y, s.now > *until);
+        let mut clear = late;
+        match app::page_scroll(key) {
+            Some([offset, _]) if (offset - y).abs() < 1.0 => clear = true,
+            Some([_, max]) if max >= y - 0.5 || (late && max > 0.0) => tx.scroll_to_instant(key.as_str(), 0.0, y.min(max)),
+            _ => {}
+        }
+        if clear {
+            s.scroll_restore = None;
+        } else if !visible {
+            tx.wake_after(Duration::from_millis(50));
+        }
+    }
+    // Menus, the player page, and the details sheet step on springs at full display refresh rate.
+    let menu_moving = s.menu_moving();
+    if menu_moving {
+        if !visible {
+            tx.wake_after(Duration::from_millis(50));
+        }
+        changed = true;
+    }
+    // The sung line comes forward and the one before steps back, frame by frame.
+    let lines_moving = !resizing && s.np_open && s.np_panel() == NpTab::Lyrics && ui::np::step_lines(s, dt);
+    if lines_moving {
+        if !visible {
+            tx.wake_after(Duration::from_millis(50));
+        }
+        changed = true;
+    }
+    // Keep the compositor in continuous VSync-paced rendering while any UI spring moves,
+    // instead of sleeping on poll timers (which clamp to 16.7 ms and drop to 30 FPS on Windows).
+    s.ui_animating = visible && (splash_moving || menu_moving || lines_moving || s.scroll_restore.is_some());
+
     let fx_on = visible && fx::wants_tick();
     let bugs_on = visible && s.bugs_alive();
+    let wiping_now = s.np_open && s.np_panel() == NpTab::Lyrics && (ui::np::wiping(s) || ui::np::counting(s));
     if bugs_on && s.swarm.seed != s.home_seed {
         s.swarm = bugs::Swarm::new(s.home_seed);
         s.bugs_at = s.now;
         changed = true;
     }
-    if fx_on || bugs_on {
+    if fx_on || bugs_on || wiping_now {
         if fx_on {
             fx::arm_tick();
         }
-        if s.now >= s.fx_next {
+        if resizing {
+            tx.wake_after(Duration::from_millis(50));
+        } else if s.now >= s.fx_next {
             let bug_dt = (s.now - s.bugs_at).clamp(0.0, 0.1) as f32;
             s.bugs_at = s.now;
             let mut bug_wait = None;
             if bugs_on {
                 let scroll = app::page_scroll("home").map_or(0.0, |p| p[0]);
-                let geom = s.bug_geom.borrow().clone();
+                let geom = s.bug_geom.borrow();
                 bug_wait = s.swarm.step(s.now, bug_dt, &geom, scroll);
             }
-            let wait = if fx_on { Duration::from_secs_f64(FX_STEP) } else { bug_wait.map_or(Duration::from_secs_f64(FX_STEP), |d| d.max(Duration::from_secs_f64(FX_STEP))) };
-            s.fx_next = if fx_on && s.fx_next > 0.0 && s.now - s.fx_next < FX_STEP { s.fx_next + FX_STEP } else { s.now + wait.as_secs_f64() };
-            tx.wake_after(Duration::from_secs_f64((s.fx_next - s.now).max(0.004)));
-            if fx_on {
-                s.fx_phase = !s.fx_phase;
-                s.fx_pulse.set([0.0, if s.fx_phase { 1.0 } else { 0.0 }]);
+            if wiping_now {
+                changed = true;
             }
-        } else {
+            let wait =
+                if fx_on || wiping_now { Duration::from_secs_f64(FX_STEP) } else { bug_wait.map_or(Duration::from_secs_f64(FX_STEP), |d| d.max(Duration::from_secs_f64(FX_STEP))) };
+            s.fx_next = if (fx_on || wiping_now) && s.fx_next > 0.0 && s.now - s.fx_next < FX_STEP { s.fx_next + FX_STEP } else { s.now + wait.as_secs_f64() };
+            if !s.ui_animating {
+                tx.wake_after(Duration::from_secs_f64((s.fx_next - s.now).max(0.004)));
+                if fx_on && !changed {
+                    s.fx_phase = !s.fx_phase;
+                    s.fx_pulse.set([0.0, if s.fx_phase { 1.0 } else { 0.0 }]);
+                }
+            }
+        } else if !s.ui_animating {
             tx.wake_after(Duration::from_secs_f64((s.fx_next - s.now).max(0.004)));
         }
-    }
-    let reduce = s.settings.reduce_motion;
-    // A page come back to goes to where it was left, once it is tall enough for that (a list
-    // that loads again grows in a moment); after a while it settles for as far as it goes.
-    if let Some((key, y, until)) = s.scroll_restore.clone() {
-        let late = s.now > until;
-        match app::page_scroll(&key) {
-            Some([offset, _]) if (offset - y).abs() < 1.0 => s.scroll_restore = None,
-            Some([_, max]) if max >= y - 0.5 || (late && max > 0.0) => tx.scroll_to_instant(key, 0.0, y.min(max)),
-            _ => {}
-        }
-        if late {
-            s.scroll_restore = None;
-        } else {
-            tx.wake_after(Duration::from_millis(16));
-        }
-    }
-    if let Some(y) = s.glide.step(dt, reduce) {
-        tx.scroll_to_instant(s.glide.key.clone(), 0.0, y);
-        tx.wake_after(Duration::from_millis(8));
-    }
-    // The profile menu opens and closes on a spring: a step every frame until it is still.
-    if s.menu_moving() {
-        tx.wake_after(Duration::from_millis(16));
-        changed = true;
-    }
-    // The sung line comes forward and the one before steps back, frame by frame.
-    if ui::np::step_lines(s, dt) && s.np_open && s.np_panel() == NpTab::Lyrics {
-        tx.wake_after(Duration::from_millis(16));
-        changed = true;
-    }
-    // The line being sung fills in word by word: redraw every frame while it does.
-    if s.np_open && s.np_panel() == NpTab::Lyrics && (ui::np::wiping(s) || ui::np::counting(s)) {
-        tx.wake_after(Duration::from_millis(16));
-        changed = true;
     }
 
     // The queue opens with the track before the playing one at its top, and follows as another
@@ -309,10 +353,7 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
             return true;
         }
         if s.vol_open {
-            s.vol_open = false;
-            s.vol_button_hover = false;
-            s.vol_card_hover = false;
-            s.vol_close_at = None;
+            s.close_volume();
             return true;
         }
         if s.tmenu_open {

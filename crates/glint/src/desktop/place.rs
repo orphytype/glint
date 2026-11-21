@@ -12,13 +12,15 @@ thread_local! {
 }
 
 pub fn keep_window(handle: &rune::WindowHandle) {
+    #[cfg(windows)]
+    super::resize::install(handle);
     WINDOW.with(|w| *w.borrow_mut() = Some(handle.clone()));
 }
 
 /// Saves where the window is now; a maximized or minimized one saves the frame restoring it
 /// returns to. Call it on the UI thread.
 pub fn save(store: &Store) {
-    let Some(p) = WINDOW.with(|w| w.borrow().as_ref().and_then(|h| h.placement())) else { return };
+    let Some(p) = WINDOW.with(|w| w.borrow().as_ref().and_then(rune::WindowHandle::placement)) else { return };
     if p.full_screen {
         return;
     }

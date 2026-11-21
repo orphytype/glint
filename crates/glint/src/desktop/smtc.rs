@@ -190,8 +190,9 @@ fn find_window() -> Option<HWND> {
         }
         BOOL(1)
     }
-    // SAFETY: A plain window enumeration; the callback only reads.
+    // SAFETY: `GetCurrentProcessId` takes no arguments and cannot fail.
     let mut search = Search { pid: unsafe { GetCurrentProcessId() }, best: None };
+    // SAFETY: `EnumWindows` invokes `visit` synchronously before returning, so `&mut search` stays valid.
     unsafe {
         let _ = EnumWindows(Some(visit), LPARAM(&mut search as *mut Search as isize));
     }

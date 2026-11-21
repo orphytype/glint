@@ -120,7 +120,7 @@ impl State {
                     p.title = title.clone();
                 }
                 if s.page == Page::Playlist(uid, kind) {
-                    s.detail.title = title.clone();
+                    s.detail.title = title;
                 }
                 s.save_library_snapshot();
                 let text = s.tr(S::PlaylistRenamed);

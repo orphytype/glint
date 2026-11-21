@@ -61,15 +61,15 @@ impl State {
         }
     }
 
-    /// Fetches the playing track's cover once more, small and as a PNG, for the media card. (The
-    /// pictures in the window live on the GPU side and cannot be read back.)
+    /// Sends the playing track's cover to the OS media card as PNG, reusing the RAM or disk cache
+    /// whenever the 300x300 cover is already loaded so it is never fetched twice.
     fn send_card_cover(&self) {
         let Some(track) = self.current() else {
-            // Nothing is playing: the next same track must fetch its cover again.
+            // Nothing is playing: the next same track must send its cover again.
             *self.card_cover.borrow_mut() = None;
             return;
         };
-        let Some(key) = State::cover_key(track.cover_template(), 300) else { return };
+        let Some(key) = State::cover_key(track.cover_template()) else { return };
         let id = track.id.clone();
         // The card asks once per track: no need to fetch and encode the same picture again.
         {
@@ -80,10 +80,37 @@ impl State {
             *asked = Some(id.clone());
         }
         let backend = self.backend.clone();
+        let art = self.art.clone();
+        let disk = self.cache.clone();
         self.job(
             async move {
-                let img = backend.image(&key, 300).await?;
-                tokio::task::spawn_blocking(move || super::cover_png(img.width, img.height, img.rgba, 300)).await.ok().flatten()
+                let from_ram = art.encoded(&key);
+                let disk_read = disk.clone();
+                let key_disk = key.clone();
+                let local = tokio::task::spawn_blocking(move || from_ram.or_else(|| disk_read.as_ref().and_then(|d| d.get(&key_disk)))).await.ok().flatten();
+                let img = match local {
+                    Some(raw) => tokio::task::spawn_blocking(move || crate::art::decode(&raw, crate::art::COVER_PX)).await.ok().flatten(),
+                    None => match backend.image_bytes(&key).await {
+                        Some(raw) => {
+                            let disk_put = disk.clone();
+                            let art_put = art.clone();
+                            let key_put = key.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let img = crate::art::decode(&raw, crate::art::COVER_PX)?;
+                                if let Some(d) = disk_put {
+                                    let _ = d.put(&key_put, &raw);
+                                }
+                                art_put.store_encoded(&key_put, raw);
+                                Some(img)
+                            })
+                            .await
+                            .ok()
+                            .flatten()
+                        }
+                        None => backend.image(&key, crate::art::COVER_PX).await,
+                    },
+                }?;
+                tokio::task::spawn_blocking(move || super::cover_png(img.width, img.height, img.rgba, crate::art::COVER_PX)).await.ok().flatten()
             },
             move |s, _, png| {
                 if let (Some(png), Some(desktop)) = (png, s.desktop.as_ref()) {
