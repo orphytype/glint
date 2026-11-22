@@ -129,7 +129,7 @@ fn fs_wave(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         if (wl.y > 0) {
             col = wave_print(wl.y, col, p, k, size, seed, light);
         } else {
-            col = col + (bayer8(floor(p - u.rect.xy)) - 0.5) / 255.0;
+            col = clamp(col + (ign(p) - 0.5) / 255.0, vec3<f32>(0.0), vec3<f32>(1.0));
         }
         // Soft center readability scrim so the title and mood caption stay legible over bright covers.
         let qr = q * vec2<f32>(1.15, 1.85);

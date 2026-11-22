@@ -27,14 +27,7 @@ fn fs_glass(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let sd = sdq(q);
     let clipped = rect_clip(p);
     let cov = clamp(0.5 - sd, 0.0, 1.0) * clipped;
-
-    let reach = max(u.rect.x - u.bounds.x - 1.0, 0.0);
-    var drop_a = 0.0;
-    if (reach > 1.0 && u.ink.w > 0.0) {
-        let d2 = sdq(q - vec2<f32>(0.0, reach * 0.3));
-        drop_a = u.ink.w * (1.0 - smoother(d2 / reach)) * clipped * u.p3.y;
-    }
-    if (cov <= 0.0 && drop_a <= 0.002) { discard; }
+    if (cov <= 0.0) { discard; }
 
     let dist = max(-sd, 0.0);
     let e = 1.0;
@@ -75,30 +68,27 @@ fn fs_glass(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let bevel = 1.0 - smoother(dist / max(width * 1.15, 1.0));
     let lift = u.p1.w * bevel * bevel;
     let white = work(vec3<f32>(1.0));
-    col = select(col * (1.0 + lift) + white * (lift * 0.22), col + (white - col) * (lift * 0.45), is_light);
+    col = select(col * (1.0 + lift) + white * (lift * 0.08), col + (white - col) * (lift * 0.22), is_light);
 
-    let edge_w = max(u.p3.w * k, 1.5);
-    let edge = 1.0 - smoother(dist / edge_w);
+    let rim_w = u.p2.w * k;
+    let band = select(0.0, 1.0 - smoothstep(max(rim_w - 0.85, 0.0), rim_w + 0.35, dist), rim_w > 0.0);
     let ang = u.p3.z;
     let l2 = vec2<f32>(cos(ang), sin(ang));
     let nrm = normalize(vec3<f32>(-n2.x, -n2.y, 1.15));
     let s1 = pow(max(dot(nrm, normalize(vec3<f32>(l2, 0.9))), 0.0), max(u.p2.y, 1.0));
-    let s2 = pow(max(dot(nrm, normalize(vec3<f32>(-l2, 0.9))), 0.0), max(u.p2.y, 1.0)) * 0.45;
-    let spec = clamp((s1 + s2) * u.p2.x * edge, 0.0, 1.0);
-    let band = 1.0 - smoothstep(max(u.p2.w * k - 0.9, 0.0), max(u.p2.w * k + 0.15, 0.6), dist);
+    let s2 = pow(max(dot(nrm, normalize(vec3<f32>(-l2, 0.9))), 0.0), max(u.p2.y, 1.0)) * 0.35;
+    let spec = clamp((s1 + s2) * u.p2.x * band, 0.0, 0.16);
     let up = clamp(0.5 - 0.5 * n2.y, 0.0, 1.0);
-    let rim = clamp(u.p2.z * band * (0.28 + 0.72 * up), 0.0, 1.0);
     if (is_light) {
-        let hair = band * 0.10 * (1.0 - up * 0.55);
-        col = mix(col, vec3<f32>(0.0), hair * (1.0 - spec));
-        col = mix(col, white, clamp(spec * 0.95 + rim * 0.85, 0.0, 1.0));
+        let hair = band * 0.11 * (1.0 - up * 0.35);
+        col = mix(col, vec3<f32>(0.0), hair);
+        col = mix(col, white, clamp(spec * 0.65, 0.0, 0.18));
     } else {
-        let shade = u.p3.x * edge * (1.0 - up * 0.4);
-        col = mix(col, vec3<f32>(0.0), shade * (1.0 - spec));
-        col = mix(col, white, clamp(spec + rim * (1.0 - spec), 0.0, 1.0));
+        let rim = clamp(u.p2.z * band * (0.72 + 0.28 * up) + spec, 0.0, 0.24);
+        col = mix(col, white, rim);
     }
 
     col = col + (ign(p) - 0.5) * (1.2 / 255.0);
     let a = cov * u.p3.y;
-    return vec4<f32>(max(col, vec3<f32>(0.0)) * a, a + (1.0 - a) * drop_a);
+    return vec4<f32>(max(col, vec3<f32>(0.0)) * a, a);
 }

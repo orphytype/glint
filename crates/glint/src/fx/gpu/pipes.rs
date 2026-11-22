@@ -147,11 +147,7 @@ impl Gpu {
             if i == 5 {
                 jobs.push(vec![(HDR, Pipe::Down0), (HDR, Pipe::Down)]);
             }
-            let mut v = vec![(format, p)];
-            if LAYER_PIPES.contains(&p) && LAYER != format {
-                v.push((LAYER, p));
-            }
-            jobs.push(v);
+            jobs.push(vec![(format, p)]);
         }
         let mut jobs: Vec<Vec<(wgpu::TextureFormat, Pipe)>> =
             jobs.into_iter().map(|v| v.into_iter().filter(|k| !self.pipes.contains_key(k)).collect::<Vec<_>>()).filter(|v| !v.is_empty()).collect();
@@ -233,6 +229,22 @@ impl Gpu {
     pub fn has_pipe(&mut self, format: wgpu::TextureFormat, pipe: Pipe) -> bool {
         self.take_warm();
         self.pipes.contains_key(&(format, pipe))
+    }
+
+    /// Ensures the offscreen-layer (`Rgba16Float`) variant of `pipe` is built on first use instead
+    /// of eagerly compiling eight extra pipelines at startup.
+    pub fn ensure_layer_pipe(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat, pipe: Pipe) -> bool {
+        self.take_warm();
+        if self.pipes.contains_key(&(format, pipe)) {
+            return true;
+        }
+        if format != LAYER || !LAYER_PIPES.contains(&pipe) {
+            return false;
+        }
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(pipe.entry()), source: wgpu::ShaderSource::Wgsl(shader_source(pipe).into()) });
+        let built = build_pipe(device, &module, &self.gfx_layout, "vs", pipe, format);
+        self.pipes.insert((format, pipe), built);
+        true
     }
 
     /// Takes in whatever the workers have finished.

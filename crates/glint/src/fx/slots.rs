@@ -41,21 +41,19 @@ struct Spec {
     spec: f32,
     spec_exp: f32,
     rim: f32,
-    shade: f32,
+    rim_w: f32,
     tint: f32,
-    cast: f32,
-    reach: f32,
 }
 
 const SPECS: [Spec; 4] = [
-    // Dock: deep optical frost with soft dispersion and subtle depth shadow.
-    Spec { refr: 14.0, edge: 20.0, chroma: 0.22, blur: 15.0, sat: 1.24, ambient: 0.12, spec: 0.52, spec_exp: 18.0, rim: 0.34, shade: 0.06, tint: 0.26, cast: 0.18, reach: 14.0 },
+    // Dock: optical frost with a quiet 2px border and no drop shadow.
+    Spec { refr: 12.0, edge: 18.0, chroma: 0.16, blur: 15.0, sat: 1.20, ambient: 0.03, spec: 0.10, spec_exp: 24.0, rim: 0.12, rim_w: 2.0, tint: 0.30 },
     // Card
-    Spec { refr: 10.0, edge: 16.0, chroma: 0.20, blur: 12.0, sat: 1.18, ambient: 0.10, spec: 0.42, spec_exp: 18.0, rim: 0.28, shade: 0.05, tint: 0.24, cast: 0.20, reach: 20.0 },
-    // Chip: luminous liquid glass buttons and status pills.
-    Spec { refr: 6.5, edge: 11.0, chroma: 0.14, blur: 11.0, sat: 1.30, ambient: 0.14, spec: 0.54, spec_exp: 16.0, rim: 0.38, shade: 0.03, tint: 0.15, cast: 0.14, reach: 9.0 },
-    // Menu
-    Spec { refr: 2.0, edge: 8.0, chroma: 0.0, blur: 16.0, sat: 1.45, ambient: 0.04, spec: 0.20, spec_exp: 22.0, rim: 0.18, shade: 0.0, tint: 0.16, cast: 0.26, reach: 24.0 },
+    Spec { refr: 9.0, edge: 14.0, chroma: 0.14, blur: 12.0, sat: 1.16, ambient: 0.03, spec: 0.09, spec_exp: 24.0, rim: 0.11, rim_w: 2.0, tint: 0.26 },
+    // Chip: clean glass buttons and status pills with a quiet 2px edge.
+    Spec { refr: 6.0, edge: 10.0, chroma: 0.10, blur: 11.0, sat: 1.22, ambient: 0.035, spec: 0.11, spec_exp: 22.0, rim: 0.12, rim_w: 2.0, tint: 0.20 },
+    // Menu: frosted glass; the menu card itself draws the 2px outer border.
+    Spec { refr: 2.0, edge: 8.0, chroma: 0.0, blur: 16.0, sat: 1.38, ambient: 0.0, spec: 0.0, spec_exp: 24.0, rim: 0.0, rim_w: 0.0, tint: 0.18 },
 ];
 
 pub(super) struct Job {
@@ -223,7 +221,7 @@ impl Gfx {
                         }
                         Effects::Full => {}
                     }
-                    let mut u = base(i, k, ctx.pass_size, ctx.srgb, ctx.t, s.reach * k, false);
+                    let mut u = base(i, k, ctx.pass_size, ctx.srgb, ctx.t, 0.0, false);
                     let reach = refr * k + 8.0 * k;
                     let [x, y, w, h] = i.rect;
                     let (region, tag, shared) = if has_snap && blur > 0.0 {
@@ -258,10 +256,10 @@ impl Gfx {
                     };
                     u.p0 = [refr * k, s.edge * k, chroma, sigma];
                     u.p1 = [0.0, s.sat, 0.0, s.ambient];
-                    u.p2 = [s.spec, s.spec_exp, s.rim, 1.0];
-                    u.p3 = [s.shade, 1.0 - hide, -0.9, 3.0];
+                    u.p2 = [s.spec, s.spec_exp, s.rim, s.rim_w];
+                    u.p3 = [0.0, 1.0 - hide, -0.9, 2.0];
                     u.tint = rgb4(ctx.canvas, tint.clamp(0.0, 0.95));
-                    u.ink = rgb4(ctx.ink, if theme::light() { s.cast * 0.36 } else { s.cast });
+                    u.ink = rgb4(ctx.ink, 0.0);
                     let u = gpu.stage(ctx.device, &u);
                     self.jobs.push((n as u32, Job { pipe: Pipe::Glass, u, region, tag, shared }));
                 }
@@ -293,10 +291,27 @@ impl Gfx {
                         if ctx.reduced || ctx.quality == Effects::Off {
                             self.marker_run = want;
                         }
+                        let b = &ctx.st.spectrum;
+                        let raw = [b[0..5].iter().sum::<f32>() / 5.0, b[5..16].iter().sum::<f32>() / 11.0, b[16..32].iter().sum::<f32>() / 16.0];
+                        let punch = [ctx.st.drive.kick, ctx.st.drive.snare.max(ctx.st.drive.syllable * 0.85), ctx.st.drive.hats];
+                        let avg_k = 1.0 - (-ctx.dt * 2.8).exp();
+                        for j in 0..3 {
+                            if run && ctx.playing_level {
+                                self.morph_avg[j] += (raw[j] - self.morph_avg[j]) * avg_k;
+                                let avg = self.morph_avg[j].max(0.03);
+                                let flux = ((raw[j] - avg) / avg).clamp(-0.65, 1.35);
+                                let target = (0.25 * self.smooth.norm[j] + 0.45 * (0.32 + flux * 0.68).clamp(0.0, 1.0) + 0.60 * punch[j]).clamp(0.0, 1.0);
+                                let rate = if target > self.morph_bars[j] { 26.0 } else { 9.0 };
+                                self.morph_bars[j] += (target - self.morph_bars[j]) * (1.0 - (-ctx.dt * rate).exp());
+                            } else {
+                                self.morph_bars[j] *= (-ctx.dt * 9.0).exp();
+                            }
+                        }
                     }
                     let mut u = base(i, k, ctx.pass_size, ctx.srgb, 0.0, 0.0, true);
-                    u.p0 = [self.morph_t, MORPH_SECS, if ctx.reduced || ctx.quality == Effects::Off { 0.0 } else { self.marker_run }, 0.0];
-                    u.p1 = [self.smooth.norm[0], self.smooth.norm[1], self.smooth.norm[2], 0.0];
+                    let live = if ctx.playing_level { 1.0 } else { 0.0 };
+                    u.p0 = [self.morph_t, MORPH_SECS, if ctx.reduced || ctx.quality == Effects::Off { 0.0 } else { self.marker_run }, live];
+                    u.p1 = [self.morph_bars[0], self.morph_bars[1], self.morph_bars[2], self.smooth.beat];
                     summary.moving |= (self.marker_run - want).abs() > 0.002;
                     u.tint = rgb4(if d[1] > 0.5 { [1.0, 1.0, 1.0] } else { ctx.accent }, 1.0);
                     let u = gpu.stage(ctx.device, &u);

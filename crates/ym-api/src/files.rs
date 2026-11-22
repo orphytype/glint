@@ -20,6 +20,7 @@ struct FileInfo {
     quality: String,
     codec: String,
     bitrate: u32,
+    size: u64,
     transport: String,
     url: String,
     urls: Vec<String>,
@@ -59,5 +60,5 @@ fn stream_from(info: FileInfo) -> Result<StreamInfo> {
         return Err(Error::Parse("file info has no usable URL".into()));
     }
     let codec = if info.codec.is_empty() { info.quality } else { info.codec };
-    Ok(StreamInfo { urls, codec, bitrate_kbps: info.bitrate })
+    Ok(StreamInfo { urls, codec, bitrate_kbps: info.bitrate, size_bytes: info.size })
 }

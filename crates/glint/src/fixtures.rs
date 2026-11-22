@@ -431,7 +431,8 @@ impl Catalog {
                 _ => parse_track_id(&t.id).is_some_and(|(s, _, _)| wanted.contains(&s)),
             })
             .collect();
-        let mut rng = round.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0xdead_beef;
+        let preset_hash = preset.bytes().fold(0xdead_beefu64, |a, b| a.wrapping_mul(0x100_0000_01b3) ^ u64::from(b));
+        let mut rng = round.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ preset_hash;
         let mut next = move || {
             rng ^= rng << 13;
             rng ^= rng >> 7;

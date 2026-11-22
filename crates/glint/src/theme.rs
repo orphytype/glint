@@ -346,11 +346,11 @@ pub const PRESS: f32 = 0.96;
 pub const SOFT: rune::SpringPair = rune_motion::tokens::pair::REFLOW;
 
 /// How a block of a page comes in: quick, and without a bounce.
-/// The cover flying between the bar and the player: unhurried, so it glides rather than shoots.
-pub const FLIGHT: rune::Spring = rune::Spring::new(0.55, 0.0);
+/// The cover flying between the bar and the player: matched to the player curtain's glide.
+pub const FLIGHT: rune::Spring = rune::Spring::new(0.42, 0.0);
 
 /// The player's column sliding aside when the lyrics or the queue open, and back.
-pub const SLIDE: rune::Spring = rune::Spring::new(0.5, 0.0);
+pub const SLIDE: rune::Spring = rune::Spring::new(0.38, 0.0);
 
 /// How a page (and each block of it) comes in: a calm rise that settles without a bounce, and a
 /// quick fade out of the way.
@@ -359,7 +359,3 @@ pub const PAGE_IN: rune::SpringPair = rune::SpringPair::new(rune::Spring::new(0.
 /// after the page is there.
 pub const GLOW: rune::SpringPair = rune::SpringPair::new(rune::Spring::new(0.7, 0.0), rune::Spring::new(0.16, 0.0));
 pub const RISE: rune::SpringPair = rune::SpringPair::new(rune::Spring::new(0.26, 0.0), rune::Spring::new(0.18, 0.0));
-
-/// A page that is replaced: it holds still when it enters (the compositor skips what sits in a
-/// fading group, and a page carries such slots) and fades out quickly when it goes.
-pub const LEAVE: rune::SpringPair = rune::SpringPair::new(rune::Spring::NONE, rune::Spring::new(0.16, 0.0));

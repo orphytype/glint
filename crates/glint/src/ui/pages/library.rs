@@ -20,19 +20,26 @@ fn liked_playlist_cover(s: &State, side: f32, radius: f32) -> El {
         return el().key("lib-pic").w(side).h(side).radius(radius).child(kit::cover(s, Some(tpl), side, radius));
     }
     let cell = side * 0.5;
-    let mut art = el().key("lib-pic").w(side).h(side).radius(radius).clip_rounded(radius).fill(th::veil(0.08));
+    let mut art = el().key("lib-pic").w(side).h(side).radius(radius).fill(th::veil(0.08));
     let mut count = 0;
     if let Some(tracks) = s.library.tracks.get() {
+        let tile_corners = [[radius, 0.0, 0.0, 0.0], [0.0, radius, 0.0, 0.0], [0.0, 0.0, 0.0, radius], [0.0, 0.0, radius, 0.0]];
         for (i, track) in tracks.iter().take(4).enumerate() {
             let x = if i % 2 == 0 { 0.0 } else { cell };
             let y = if i < 2 { 0.0 } else { cell };
-            art = art.child(el().absolute(x, y).w(cell + 1.0).h(cell + 1.0).fill(th::srgb(s.palette.colors[i])).child(kit::cover_tile(s, track.cover_template(), cell + 1.0)));
+            let corners = tile_corners[i];
+            art = art.child(el().absolute(x, y).w(cell + 1.0).h(cell + 1.0).corners(corners).fill(th::srgb(s.palette.colors[i])).child(kit::cover_tile(
+                s,
+                track.cover_template(),
+                cell + 1.0,
+                corners,
+            )));
             count += 1;
         }
     }
     if count == 0 {
         art = art
-            .child(el().absolute(0.0, 0.0).w_full().h_full().fill(s.pal().accent.alpha(0.24)))
+            .child(el().absolute(0.0, 0.0).w_full().h_full().radius(radius).fill(s.pal().accent.alpha(0.24)))
             .child(row().absolute(0.0, 0.0).w_full().h_full().center().child(icon(&icons::HEART_FILL, side * 0.34).color(th::text())));
     }
     art.child(el().absolute(0.0, 0.0).w_full().h_full().radius(radius).fill(th::rgba(0x000000, 0.10)).border(1.0, kit::cover_border()))
@@ -52,17 +59,16 @@ pub(super) fn library(s: &State, w: f32) -> El {
         (LibTab::Artists, S::Artists, count(s.library.artists.get().map(Vec::len))),
     ];
     let at = tabs.iter().position(|(t, ..)| *t == tab).unwrap_or(0);
-    let tabs = kit::tab_track(
-        "ltabs",
-        tabs.into_iter()
-            .map(|(t, name, n)| {
-                let label_text = name.get(lang);
-                let tw = kit::tab_pill_w(label_text, n);
-                (kit::tab_pill_with_w(format!("ltab-{t:?}"), label_text, n, tab == t, tw).on_press(move |s: &mut State| s.load_library_tab(t)), tw)
-            })
-            .collect(),
-        at,
-    );
+    let tab_items: Vec<(El, f32)> = tabs
+        .into_iter()
+        .map(|(t, name, n)| {
+            let label_text = name.get(lang);
+            let tw = kit::tab_pill_w(label_text, n);
+            (kit::tab_pill_with_w(format!("ltab-{t:?}"), label_text, n, tab == t, tw).on_press(move |s: &mut State| s.load_library_tab(t)), tw)
+        })
+        .collect();
+    let tabs_w = 8.0 + tab_items.iter().map(|(_, tw)| *tw).sum::<f32>() + 2.0 * tab_items.len().saturating_sub(1) as f32;
+    let tabs = kit::tab_track("ltabs", tab_items, at);
     let input = text_input(&s.library.filter, th::BODY)
         .key("lib-search")
         .single_line()
@@ -74,7 +80,6 @@ pub(super) fn library(s: &State, w: f32) -> El {
         .on_edit(|s: &mut State| &mut s.library.filter);
     let mut field = kit::field_surface(row())
         .key("lib-search-field")
-        .w(240.0)
         .h(LIB_CTL_H)
         .pl(10.0)
         .pr(4.0)
@@ -106,15 +111,24 @@ pub(super) fn library(s: &State, w: f32) -> El {
                 tx.focus_when_shown("name-field", false);
             })
     });
-    let sort_btn = (tab == LibTab::Tracks && s.library.tracks.get().is_some_and(|v| v.len() > 2)).then(|| {
+    let sort_now =
+        (tab == LibTab::Tracks && s.library.tracks.get().is_some_and(|v| v.len() > 2)).then(|| (s.library.sort != TrackSort::Original).then(|| s.library.sort.name().get(lang)));
+    let sort_w = match sort_now {
+        None => 0.0,
+        Some(None) => 31.0,
+        Some(Some(lbl)) => 43.0 + rune::text::measure(lbl, &[], th::BODY_M, None).0.ceil(),
+    };
+    let sort_btn = sort_now.map(|now| {
         let open = s.popover_open && matches!(s.popover, Some(Popover::LibSort { .. }));
-        let now = (s.library.sort != TrackSort::Original).then(|| s.library.sort.name().get(lang));
         kit::sort_button("lib-sort", s, now, open).on_press(|s: &mut State| s.open_popover(Popover::LibSort { anchor: "lib-sort".into() }))
     });
-    let bar = if cw >= 700.0 {
-        row().key("lib-bar").w_full().gap(12.0).items_center().child(tabs).child(el().grow(1.0)).children(sort_btn).children(new_pl).child(field)
+    let right_extras = (if sort_btn.is_some() { sort_w + 8.0 } else { 0.0 }) + (if new_pl.is_some() { LIB_CTL_H + 8.0 } else { 0.0 });
+    let avail_field = cw - tabs_w - 12.0 - right_extras;
+    let bar = if avail_field >= 140.0 {
+        let right = row().gap(8.0).items_center().children(sort_btn).children(new_pl).child(field.w(avail_field.min(240.0)));
+        row().key("lib-bar").w_full().gap(12.0).items_center().justify_between().child(tabs).child(right)
     } else {
-        col().key("lib-bar").w_full().gap(12.0).child(tabs).child(row().w_full().gap(10.0).items_center().child(field.grow(1.0).min_w(0.0)).children(sort_btn).children(new_pl))
+        col().key("lib-bar").w_full().gap(12.0).child(tabs).child(row().w_full().gap(8.0).items_center().child(field.grow(1.0).min_w(0.0)).children(sort_btn).children(new_pl))
     };
 
     let head = if tab == LibTab::Tracks {

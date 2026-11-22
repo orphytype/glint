@@ -2,7 +2,7 @@
 
 use rune::{Color, Cursor, El, Tx, col, el, row};
 
-use super::{GROUP_R, ROW_PAD, figure, group, item, segmented, toggle};
+use super::{GROUP_R, ROW_PAD, figure, group, item, item_enabled, segmented, toggle, toggle_enabled};
 use crate::app::{Session, State};
 use crate::i18n::{Lang, S};
 use crate::keys::{self, Act};
@@ -25,14 +25,12 @@ pub(super) fn account(s: &State) -> Vec<El> {
     let mut note = row().w_full().gap(5.0).items_center().min_w(0.0).child(label(note, th::SMALL, th::text2()).wrap().max_lines(2).shrink().min_w(0.0));
     if let Some(login) = login {
         let peek = s.id_peek;
+        let shown = if peek { login } else { "•".repeat(login.chars().count().clamp(5, 10)) };
         note = note.child(label("·".to_owned(), th::SMALL, th::text3())).child(
-            label(login, th::SMALL, th::text2())
+            label(shown, th::SMALL, if peek { th::text2() } else { th::text3() })
                 .key("set-login")
                 .truncate()
                 .min_w(0.0)
-                .blur(if peek { 0.0 } else { 4.0 })
-                .opacity(if peek { 1.0 } else { 0.8 })
-                .motion(rune::Spring::new(0.22, 0.0))
                 .cursor(Cursor::Default)
                 .help(if peek { "" } else { S::IdHidden.get(lang) })
                 .on_hover_change(|s: &mut State, on: bool, _tx: &mut Tx| s.id_peek = on),
@@ -205,8 +203,11 @@ pub(super) fn shortcuts(s: &State) -> Vec<El> {
     rows.push(
         row().w_full().h(48.0).px(ROW_PAD).gap(12.0).items_center().child(label(S::ScBack.get(lang).to_owned(), th::BODY, th::text()).grow(1.0).min_w(0.0)).child(key_cap("Esc")),
     );
-    let reset = kit::btn_small("keys-reset", S::StageReset.get(lang), None);
-    let reset = if keys::changed(&s.settings) { reset.on_press(|s: &mut State| s.reset_keys()) } else { reset.disabled(true).opacity(0.45) };
+    let reset = if keys::changed(&s.settings) {
+        kit::btn_small("keys-reset", S::StageReset.get(lang), None).on_press(|s: &mut State| s.reset_keys())
+    } else {
+        kit::btn_small_disabled("keys-reset", S::StageReset.get(lang), None)
+    };
     vec![group("set-keys", None, rows, Some(S::KeyHint.get(lang))), group("set-keys-reset", None, vec![item(S::KeysDefault.get(lang), None, reset)], None)]
 }
 
@@ -222,17 +223,17 @@ pub(super) fn desktop(s: &State, k: &rune_kit::Kit) -> Vec<El> {
             None,
             vec![
                 item(S::Autostart.get(lang), None, toggle(k, auto, S::Autostart.get(lang), |s| s.set_autostart(!s.settings.autostart))),
-                item(
+                item_enabled(
                     S::AutostartHidden.get(lang),
                     Some(S::AutostartHiddenNote.get(lang)),
-                    toggle(k, hidden, S::AutostartHidden.get(lang), |s| {
+                    toggle_enabled(k, hidden, tray && auto, S::AutostartHidden.get(lang), |s| {
                         if s.settings.show_tray && s.settings.autostart {
                             s.settings.autostart_hidden = !s.settings.autostart_hidden;
                             s.mark_settings_dirty();
                         }
                     }),
-                )
-                .opacity(if tray && auto { 1.0 } else { 0.4 }),
+                    tray && auto,
+                ),
             ],
             None,
         ),
@@ -241,16 +242,16 @@ pub(super) fn desktop(s: &State, k: &rune_kit::Kit) -> Vec<El> {
             None,
             vec![
                 item(S::TrayIcon.get(lang), Some(S::TrayIconNote.get(lang)), toggle(k, tray, S::TrayIcon.get(lang), |s| s.set_show_tray(!s.settings.show_tray))),
-                item(
+                item_enabled(
                     S::CloseToTray.get(lang),
                     Some(S::CloseToTrayNote.get(lang)),
-                    toggle(k, close, S::CloseToTray.get(lang), |s| {
+                    toggle_enabled(k, close, tray, S::CloseToTray.get(lang), |s| {
                         if s.settings.show_tray {
                             s.set_close_to_tray(!s.settings.close_to_tray);
                         }
                     }),
-                )
-                .opacity(if tray { 1.0 } else { 0.4 }),
+                    tray,
+                ),
             ],
             None,
         ),

@@ -2,7 +2,7 @@
 
 use std::cell::RefCell;
 
-use rune::{Live, LiveText, PopupAnchor, TextEdit};
+use rune::{LiveText, PopupAnchor, TextEdit};
 use ym_api::{Album, Artist, Lyrics, Playlist, Track};
 use ym_audio::{Engine, EqSettings};
 
@@ -97,6 +97,10 @@ pub struct Player {
     pub resume_ms: Option<u64>,
     /// A seek the engine has not caught up with yet, and when it was made.
     pub seek_hold: Option<(u64, f64)>,
+    /// Format and bitrate of the audio currently loaded in the engine.
+    pub current_audio: Option<crate::net::StreamQuality>,
+    /// Format and bitrate of the prefetched next track (`next`).
+    pub next_audio: Option<crate::net::StreamQuality>,
 }
 
 #[derive(Default)]
@@ -129,7 +133,6 @@ pub struct DownloadActivity {
 pub struct Lives {
     pub clock: LiveText,
     pub remaining: LiveText,
-    pub volume: Live<[f32; 4]>,
 }
 
 /// What a popover lists.

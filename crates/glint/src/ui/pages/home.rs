@@ -16,11 +16,13 @@ use crate::ui::{
 
 pub(super) fn home(s: &State, w: f32, _h: f32) -> El {
     let cw = column(w);
-    let mut top = col().key("home-top").w_full().gap(40.0).transition(Transition::none()).child(kit::rise(greeting(s), 0)).child(garden(s, cw));
+    let compact = cw < 840.0;
+    let mut top =
+        col().key("home-top").w_full().gap(if compact { 24.0 } else { 40.0 }).transition(Transition::none()).child(kit::rise(greeting(s, compact), 0)).child(garden(s, cw));
     if s.bugs_alive() && s.swarm.seed == s.home_seed && s.np.t <= 0.0 {
         top = top.child(bug_layer(s));
     }
-    let mut body = col().gap(40.0).child(top);
+    let mut body = col().gap(if compact { 32.0 } else { 40.0 }).child(top);
     match &s.home {
         Load::Ready(shelves) => {
             let mut order: Vec<usize> = (0..shelves.len()).collect();
@@ -31,7 +33,11 @@ pub(super) fn home(s: &State, w: f32, _h: f32) -> El {
                     continue;
                 }
                 shown += 1;
-                body = body.child(shelf(s, "", i, sh, w).transition(Transition::opacity().springs(th::RISE)).enter_delay(0.05 * shown.min(4) as f32));
+                body = body.child(
+                    shelf(s, "", i, sh, w)
+                        .transition(Transition::asymmetric(Transition::offset(0.0, 10.0), Transition::none()).springs(th::RISE))
+                        .enter_delay(0.05 * shown.min(4) as f32),
+                );
             }
         }
         Load::Failed(_) => {
@@ -48,7 +54,7 @@ pub(super) fn home(s: &State, w: f32, _h: f32) -> El {
     kit::scroll_page_live("home", body)
 }
 
-fn greeting(s: &State) -> El {
+fn greeting(s: &State, compact: bool) -> El {
     let lang = s.lang;
     let hour = crate::app::local_hour();
     let (hello, lead, mood) = match hour {
@@ -60,20 +66,25 @@ fn greeting(s: &State) -> El {
     let (open, close) = if lang == Lang::Ru { ("«", "»") } else { ("\u{201c}", "\u{201d}") };
     let playing_it = dock::wave_playing(s) && s.wave_choice == mood;
     let hint = format!("{} {open}{}{close}", lead.get(lang), wave_title(mood).get(lang));
+    let suggest_fade = rune::Spring::new(0.3, 0.0);
+    let suggest_icon = if playing_it {
+        icon(&icons::PLAY, 11.0).color(th::text2()).opacity(0.0).motion(suggest_fade)
+    } else {
+        icon(&icons::PLAY, 11.0).color(th::text2()).gop(0.5, 1.0).motion(suggest_fade)
+    };
     let suggest = row()
         .key("home-suggest")
         .role("button")
         .label(&hint)
+        .disabled(playing_it)
         .gap(6.0)
         .items_center()
-        .cursor(Cursor::Pointer)
+        .cursor(if playing_it { Cursor::Default } else { Cursor::Pointer })
         .hov_group()
         .press_scale(0.98)
-        .opacity(if playing_it { 0.0 } else { 1.0 })
-        .motion(rune::Spring::new(0.3, 0.0))
         .on_press(move |s: &mut State| start_wave_with(s, mood))
-        .child(label(hint, th::BODY, th::text2()))
-        .child(icon(&icons::PLAY, 11.0).color(th::text2()).gop(0.5, 1.0));
+        .child(label(hint, th::BODY, th::text2()).opacity(if playing_it { 0.0 } else { 1.0 }).motion(suggest_fade))
+        .child(suggest_icon);
     let name = dock::account_name(s);
     let first = name.split_whitespace().next().unwrap_or("");
     let title = if first.is_empty() { hello.get(lang).to_owned() } else { format!("{}, {first}", hello.get(lang)) };
@@ -82,7 +93,7 @@ fn greeting(s: &State) -> El {
         .w_full()
         .items_center()
         .gap(16.0)
-        .mt(20.0)
+        .mt(if compact { 10.0 } else { 20.0 })
         .child(col().grow(1.0).min_w(0.0).gap(6.0).child(row().key("home-title").child(label(title, th::TITLE, th::text()).max_lines(2))).child(suggest))
         .child(
             row()

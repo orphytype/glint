@@ -29,7 +29,7 @@ const MODE_BTN: f32 = 34.0;
 const SKIP_GLYPH: f32 = 24.0;
 const TRANSPORT_GAP: f32 = 18.0;
 
-const PLAYER_REST: f32 = 20.0 + 58.0 + 14.0 + 22.0 + 16.0 + 56.0 + 12.0 + 40.0 + 16.0 + 56.0;
+const PLAYER_REST: f32 = 20.0 + 58.0 + 14.0 + 22.0 + 16.0 + 56.0 + 12.0 + 40.0 + 16.0 + 58.0;
 const PLAYER_COMPACT_REST: f32 = 20.0 + 58.0 + 14.0 + 22.0 + 16.0 + 56.0 + 12.0 + 40.0;
 
 const CONTROLS_W: f32 = 360.0;
@@ -118,7 +118,7 @@ pub fn cover_span(s: &State, w: f32, h: f32) -> (f32, f32) {
 }
 
 /// Renders the Now Playing overlay.
-pub fn page(s: &State, w: f32, h: f32, come: f32, front: bool) -> El {
+pub fn page(s: &State, w: f32, h: f32, come: f32, front: bool, settled: bool) -> El {
     let Some(t) = s.current() else { return el() };
     let p = s.pal();
     let lang = s.lang;
@@ -152,9 +152,9 @@ pub fn page(s: &State, w: f32, h: f32, come: f32, front: bool) -> El {
         .w(ctl)
         .h(22.0)
         .items_center()
-        .justify_between()
-        .child(label("0:00", th::MONO, th::text3()).live_text(&s.lives.clock))
-        .child(label("-0:00", th::MONO, th::text3()).live_text(&s.lives.remaining));
+        .child(label("0:00", th::MONO, th::text3()).live_text(&s.lives.clock).w(52.0))
+        .child(row().grow(1.0).h_full())
+        .child(label("-0:00", th::MONO, th::text3()).live_text(&s.lives.remaining).w(52.0).align(rune::Align::End));
     let edge = (MODE_BTN - MODE_GLYPH) * 0.5;
     let repeat_icon = if s.player.repeat == Repeat::One { &np_icons::REPEAT_ONE } else { &np_icons::REPEAT };
     let transport = row()
@@ -182,41 +182,49 @@ pub fn page(s: &State, w: f32, h: f32, come: f32, front: bool) -> El {
     };
     let panel_toggle = |key: &'static str, ic: &'static rune::Icon, name: &str, which: NpTab| {
         let on = tab == which;
-        kit::quiet_toggle(key, ic, MODE_GLYPH, MODE_BTN, on, name).on_press(move |s: &mut State| s.np_tab = if s.np_panel() == which { NpTab::Closed } else { which })
+        kit::quiet_toggle(key, ic, MODE_GLYPH, MODE_BTN, on, name).on_press(move |s: &mut State| {
+            let next = if s.np_panel() == which { NpTab::Closed } else { which };
+            s.set_np_tab(next);
+        })
     };
     let lyrics_btn = if s.lyrics_missing() {
         kit::quiet_off("np-lyrics-btn", &np_icons::LYRICS, MODE_GLYPH, MODE_BTN, S::NoLyricsShort.get(lang))
     } else {
         panel_toggle("np-lyrics-btn", &np_icons::LYRICS, S::Lyrics.get(lang), NpTab::Lyrics)
     };
+    let utility_w = ctl + 2.0 * edge;
+    let vol_w = (utility_w - 4.0 * MODE_BTN - 12.0).max(72.0);
     let utility = row()
-        .w(ctl + 2.0 * edge)
+        .w(utility_w)
         .h(40.0)
         .items_center()
-        .child(kit::quiet_btn("np-mute", vol_icon, MODE_GLYPH, MODE_BTN, th::text3(), S::Mute.get(lang)).on_press(|s: &mut State| s.toggle_mute()))
-        .child(row().grow(1.0).min_w(0.0).ml(4.0).mr(8.0).child(kit::slider("vol", &s.lives.volume, 3.0, th::text2(), |s: &mut State, f: f32, _| s.set_volume(f))))
+        .child(kit::quiet_btn("np-mute", vol_icon, MODE_GLYPH, MODE_BTN, th::text3(), S::Mute.get(lang)).on_wheel(dock::volume_wheel).on_press(dock::toggle_mute_remembered))
+        .child(row().ml(4.0).mr(8.0).items_center().child(dock::volume_slider(s, "np-vol", vol_w)))
+        .child(dock::quality_btn_at(s, "np-quality", MODE_BTN, th::text3()))
         .child(lyrics_btn)
         .child(panel_toggle("np-queue-btn", &np_icons::QUEUE, S::Queue.get(lang), NpTab::Queue));
 
-    let slide = if s.is_resizing() { rune::Spring::NONE } else { th::SLIDE };
+    let slide = if s.is_resizing() || !settled { rune::Spring::NONE } else { th::SLIDE };
+    let cover_motion = if settled { slide } else { th::FLIGHT };
     let mut left = col()
         .key("np-left")
         .absolute(x, top)
         .w(side)
         .items_center()
-        .transition(Transition::opacity().springs(th::LEAVE))
+        .transition(Transition::none())
+        .animated_changes()
         .motion(slide)
         .child(
-            row()
-                .key("np-cover-place")
-                .w_full()
-                .h(cover)
-                .justify_center()
-                .motion(slide)
-                .child(kit::playing_cover(s, t, cover, (cover * 0.075).clamp(14.0, 28.0), "np-cover-mark").key("np-cover").matched("np-cover").motion(th::FLIGHT)),
+            row().key("np-cover-place").w_full().h(cover).justify_center().motion(slide).child(
+                kit::playing_cover_lg(s, t, cover, (cover * 0.075).clamp(14.0, 28.0), "np-cover-mark", settled)
+                    .key("np-cover")
+                    .matched("np-cover")
+                    .animated_changes()
+                    .motion(cover_motion),
+            ),
         )
         .child(kit::rise(info.mt(20.0), 1))
-        .child(row().w(ctl).mt(10.0).child(dock::seek_bars("seek", seed, 36.0)))
+        .child(row().w(ctl).mt(10.0).instant_changes().child(dock::seek_bars("seek", seed, 36.0)))
         .child(kit::rise(times, 2))
         .child(kit::rise(transport.mt(-8.0), 2))
         .child(kit::rise(utility.mt(12.0), 3));
@@ -251,6 +259,7 @@ pub fn page(s: &State, w: f32, h: f32, come: f32, front: bool) -> El {
         .w_full()
         .h_full()
         .transition(Transition::none())
+        .instant_changes()
         .child(el().key("np-canvas").absolute(0.0, 0.0).w_full().h_full().transition(Transition::none()).fill(th::bg().alpha(come)).motion(rune::Spring::NONE))
         .child(stage);
     if !front {
@@ -258,16 +267,22 @@ pub fn page(s: &State, w: f32, h: f32, come: f32, front: bool) -> El {
     }
     root = root.child(left);
     if let Some(body) = body {
-        root = root.child(
-            el().key(format!("np-body-{tab:?}"))
-                .absolute(panel_x, 0.0)
-                .w(body_w)
-                .h(h)
-                .motion(rune::Spring::NONE)
-                .transition(Transition::opacity().combined(Transition::offset(24.0, 0.0)).springs(th::SOFT))
-                .enter_delay(0.14)
-                .child(body),
-        );
+        let switching = s.np_tab_prev != NpTab::Closed && s.np_tab_prev != tab;
+        let springs = rune::SpringPair { enter: rune::Spring::new(if switching { 0.26 } else { 0.28 }, 0.0), exit: rune::Spring::new(0.16, 0.0) };
+        let enter = if switching { Transition::scale(0.985).combined(Transition::offset(0.0, 12.0)) } else { Transition::opacity().combined(Transition::offset(22.0, 0.0)) };
+        let exit = Transition::scale(0.985).combined(Transition::offset(0.0, -6.0));
+        let mut pane = el()
+            .key(format!("np-body-{tab:?}"))
+            .absolute(panel_x, 0.0)
+            .w(body_w)
+            .h(h)
+            .animated_changes()
+            .motion(slide)
+            .transition(Transition::asymmetric(enter, exit).springs(springs));
+        if !switching {
+            pane = pane.enter_delay(0.04);
+        }
+        root = root.child(pane.child(body.instant_changes()));
     }
     root
 }

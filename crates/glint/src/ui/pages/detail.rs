@@ -75,7 +75,7 @@ fn detail_facts(s: &State) -> Option<El> {
                 .hov(th::veil(0.055))
                 .press(th::veil(0.08))
                 .hov_group()
-                .transition(Transition::opacity().springs(th::RISE))
+                .transition(Transition::none())
                 .on_press(|s: &mut State| s.open_sheet(Sheet::Page))
                 .child(head)
                 .child(label(text, th::BODY, th::text2()).wrap().max_lines(3).max_w(720.0)),
@@ -89,7 +89,7 @@ fn detail_facts(s: &State) -> Option<El> {
         return None;
     }
 
-    let mut c = col().key("d-about").w_full().mt(-16.0).gap(12.0).transition(Transition::opacity().springs(th::RISE)).child(el().w_full().h(1.0).fill(th::veil(0.06)));
+    let mut c = col().key("d-about").w_full().mt(-16.0).gap(12.0).transition(Transition::none()).child(el().w_full().h(1.0).fill(th::veil(0.06)));
     if let Some(text) = about {
         c = c.child(label(text, th::BODY, th::text2()).wrap().max_lines(8).max_w(720.0));
     }
@@ -122,7 +122,7 @@ fn head_backdrop(s: &State, w: f32, side: f32) -> Option<El> {
             .w(page_w)
             .h(h)
             .clip_fade(0.0, 0.0, 0.0, h * 0.66)
-            .transition(Transition::reveal(rune_motion::Edge::Top).combined(Transition::opacity()).springs(th::GLOW))
+            .transition(Transition::reveal(rune_motion::Edge::Top).springs(th::GLOW))
             .child(el().absolute(0.0, 0.0).w_full().h_full().opacity(strength).pixels_fit(&px, rune::SurfaceFit::Fill)),
     )
 }
@@ -254,11 +254,18 @@ pub(super) fn detail(s: &State, w: f32) -> El {
         } else if !d.tracks.is_empty() || d.like_key.is_some() || !d.facts.is_empty() {
             meta = meta.child(head_buttons(s).mt(HEAD_STEP_BUTTONS));
         }
-        let fold = Transition::asymmetric(Transition::none(), Transition::opacity().combined(Transition::scale(0.94)).combined(Transition::offset(0.0, -16.0))).springs(th::RISE);
         let head = if wide {
-            row().key("detail-head").w_full().mt(8.0).gap(HEAD_GAP).items_center().transition(fold).child(head_picture(s, side)).child(kit::rise(meta.grow(1.0).min_w(0.0), 1))
+            row()
+                .key("detail-head")
+                .w_full()
+                .mt(8.0)
+                .gap(HEAD_GAP)
+                .items_center()
+                .transition(Transition::none())
+                .child(head_picture(s, side))
+                .child(kit::rise(meta.grow(1.0).min_w(0.0), 1))
         } else {
-            col().key("detail-head").w_full().mt(8.0).gap(20.0).transition(fold).child(head_picture(s, side)).child(kit::rise(meta.w_full().min_w(0.0), 1))
+            col().key("detail-head").w_full().mt(8.0).gap(20.0).transition(Transition::none()).child(head_picture(s, side)).child(kit::rise(meta.w_full().min_w(0.0), 1))
         };
         body = body.child(head);
     }
@@ -331,7 +338,7 @@ pub(super) fn detail(s: &State, w: f32) -> El {
                     col()
                         .key("d-albums")
                         .gap(14.0)
-                        .transition(Transition::opacity().springs(th::RISE))
+                        .transition(Transition::asymmetric(Transition::offset(0.0, 10.0), Transition::none()).springs(th::RISE))
                         .child(kit::heading("d-albums-h", S::Discography.get(lang), heading_side(arrows, Some(sort))))
                         .child(releases),
                 );
@@ -342,7 +349,7 @@ pub(super) fn detail(s: &State, w: f32) -> El {
                     col()
                         .key("d-similar")
                         .gap(14.0)
-                        .transition(Transition::opacity().springs(th::RISE))
+                        .transition(Transition::asymmetric(Transition::offset(0.0, 10.0), Transition::none()).springs(th::RISE))
                         .child(kit::heading("d-similar-h", S::SimilarArtists.get(lang), row_arrows(s, "detail-similar", d.similar.len(), ar_size, w)))
                         .child(hscroll("detail-similar".into(), d.similar.iter().map(|a| artist_card(s, a, ar_size)).collect())),
                 );

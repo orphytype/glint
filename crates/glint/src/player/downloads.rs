@@ -6,7 +6,7 @@ use ym_api::Track;
 
 use crate::app::{DownloadActivity, DownloadFail, DownloadState, Load, Page, State};
 use crate::i18n::S;
-use crate::store::DownloadedTrack;
+use crate::store::{DownloadedTrack, QualityPref};
 
 /// How many tracks of a batch download at once.
 const DOWNLOAD_PARALLEL: usize = 8;
@@ -15,15 +15,17 @@ impl State {
     pub fn ask_download(&mut self, tracks: Vec<Track>) {
         let tracks: Vec<Track> = tracks.into_iter().filter(|track| !matches!(self.downloads.get(&track.id), Some(DownloadState::Downloading | DownloadState::Done))).collect();
         if tracks.len() > 1 {
+            self.download_quality = self.settings.quality;
             self.download_confirm = Some(tracks);
         } else {
-            self.download_tracks(tracks);
+            self.download_tracks(tracks, self.settings.quality);
         }
     }
 
     pub fn confirm_download(&mut self) {
+        let quality = self.download_quality;
         if let Some(tracks) = self.download_confirm.take() {
-            self.download_tracks(tracks);
+            self.download_tracks(tracks, quality);
         }
     }
 
@@ -90,8 +92,8 @@ impl State {
             let generation = self.detail.generation;
             let Page::Artist(id) = page else { return };
             self.detail.all_tracks = Load::Loading;
-            let backend = self.backend.clone();
-            self.job(async move { backend.artist_tracks(&id).await }, move |s, _, result| {
+            let (backend, fc, fc_on) = (self.backend.clone(), self.fkcensor.clone(), self.settings.fkcensor);
+            self.job(async move { backend.artist_tracks(&id, &fc, fc_on).await }, move |s, _, result| {
                 if s.detail.generation != generation {
                     return;
                 }
@@ -123,7 +125,7 @@ impl State {
         self.ask_delete_downloads(tracks);
     }
 
-    pub fn download_tracks(&mut self, tracks: Vec<Track>) {
+    pub fn download_tracks(&mut self, tracks: Vec<Track>, quality: QualityPref) {
         if tracks.is_empty() {
             return;
         }
@@ -155,7 +157,7 @@ impl State {
         };
         let backend = self.backend.clone();
         let cache = self.cache.clone();
-        let quality = self.settings.quality.api();
+        let quality = quality.api();
         let fkcensor = self.fkcensor.clone();
         let fkcensor_on = self.settings.fkcensor;
         if let Some(activity) = &mut self.download_activity
@@ -178,13 +180,20 @@ impl State {
             let gate = gate.clone();
             self.job(
                 async move {
-                    if !track.is_available() {
+                    if fkcensor_on && let crate::net::Backend::Live(client) = &job_backend {
+                        job_fkcensor.ensure_loaded(client).await;
+                    }
+                    if !track.is_available() && !(fkcensor_on && job_fkcensor.has_track(&track.id)) {
                         return (id, Err(DownloadFail::Unavailable));
                     }
                     let _permit = gate.acquire_owned().await.ok();
                     let cover_url = State::cover_key(track.cover_template());
                     let extras = async {
-                        let lyrics = tokio::time::timeout(std::time::Duration::from_secs(8), job_backend.lyrics(&track)).await.ok().and_then(Result::ok).unwrap_or_default();
+                        let lyrics = tokio::time::timeout(std::time::Duration::from_secs(8), job_backend.lyrics(&track, &job_fkcensor, fkcensor_on))
+                            .await
+                            .ok()
+                            .and_then(Result::ok)
+                            .unwrap_or_default();
                         let (cover_png, cover_raw) = match &cover_url {
                             None => (None, None),
                             Some(url) => {

@@ -76,10 +76,14 @@ pub(super) fn cache(s: &State) -> Vec<El> {
     let total = images + audio + metadata;
     let kinds = [(S::CacheImages, images), (S::CacheAudio, audio), (S::CacheMetadata, metadata)];
 
-    let mut bar = row().key("store-bar").w_full().h(10.0).radius(5.0).clip_rounded(5.0).gap(2.0).fill(veil(0.07));
+    let mut bar = row().key("store-bar").w_full().h(10.0).radius(5.0).gap(2.0).fill(veil(0.07));
     if total > 0 {
-        for (i, (_, bytes)) in kinds.iter().enumerate().filter(|(_, (_, b))| *b > 0) {
-            bar = bar.child(el().key(format!("store-bar-{i}")).h_full().min_w(4.0).grow(*bytes as f32 / total as f32).fill(th::rgb(STORE_HUES[i])));
+        let nonzero: Vec<(usize, u64)> = kinds.iter().enumerate().filter(|(_, (_, b))| *b > 0).map(|(i, (_, b))| (i, *b)).collect();
+        let last = nonzero.len().saturating_sub(1);
+        for (pos, (i, bytes)) in nonzero.into_iter().enumerate() {
+            let l = if pos == 0 { 5.0 } else { 0.0 };
+            let r = if pos == last { 5.0 } else { 0.0 };
+            bar = bar.child(el().key(format!("store-bar-{i}")).h_full().min_w(4.0).grow(bytes as f32 / total as f32).corners([l, r, r, l]).fill(th::rgb(STORE_HUES[i])));
         }
     }
     let legend = row().w_full().gap(18.0).flex_wrap().children(kinds.iter().enumerate().map(|(i, (name, bytes))| {
@@ -126,7 +130,7 @@ pub(super) fn updates(s: &State, k: &rune_kit::Kit) -> Vec<El> {
     let installable = s.update_method.can_install();
     let (status, note, control): (String, Option<&str>, El) = match &s.update {
         Ui::Idle => (S::UpdateIdleNote.get(lang).to_owned(), None, check()),
-        Ui::Checking => (S::UpdateChecking.get(lang).to_owned(), None, check().opacity(0.5)),
+        Ui::Checking => (S::UpdateChecking.get(lang).to_owned(), None, kit::btn_small_disabled("update-check", S::CheckNow.get(lang), None)),
         Ui::Latest => (S::UpToDate.get(lang).to_owned(), None, check()),
         Ui::Failed(why) => (why.get(lang).to_owned(), None, check()),
         Ui::Available(r) => {
@@ -139,7 +143,7 @@ pub(super) fn updates(s: &State, k: &rune_kit::Kit) -> Vec<El> {
         }
         Ui::Downloading { release, done, total } => {
             let pct = if *total > 0 { (done * 100 / total).min(100) } else { 0 };
-            (format!("{} {} · {pct}%", S::UpdateDownloading.get(lang), release.version), None, kit::btn_small("update-wait", S::UpdateInstall.get(lang), None).opacity(0.5))
+            (format!("{} {} · {pct}%", S::UpdateDownloading.get(lang), release.version), None, kit::btn_small_disabled("update-wait", S::UpdateInstall.get(lang), None))
         }
         Ui::Installing => (S::UpdateInstalling.get(lang).to_owned(), None, el()),
     };

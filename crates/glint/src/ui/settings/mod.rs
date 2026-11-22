@@ -118,8 +118,8 @@ pub fn modal(s: &State, w: f32, h: f32) -> El {
     let ch = 680.0_f32.min(h - 96.0).max(320.0);
     let narrow = cw < 700.0;
 
-    let mut nav = col().key("set-nav").w(if narrow { 60.0 } else { 224.0 }).h_full().padding(10.0).gap(2.0).fill(veil(0.025));
-    nav = nav.pt(if narrow { 56.0 } else { 18.0 });
+    let mut nav = col().key("set-nav").w(if narrow { 60.0 } else { 224.0 }).h_full().corners([18.0, 0.0, 0.0, 18.0]).padding(10.0).gap(2.0).fill(veil(0.025));
+    nav = nav.pt(if narrow { 56.0 } else { 10.0 });
     for t in TABS {
         let on = t == tab;
         let mut item = row()
@@ -166,8 +166,13 @@ pub fn modal(s: &State, w: f32, h: f32) -> El {
         SetTab::Updates => storage::updates(s, &k),
         SetTab::About => storage::about(s, &k),
     };
-    let list =
-        col().key(format!("set-groups-{tab:?}")).w_full().gap(26.0).transition(Transition::opacity().combined(Transition::offset(0.0, 6.0)).springs(th::RISE)).children(groups);
+    let list = col()
+        .key(format!("set-groups-{tab:?}"))
+        .w_full()
+        .gap(26.0)
+        .animated_changes()
+        .transition(Transition::asymmetric(Transition::offset(0.0, 6.0), Transition::none()).springs(th::RISE))
+        .children(groups);
     let close = kit::ibtn("set-close", &icons::CLOSE, 16.0, 32.0, th::text2(), S::Close.get(lang)).on_press(|s: &mut State| s.close_settings());
     let head = row()
         .key("set-head")
@@ -176,40 +181,16 @@ pub fn modal(s: &State, w: f32, h: f32) -> El {
         .pl(PANE_PAD)
         .pr(14.0)
         .items_center()
-        .child(label(tab.name().get(lang).to_owned(), th::H1, th::text()).grow(1.0).min_w(0.0).truncate())
+        .child(label(tab.name().get(lang).to_owned(), th::BODY_M, th::text()).grow(1.0).min_w(0.0).truncate())
         .child(close);
-    let scroll_key = format!("set-scroll-{tab:?}");
-    let watch_key = scroll_key.clone();
-    let vp_h = (ch - 64.0).max(120.0);
-    let scrollbar = crate::app::page_scroll(&scroll_key).filter(|[_, max]| *max > 2.0).map(|[offset, max]| {
-        let track_h = (vp_h - 16.0).max(40.0);
-        let total = vp_h + max;
-        let thumb_h = (track_h * (vp_h / total)).clamp(28.0, track_h);
-        let frac = (offset / max).clamp(0.0, 1.0);
-        let y = 8.0 + frac * (track_h - thumb_h);
-        el().key("set-scrollbar").pin(None, Some(y), Some(6.0), None).w(4.0).h(thumb_h).radius(2.0).fill(veil(0.22)).transition(Transition::none())
-    });
-    let scroll_wrap = el()
-        .key("set-scroll-wrap")
+    let scroll = col()
+        .key(format!("set-scroll-{tab:?}"))
         .w_full()
         .grow(1.0)
         .min_h(0.0)
-        .child(
-            col()
-                .key(scroll_key)
-                .absolute(0.0, 0.0)
-                .w_full()
-                .h_full()
-                .scroll(rune::ScrollSpec { stick_bottom: false })
-                .on_scroll_offset(move |p: rune::ScrollPos| {
-                    crate::app::PAGE_SCROLL.with_borrow_mut(|m| {
-                        m.insert(watch_key.clone(), [p.offset[1], p.max[1]]);
-                    });
-                })
-                .child(col().w_full().px(PANE_PAD).pt(12.0).pb(PANE_PAD).child(list)),
-        )
-        .children(scrollbar);
-    let pane = col().key("set-pane").grow(1.0).min_w(0.0).h_full().child(head).child(el().w_full().h(1.0).fill(th::hairline())).child(scroll_wrap);
+        .scroll(rune::ScrollSpec { stick_bottom: false })
+        .child(col().w_full().px(PANE_PAD).pt(12.0).pb(PANE_PAD).child(list));
+    let pane = col().key("set-pane").grow(1.0).min_w(0.0).h_full().child(head).child(el().w_full().h(1.0).fill(th::hairline())).child(scroll);
     let card = row()
         .key("set-card")
         .role("dialog")
@@ -217,16 +198,15 @@ pub fn modal(s: &State, w: f32, h: f32) -> El {
         .w(cw)
         .h(ch)
         .radius(18.0)
-        .clip_rounded(18.0)
         .fill(th::pop())
-        .border(1.0, th::hairline())
-        .shadow(18.0, 56.0, th::rgba(0x000000, if th::light() { 0.16 } else { 0.5 }))
-        .transition(Transition::opacity().combined(Transition::scale(0.96)).combined(Transition::offset(0.0, 8.0)).springs(th::RISE))
+        .border(2.0, veil(0.12))
+        .transition(kit::pop_in(0.97, 6.0, th::RISE))
+        .animated_changes()
         .modal(true, |s: &mut State| s.close_settings())
         .on_press(|_s: &mut State| {})
-        .child(nav)
+        .child(nav.instant_changes())
         .child(el().w(1.0).h_full().fill(th::hairline()))
-        .child(pane);
+        .child(pane.instant_changes());
     el().key("settings-modal")
         .absolute(0.0, 0.0)
         .w_full()
@@ -234,6 +214,7 @@ pub fn modal(s: &State, w: f32, h: f32) -> El {
         .center()
         .fill(th::rgba(0x000000, if th::light() { 0.24 } else { 0.56 }))
         .transition(Transition::none())
+        .instant_changes()
         .on_press(|s: &mut State| s.close_settings())
         .child(card)
 }
@@ -253,7 +234,7 @@ fn tab_tile(s: &State, t: SetTab) -> El {
 }
 
 pub(super) fn group(key: &str, title: Option<&str>, rows: Vec<El>, foot: Option<&str>) -> El {
-    let mut plate = col().key(format!("{key}-plate")).w_full().radius(GROUP_R).clip_rounded(GROUP_R).fill(veil(0.035)).border(1.0, veil(0.065));
+    let mut plate = col().key(format!("{key}-plate")).w_full().radius(GROUP_R).fill(veil(0.035)).border(1.0, veil(0.065)).instant_changes();
     for (i, r) in rows.into_iter().enumerate() {
         if i > 0 {
             plate = plate.child(row().w_full().h(1.0).pl(ROW_PAD).child(el().grow(1.0).h(1.0).fill(veil(0.07))));
@@ -272,15 +253,37 @@ pub(super) fn group(key: &str, title: Option<&str>, rows: Vec<El>, foot: Option<
 }
 
 pub(super) fn words(name: &str, note: Option<&str>) -> El {
-    let mut text = col().grow(1.0).min_w(0.0).gap(3.0).child(label(name.to_owned(), th::BODY_M, th::text()));
+    words_dim(name, note, false)
+}
+
+fn words_dim(name: &str, note: Option<&str>, dim: bool) -> El {
+    let title_c = if dim { th::text().alpha(0.42) } else { th::text() };
+    let note_c = if dim { th::text2().alpha(0.42) } else { th::text2() };
+    let mut text = col().grow(1.0).min_w(0.0).gap(3.0).child(label(name.to_owned(), th::BODY_M, title_c));
     if let Some(n) = note {
-        text = text.child(label(n.to_owned(), th::SMALL, th::text2()).wrap().align(Align::Start));
+        text = text.child(label(n.to_owned(), th::SMALL, note_c).wrap().align(Align::Start));
     }
     text
 }
 
 pub(super) fn item(name: &str, note: Option<&str>, control: El) -> El {
     row().w_full().min_h(54.0).px(ROW_PAD).py(12.0).gap(24.0).items_center().child(words(name, note)).child(control)
+}
+
+pub(super) fn item_enabled(name: &str, note: Option<&str>, control: El, enabled: bool) -> El {
+    row().w_full().min_h(54.0).px(ROW_PAD).py(12.0).gap(24.0).items_center().child(words_dim(name, note, !enabled)).child(control)
+}
+
+pub(super) fn toggle_enabled(k: &rune_kit::Kit, on: bool, enabled: bool, name: &str, f: impl Fn(&mut State) + 'static) -> El {
+    if enabled {
+        return toggle(k, on, name, f);
+    }
+    let knob = el().w(14.0).h(14.0).radius(7.0).fill(veil(0.28));
+    row().role("switch").label(name).checked(on).disabled(true).w(34.0).h(18.0).px(2.0).radius(9.0).items_center().fill(veil(0.07)).child(if on {
+        row().w_full().justify_end().child(knob)
+    } else {
+        knob
+    })
 }
 
 pub(super) fn item_below(name: &str, note: Option<&str>, control: El) -> El {

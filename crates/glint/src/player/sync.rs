@@ -36,11 +36,6 @@ impl Listen {
 impl State {
     pub fn sync_lives(&self) {
         let (pos, dur) = (self.player.pos_ms, self.player.dur_ms);
-        let vol_px = self.player.volume * self.vol_w.get();
-        if (self.vol_drawn.get() - vol_px).abs() > 0.05 {
-            self.vol_drawn.set(vol_px);
-            self.lives.volume.set([0.0, 0.0, vol_px, 4.0]);
-        }
         let secs = pos / 1000;
         if self.clock_secs.replace(secs) != secs {
             let mut text = self.clock_text.borrow_mut();
@@ -113,7 +108,10 @@ impl State {
         self.player.pos_ms = pos;
         self.player.dur_ms = dur;
         self.player.resume_ms = Some(pos);
+        self.player.current_audio = None;
+        self.player.next_audio = None;
         self.load_lyrics_for_current();
+        self.probe_max_quality(&track);
         if let Some(key) = State::cover_key(track.cover_template()) {
             self.art.pixels(&key);
         }

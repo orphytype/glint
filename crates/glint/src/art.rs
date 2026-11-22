@@ -10,11 +10,28 @@ use rune::Pixels;
 
 use crate::palette::Palette;
 
-/// Single cover size requested from Yandex CDN so the same artwork is never downloaded twice.
-pub const COVER_PX: u32 = 300;
-/// Maximum decoded RGBA side kept in RAM and uploaded into RUNE's 1024x1024 image atlas pages
-/// (4x4 = 16 covers per 4 MiB page instead of 3x3 = 9 at 300px, cutting GPU/CPU atlas usage ~42%).
-pub const DECODE_PX: u32 = 256;
+/// Small cover size for track lists, queues, mini avatars, and pinned shortcuts.
+pub const COVER_SM: u32 = 100;
+/// Medium cover size for cards, page headers, mini-player bar, and metadata cards.
+pub const COVER_MD: u32 = 300;
+/// Large cover size for the open Now Playing hero cover.
+pub const COVER_LG: u32 = 600;
+/// Default medium cover size shared by desktop media cards, downloads, and palettes.
+pub const COVER_PX: u32 = COVER_MD;
+
+/// Target decoded side derived from a cover URL's trailing `WxH` segment (`100`, `300`, or `600`).
+pub fn decode_px_for_key(key: &str) -> u32 {
+    let path = key.split(['?', '#']).next().unwrap_or(key);
+    let seg = path.rsplit('/').next().unwrap_or("");
+    if let Some((w, h)) = seg.split_once('x')
+        && let (Ok(w), Ok(h)) = (w.parse::<u32>(), h.parse::<u32>())
+        && w > 0
+        && h > 0
+    {
+        return w.max(h).clamp(64, COVER_LG);
+    }
+    COVER_MD
+}
 
 #[derive(Clone)]
 pub struct ArtCache(Arc<Mutex<Inner>>);
@@ -169,12 +186,12 @@ pub struct Decoded {
     pub rgba: Vec<u8>,
 }
 
-/// Decoded covers kept in RUNE's atlas and RAM (at 256x256 RGBA, 24 MiB holds ~96 covers in 6 atlas pages).
-const KEEP: usize = 96;
-const BUDGET: usize = 24 << 20;
-/// Decoded covers retained when the window goes idle (`on_rest`), keeping off-screen covers only as compressed bytes.
-const IDLE_KEEP: usize = 48;
-const IDLE_BUDGET: usize = 12 << 20;
+/// Decoded covers kept in RUNE's atlas and RAM (100px list covers are 40 KiB, 300px cards 360 KiB, 600px hero 1.44 MiB).
+const KEEP: usize = 72;
+const BUDGET: usize = 16 << 20;
+/// Decoded covers retained after page switches or idle trims; off-screen covers stay in `raw` as compressed bytes.
+const IDLE_KEEP: usize = 40;
+const IDLE_BUDGET: usize = 10 << 20;
 /// Compressed cover bytes kept in RAM (~400 covers in 8 MiB).
 const RAW_KEEP: usize = 512;
 const RAW_BUDGET: usize = 8 << 20;
@@ -274,6 +291,15 @@ impl ArtCache {
         self.lock().map.get(key).is_some_and(|e| e.ready)
     }
 
+    /// Marks `key` so a single view rebuild fires when it finishes decoding (used by 600px hero
+    /// covers to drop their temporary 300px fallback).
+    pub fn watch(&self, key: &str) {
+        let mut g = self.lock();
+        if !g.map.get(key).is_some_and(|e| e.ready) {
+            g.watched.insert(key.to_owned());
+        }
+    }
+
     /// How many watched or playing pictures have landed so far.
     pub fn watched_landed(&self) -> u64 {
         self.lock().watched_landed
@@ -309,9 +335,9 @@ impl ArtCache {
         if g.map.len() <= IDLE_KEEP && total <= IDLE_BUDGET {
             return;
         }
-        let recent = g.view.saturating_sub(1);
+        let current = g.view;
         let mut by_use: Vec<(u64, String)> =
-            g.map.iter().filter(|(k, e)| e.ready && e.seen < recent && !g.want_sharp.iter().any(|w| w == *k)).map(|(k, e)| (e.used, k.clone())).collect();
+            g.map.iter().filter(|(k, e)| e.ready && e.seen < current && !g.want_sharp.iter().any(|w| w == *k)).map(|(k, e)| (e.used, k.clone())).collect();
         by_use.sort_unstable();
         let (mut count, mut total) = (g.map.len(), total);
         for (_, k) in by_use {

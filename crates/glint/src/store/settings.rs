@@ -43,9 +43,9 @@ pub enum QualityPref {
     Saver,
     #[default]
     Balanced,
+    /// Highest quality available for the track (FLAC when offered, else the best lossy stream).
+    #[serde(alias = "Lossless")]
     Best,
-    /// FLAC where the account and the track have it, else the best lossy rendition.
-    Lossless,
 }
 
 impl QualityPref {
@@ -54,7 +54,6 @@ impl QualityPref {
             QualityPref::Saver => ym_api::Quality::Saver,
             QualityPref::Balanced => ym_api::Quality::Balanced,
             QualityPref::Best => ym_api::Quality::Best,
-            QualityPref::Lossless => ym_api::Quality::Lossless,
         }
     }
 }

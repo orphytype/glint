@@ -106,7 +106,7 @@ pub static GLASS_READY: AtomicBool = AtomicBool::new(false);
 pub static SHAPES_READY: AtomicBool = AtomicBool::new(false);
 pub static GPU_UP: AtomicBool = AtomicBool::new(false);
 
-/// Where the pointer is over My Wave's liquid (in liquid units), set by the page on hover.
+/// Where the pointer is over My Wave's liquid (in liquid units).
 pub(super) static WAVE_POINTER: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
 
 pub fn set_wave_pointer(x: f32, y: f32) {
@@ -219,6 +219,8 @@ pub struct Gfx {
     morph_t: f32,
     marker_run: f32,
     morph_on: bool,
+    morph_avg: [f32; 3],
+    morph_bars: [f32; 3],
     shape_t: f32,
     shape_music: f32,
     wave_ptr: [f32; 3],
@@ -260,6 +262,8 @@ impl Gfx {
             morph_t: 0.0,
             marker_run: 0.0,
             morph_on: false,
+            morph_avg: [0.05; 3],
+            morph_bars: [0.0; 3],
             shape_t: 0.0,
             shape_music: 0.0,
             wave_ptr: [0.0; 3],

@@ -4,13 +4,21 @@
 //! service already provides the title, artists, album, year and genre on the track model, while
 //! the cover is fetched as PNG bytes before this module is called.
 
+use std::borrow::Cow;
+
 use ym_api::Track;
 
-pub fn embed(audio: &[u8], ext: &str, track: &Track, cover: Option<&[u8]>) -> Vec<u8> {
+/// Skip in-memory full-file copy tagging above 256 MiB so multi-hour tracks do not double RAM use.
+const MAX_TAG_IN_MEMORY: usize = 256 << 20;
+
+pub fn embed<'a>(audio: &'a [u8], ext: &str, track: &Track, cover: Option<&[u8]>) -> Cow<'a, [u8]> {
+    if audio.len() > MAX_TAG_IN_MEMORY {
+        return Cow::Borrowed(audio);
+    }
     match ext {
-        "flac" => embed_flac(audio, track, cover).unwrap_or_else(|| audio.to_vec()),
-        "mp3" => embed_mp3(audio, track, cover),
-        _ => audio.to_vec(),
+        "flac" => embed_flac(audio, track, cover).map_or(Cow::Borrowed(audio), Cow::Owned),
+        "mp3" => Cow::Owned(embed_mp3(audio, track, cover)),
+        _ => Cow::Borrowed(audio),
     }
 }
 
@@ -133,7 +141,7 @@ fn embed_flac(audio: &[u8], track: &Track, cover: Option<&[u8]>) -> Option<Vec<u
         blocks.push((6, picture_block(image)));
     }
 
-    let mut out = Vec::with_capacity(at + 1024);
+    let mut out = Vec::with_capacity(audio.len() + 1024 + cover.map_or(0, |c| c.len() + 64));
     out.extend_from_slice(b"fLaC");
     for (index, (kind, data)) in blocks.iter().enumerate() {
         let last = index + 1 == blocks.len();

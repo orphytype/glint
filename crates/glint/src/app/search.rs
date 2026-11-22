@@ -18,8 +18,8 @@ impl State {
         }
         self.search.query = text.clone();
         self.search.results = Load::Loading;
-        let b = self.backend.clone();
-        self.job(async move { b.search(&text, ym_api::SearchKind::All).await }, move |s, _, res| {
+        let (b, fc, fc_on) = (self.backend.clone(), self.fkcensor.clone(), self.settings.fkcensor);
+        self.job(async move { b.search(&text, ym_api::SearchKind::All, &fc, fc_on).await }, move |s, _, res| {
             if s.search.generation != generation {
                 return;
             }
@@ -52,9 +52,9 @@ impl State {
         let text = self.search.query.clone();
         self.search.more_for = Some((text.clone(), tab));
         self.search.more = Load::Loading;
-        let b = self.backend.clone();
+        let (b, fc, fc_on) = (self.backend.clone(), self.fkcensor.clone(), self.settings.fkcensor);
         let want = (text.clone(), tab);
-        self.job(async move { b.search(&text, kind).await }, move |s, _, res| {
+        self.job(async move { b.search(&text, kind, &fc, fc_on).await }, move |s, _, res| {
             if s.search.more_for.as_ref() != Some(&want) {
                 return;
             }

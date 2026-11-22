@@ -21,13 +21,8 @@ fn fs_field(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let g2 = exp(-dot(d2, d2) / (0.30 + 0.05 * beat));
     let g = clamp(g1 * 0.55 + g2 * (0.55 + 0.35 * level), 0.0, 1.0);
 
-    // An ordered dither of that gradient, in cells of about two points.
-    let cell = max(1.0, round(2.0 * k));
-    let thr = bayer8(floor(p / cell));
-    let steps = 7.0;
-    let lvl = floor(g * steps + thr) / steps;
     let amp = u.p0.x;
-    var col = mix(canvas, ink, lvl * amp);
-    col = col + (ign(p + vec2<f32>(floor(t * 8.0) * 17.0, 3.0)) - 0.5) * (1.5 / 255.0);
+    var col = mix(canvas, ink, g * amp);
+    col = col + (ign(p) - 0.5) * (1.0 / 255.0);
     return out_px(col, rect_clip(p));
 }

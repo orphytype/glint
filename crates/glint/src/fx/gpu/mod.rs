@@ -20,6 +20,10 @@ pub const HDR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// Frames a texture bind group is kept after its last draw. Short: it keeps its textures alive.
 const BIND_KEEP: u64 = 4;
 
+/// Initial slot capacity of the shared dynamic uniform buffer (128 * 256 B = 32 KiB, fitting in
+/// a single 64 KiB D3D12 placed buffer allocation).
+const INITIAL_U_SLOTS: usize = 128;
+
 /// The one uniform block every shader reads (`common.wgsl`, `U`).
 #[repr(C)]
 #[derive(Clone, Copy, Default, Pod, Zeroable)]
@@ -41,11 +45,6 @@ pub struct U {
     pub p4: [f32; 4],
 }
 
-pub(super) struct UBuf {
-    pub(super) buf: wgpu::Buffer,
-    pub(super) bind: wgpu::BindGroup,
-}
-
 /// What a draw reads besides its uniforms.
 #[derive(Default, Clone, Copy)]
 pub struct Binds<'a> {
@@ -54,6 +53,24 @@ pub struct Binds<'a> {
     /// Level-0 size of the pyramid built from it, and the tag it was made under.
     pub pyr: Option<[u32; 2]>,
     pub tag: u8,
+}
+
+fn make_ubuf(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, stride: u32, cap: usize) -> (wgpu::Buffer, wgpu::BindGroup) {
+    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("glint uniforms"),
+        size: (cap as u64) * u64::from(stride),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("glint uniforms"),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &buf, offset: 0, size: wgpu::BufferSize::new(size_of::<U>() as u64) }),
+        }],
+    });
+    (buf, bind)
 }
 
 pub struct Gpu {
@@ -83,15 +100,20 @@ pub struct Gpu {
     live_valid: bool,
     /// The playing track's waveform for the seek line (`fs_bars`): two rows, four values per texel.
     wave: Option<(wgpu::Texture, wgpu::TextureView)>,
-    /// What each uniform buffer of this frame holds (for `upload_in_layer`).
+    /// What each uniform slot of this frame holds (for `upload_in_layer`).
     shadow: Vec<U>,
+    /// Packed dynamic-stride uniform staging bytes uploaded in one `write_buffer` call per frame.
+    shadow_bytes: Vec<u8>,
     /// The current and previous covers, sharper, for My Wave's cover fill (`Pipe::Wave`).
     sharp: [Option<wgpu::TextureView>; 2],
     art_id: usize,
     /// The picture behind the player (with its smaller copies), its id, and whether it is active.
     backdrop: Option<(u64, wgpu::TextureView)>,
     backdrop_on: bool,
-    ubufs: Vec<UBuf>,
+    ubuf: wgpu::Buffer,
+    ubind: wgpu::BindGroup,
+    ustride: u32,
+    ucap: usize,
     used: usize,
     /// Small cache of `(bd, pyr)` texture bind groups (typically 4-15 active pairs per frame).
     /// Keeping this flat avoids per-draw mutex locks, hashing and `TextureView`/`BindGroup` clones.
@@ -124,15 +146,18 @@ impl Gpu {
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             count: None,
         };
+        let align = device.limits().min_uniform_buffer_offset_alignment.max(1);
+        let ustride = (size_of::<U>() as u32).div_ceil(align) * align;
         let u_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("glint uniforms"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: wgpu::BufferSize::new(size_of::<U>() as u64) },
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: true, min_binding_size: wgpu::BufferSize::new(size_of::<U>() as u64) },
                 count: None,
             }],
         });
+        let (ubuf, ubind) = make_ubuf(device, &u_layout, ustride, INITIAL_U_SLOTS);
         let t_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("glint textures"), entries: &[tex(0), tex(1), smp(2)] });
         let d0_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("glint pyramid0"), entries: &[tex(0), smp(1)] });
         let d_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("glint pyramid"), entries: &[tex(0)] });
@@ -187,11 +212,15 @@ impl Gpu {
             live_valid: false,
             wave: None,
             shadow: Vec::new(),
+            shadow_bytes: Vec::new(),
             sharp: [None, None],
             art_id: 0,
             backdrop: None,
             backdrop_on: false,
-            ubufs: Vec::new(),
+            ubuf,
+            ubind,
+            ustride,
+            ucap: INITIAL_U_SLOTS,
             used: 0,
             binds: Vec::new(),
             first_binds: Vec::new(),
@@ -249,7 +278,7 @@ impl Gpu {
                 pyr_bytes = pyr_bytes.saturating_add(mw * mh * 8);
             }
         }
-        (self.pyrs.len() as u32, pyr_bytes, self.ubufs.len() as u32)
+        (self.pyrs.len() as u32, pyr_bytes, self.used as u32)
     }
 
     /// Number of uniform blocks staged for this frame.
@@ -257,9 +286,25 @@ impl Gpu {
         self.used
     }
 
-    /// Buffer and staged bytes for uniform slot `i` (`0..self.used()`).
-    pub fn uniform(&self, i: usize) -> (&wgpu::Buffer, &U) {
-        (&self.ubufs[i].buf, &self.shadow[i])
+    /// Ensures the shared dynamic uniform buffer holds at least `need` slots.
+    pub fn ensure_uniform_capacity(&mut self, device: &wgpu::Device, need: usize) {
+        if need <= self.ucap {
+            return;
+        }
+        let mut cap = self.ucap.max(INITIAL_U_SLOTS);
+        while cap < need {
+            cap *= 2;
+        }
+        let (buf, bind) = make_ubuf(device, &self.u_layout, self.ustride, cap);
+        self.ubuf = buf;
+        self.ubind = bind;
+        self.ucap = cap;
+    }
+
+    /// Shared uniform buffer and contiguous staged bytes for this frame (`0..self.used()`).
+    pub fn uniform_upload(&self) -> Option<(&wgpu::Buffer, &[u8])> {
+        let len = self.used * self.ustride as usize;
+        (len > 0).then_some((&self.ubuf, &self.shadow_bytes[..len]))
     }
 
     /// Moves uniform block `u` into an isolated layer's pass at `origin` in `size` device pixels.
@@ -272,33 +317,33 @@ impl Gpu {
         v.misc[1] = origin[1];
         v.view[0] = size[0] as f32;
         v.view[1] = size[1] as f32;
+        let old_cap = self.ucap;
         let slot = self.stage(device, &v);
-        queue.write_buffer(&self.ubufs[slot].buf, 0, bytemuck::bytes_of(&v));
+        if self.ucap != old_cap {
+            queue.write_buffer(&self.ubuf, 0, &self.shadow_bytes[..self.used * self.ustride as usize]);
+        } else {
+            queue.write_buffer(&self.ubuf, slot as u64 * u64::from(self.ustride), bytemuck::bytes_of(&v));
+        }
         slot
     }
 
-    /// Reserves the next uniform buffer and records `u` to be written before passes begin.
+    /// Reserves the next uniform slot and records `u` to be written before passes begin.
     pub fn stage(&mut self, device: &wgpu::Device, u: &U) -> usize {
-        if self.shadow.len() <= self.used {
-            self.shadow.resize(self.used + 1, U::default());
+        let slot = self.used;
+        if self.shadow.len() <= slot {
+            self.shadow.resize(slot + 1, U::default());
         }
-        self.shadow[self.used] = *u;
-        if self.used == self.ubufs.len() {
-            let buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("glint uniforms"),
-                size: size_of::<U>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("glint uniforms"),
-                layout: &self.u_layout,
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }],
-            });
-            self.ubufs.push(UBuf { buf, bind });
+        self.shadow[slot] = *u;
+        let stride = self.ustride as usize;
+        let end = (slot + 1) * stride;
+        if self.shadow_bytes.len() < end {
+            self.shadow_bytes.resize(end, 0);
         }
+        let src = bytemuck::bytes_of(u);
+        self.shadow_bytes[slot * stride..slot * stride + src.len()].copy_from_slice(src);
+        self.ensure_uniform_capacity(device, slot + 1);
         self.used += 1;
-        self.used - 1
+        slot
     }
 
     /// Records one draw of `pipe` into the open pass.
@@ -336,7 +381,7 @@ impl Gpu {
             self.binds.len() - 1
         };
         pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, &self.ubufs[u].bind, &[]);
+        pass.set_bind_group(0, &self.ubind, &[u as u32 * self.ustride]);
         pass.set_bind_group(1, &self.binds[bind_idx].2, &[]);
         pass.draw(0..4, 0..1);
     }

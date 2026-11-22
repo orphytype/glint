@@ -2,7 +2,7 @@
 
 use ym_api::{Album, Track};
 
-use super::{DiscSort, Load, PAGE_SCROLL, Page, PinnedItem, Session, State, TrackSort, page_scroll};
+use super::{DiscSort, Load, Page, PinnedItem, Session, State, TrackSort, clear_scroll, page_scroll};
 use crate::i18n::S;
 
 impl State {
@@ -39,7 +39,7 @@ impl State {
             self.scroll_memory.insert(from, offset);
         }
         let key = to.key();
-        PAGE_SCROLL.with_borrow_mut(|m| m.remove(&key));
+        clear_scroll(&key);
         self.scroll_restore = self.scroll_memory.get(&key).copied().filter(|y| *y > 1.0).map(|y| (key, y, self.now + 4.0));
     }
 
@@ -102,6 +102,7 @@ impl State {
         };
         crate::diag_log::event("nav", &format!("page={kind}"));
         self.log_mem(&format!("nav:{kind}"));
+        self.art_trim_at = Some(self.now + 2.5);
         let detail = !page.is_root();
         match page {
             Page::Library => self.load_library_tab(self.library.tab),

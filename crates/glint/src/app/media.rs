@@ -6,7 +6,7 @@ use ym_api::Track;
 use ym_audio::DiskCache;
 
 use super::{LYRIC_LEAD_MS, Load, LyricsUi, State};
-use crate::art::{ArtCache, COVER_PX, DECODE_PX};
+use crate::art::{ArtCache, COVER_MD, decode_px_for_key};
 use crate::net::{self, Backend};
 
 impl State {
@@ -19,9 +19,14 @@ impl State {
         self.player.index.and_then(|i| self.player.queue.get(i))
     }
 
-    /// Canonical 300x300 cover URL (also the cache key) so every view reuses one image.
+    /// Cover URL (also the cache key) at an explicit CDN size (`100`, `300`, or `600`).
+    pub fn cover_key_px(template: Option<&str>, px: u32) -> Option<String> {
+        template.map(|t| ym_api::cover::url(t, px))
+    }
+
+    /// Canonical 300x300 cover URL for cards, headers, palettes, and desktop media controls.
     pub fn cover_key(template: Option<&str>) -> Option<String> {
-        template.map(|t| ym_api::cover::url(t, COVER_PX))
+        Self::cover_key_px(template, COVER_MD)
     }
 
     pub fn load_lyrics_for_current(&mut self) {
@@ -31,7 +36,7 @@ impl State {
         }
         self.lyrics = LyricsUi { for_track: Some(track.id.clone()), lyrics: Load::Loading, active: None };
         self.lyrics_gen = self.lyrics_gen.wrapping_add(1);
-        let b = self.backend.clone();
+        let (b, fc, fc_on) = (self.backend.clone(), self.fkcensor.clone(), self.settings.fkcensor);
         let id = track.id.clone();
         let lookup_id = id.clone();
         let downloads = self.download_store.clone();
@@ -42,7 +47,7 @@ impl State {
                 {
                     return item.lyrics;
                 }
-                b.lyrics(&track).await.unwrap_or_default()
+                b.lyrics(&track, &fc, fc_on).await.unwrap_or_default()
             },
             move |s, _, l| {
                 if s.lyrics.for_track.as_deref() == Some(id.as_str()) {
@@ -85,7 +90,7 @@ impl State {
         if self.palette_key.is_some() && self.palette_tpl.as_deref() == Some(tpl) {
             return fresh;
         }
-        let key = ym_api::cover::url(tpl, COVER_PX);
+        let key = ym_api::cover::url(tpl, COVER_MD);
         if self.palette_key.as_deref() != Some(key.as_str()) {
             self.art.want_sharp(&key);
             let _ = self.art.pixels(&key);
@@ -108,13 +113,14 @@ impl State {
 #[cfg(feature = "tooling")]
 fn paint_fixture_cover(key: &str) -> Option<crate::art::Decoded> {
     let (hue, style, seed, size) = crate::fixtures::parse_cover_url(key)?;
-    let size = size.min(DECODE_PX);
+    let size = size.min(decode_px_for_key(key));
     let rgba = crate::fixtures::cover_rgba(hue, style, seed, size);
     Some(crate::art::Decoded { width: size, height: size, rgba })
 }
 
 fn spawn_cover_load(backend: Backend, art: ArtCache, key: String, disk: Option<Arc<DiskCache>>, sharp_only: bool) {
     net::spawn(async move {
+        let decode_px = decode_px_for_key(&key);
         // Fast path: compressed bytes warm in RAM or on disk, decoded on the bounded blocking pool.
         let from_ram = art.encoded(&key);
         let hit = {
@@ -124,7 +130,7 @@ fn spawn_cover_load(backend: Backend, art: ArtCache, key: String, disk: Option<A
             let disk2 = disk.clone();
             tokio::task::spawn_blocking(move || {
                 let raw = from_ram.or_else(|| disk2.as_ref().and_then(|d| d.get(&k2)))?;
-                let img = crate::art::decode(&raw, DECODE_PX)?;
+                let img = crate::art::decode(&raw, decode_px)?;
                 if sharp_only {
                     art2.finish_sharp(&k2, Some(img));
                 } else {
@@ -141,7 +147,7 @@ fn spawn_cover_load(backend: Backend, art: ArtCache, key: String, disk: Option<A
             return;
         }
         if sharp_only {
-            let img = backend.image(&key, DECODE_PX).await;
+            let img = backend.image(&key, decode_px).await;
             let _ = tokio::task::spawn_blocking(move || art.finish_sharp(&key, img)).await;
             return;
         }
@@ -151,7 +157,7 @@ fn spawn_cover_load(backend: Backend, art: ArtCache, key: String, disk: Option<A
             let k2 = key.clone();
             let disk2 = disk.clone();
             let _ = tokio::task::spawn_blocking(move || {
-                if let Some(img) = crate::art::decode(&raw, DECODE_PX) {
+                if let Some(img) = crate::art::decode(&raw, decode_px) {
                     if let Some(d) = disk2 {
                         let _ = d.put(&k2, &raw);
                     }
@@ -163,7 +169,7 @@ fn spawn_cover_load(backend: Backend, art: ArtCache, key: String, disk: Option<A
             .await;
             return;
         }
-        if let Some(img) = backend.image(&key, DECODE_PX).await {
+        if let Some(img) = backend.image(&key, decode_px).await {
             let _ = tokio::task::spawn_blocking(move || art.finish(&key, Some(img), None)).await;
         } else {
             art.finish(&key, None, None);

@@ -4,9 +4,9 @@ use crate::fx::Slot as _;
 use rune::{Align, Color, Cursor, El, Icon, PopupAnchor, TextStyle, Transition, Tx, col, el, icon, row};
 use ym_api::Track;
 
-use super::controls::{ctl_radius, ibtn, quiet_halo, swap_glyph};
+use super::controls::{ctl_radius, ibtn, ibtn_gop, quiet_halo, swap_glyph};
 use super::marquee::{marquee, marquee_hover, marquee_on, measure_room, room};
-use super::media::{artists_row_in_width, cover};
+use super::media::{artists_row_in_width, cover_sm};
 use super::{Hover as _, label};
 use crate::app::{DownloadState, FromName, Page, PlayingFrom, Source, State, TrackSort};
 use crate::fx;
@@ -19,7 +19,7 @@ pub const ROW_PAD: f32 = 8.0;
 const ROW_GAP: f32 = 10.0;
 const ROW_BTN: f32 = 32.0;
 const ROW_GLYPH: f32 = 16.0;
-const ROW_TIME: f32 = 44.0;
+const ROW_TIME: f32 = 54.0;
 const ROW_ACTIONS: f32 = ROW_BTN * 2.0 + 8.0 + ROW_TIME;
 pub const ROW_COVER: f32 = 44.0;
 pub const ROW_COVER_R: f32 = 7.0;
@@ -104,16 +104,17 @@ fn heart_glyph(size: f32) -> f32 {
     (size * 0.48).round().clamp(14.0, 18.0)
 }
 
-fn like_button(s: &State, track: &Track, size: f32, on: bool) -> El {
-    like_button_with(s, track, size, heart_glyph(size), (&icons::HEART, &icons::HEART_FILL), false, on)
+fn like_button(s: &State, track: &Track, size: f32, on: bool, hover_only: bool) -> El {
+    like_button_with(s, track, size, heart_glyph(size), (&icons::HEART, &icons::HEART_FILL), false, on, hover_only)
 }
 
 pub fn np_like_button(s: &State, track: &Track, size: f32, glyph: f32) -> El {
     let on = s.is_liked(&track.id);
-    like_button_with(s, track, size, glyph, (&np_icons::HEART, &np_icons::HEART_FILL), true, on)
+    like_button_with(s, track, size, glyph, (&np_icons::HEART, &np_icons::HEART_FILL), true, on, false)
 }
 
-fn like_button_with(s: &State, track: &Track, size: f32, glyph_px: f32, hearts: (&'static Icon, &'static Icon), quiet: bool, on: bool) -> El {
+#[expect(clippy::too_many_arguments, reason = "shared builder for row and player like buttons")]
+fn like_button_with(s: &State, track: &Track, size: f32, glyph_px: f32, hearts: (&'static Icon, &'static Icon), quiet: bool, on: bool, hover_only: bool) -> El {
     let p = s.pal();
     let t = track.clone();
     let name = if on { S::Unlike.get(s.lang) } else { S::Like.get(s.lang) };
@@ -122,10 +123,20 @@ fn like_button_with(s: &State, track: &Track, size: f32, glyph_px: f32, hearts: 
     if quiet && !on {
         glyph = glyph.gcol(th::text());
     }
-    let mut b = row().key(format!("like-{}", track.id)).role("button").label(name).help(name).w(size).h(size).radius(ctl_radius(size)).cursor(Cursor::Pointer);
-    b = if quiet { b.hov_group().child(quiet_halo(glyph_px)) } else { b.hov(veil(0.07)).press(veil(0.12)) };
-    let mut b =
-        b.press_scale(th::PRESS).child(swap_glyph(format!("like-{}-{on}", track.id), glyph, s.burst_on && s.burst_track == track.id)).checked(on).on_press(move |s: &mut State| {
+    if hover_only {
+        glyph = glyph.gop(0.0, 1.0);
+    }
+    let r = ctl_radius(size);
+    let mut b = row().key(format!("like-{}", track.id)).role("button").label(name).help(name).w(size).h(size).radius(r).cursor(Cursor::Pointer);
+    b = if quiet {
+        b.hov_group().child(quiet_halo(glyph_px))
+    } else {
+        // Put `.hov` on a leaf sibling so the button doesn't override the row's hover group for an
+        // unliked heart.
+        b.press(veil(0.12)).child(el().key("hov").absolute(0.0, 0.0).w_full().h_full().radius(r).hov(veil(0.07)))
+    };
+    let mut b = b.press_scale(th::PRESS).child(swap_glyph(format!("like-{}-{on}", track.id), glyph, size, glyph_px, s.burst_on && s.burst_track == track.id)).checked(on).on_press(
+        move |s: &mut State| {
             let liking = !s.is_liked(&t.id);
             s.toggle_like(&t);
             if liking {
@@ -133,9 +144,10 @@ fn like_button_with(s: &State, track: &Track, size: f32, glyph_px: f32, hearts: 
                 s.burst_track = t.id.clone();
                 s.burst_on = true;
             }
-        });
+        },
+    );
     if s.burst_on && s.burst_track == track.id {
-        b = b.child(el().key("burst").fx(fx::SPARKLES).fx_data([s.like_burst as f32, 14.0, 6.0, 0.0]).fx_bleed(40.0).absolute(0.0, 0.0).w_full().h_full().radius(ctl_radius(size)));
+        b = b.child(el().key("burst").fx(fx::SPARKLES).fx_data([s.like_burst as f32, 14.0, 6.0, 0.0]).fx_bleed(40.0).absolute(0.0, 0.0).w_full().h_full().radius(r));
     }
     b
 }
@@ -190,52 +202,43 @@ fn marker(s: &State) -> El {
     el().key("playing-marker").w(22.0).h(22.0).transition(Transition::none()).fx(fx::MORPH).fx_data([if s.player.playing { 1.0 } else { 0.0 }, 1.0, 0.0, 0.0])
 }
 
-fn row_cover(s: &State, t: &Track, playing: bool, queue: bool) -> El {
-    let dim = th::rgba(0x000000, if playing { 0.52 } else { 0.0 });
+fn row_cover(s: &State, t: &Track, playing: bool, hovered: bool, dim_past: bool) -> El {
+    let dim_a = if playing {
+        0.52
+    } else if dim_past {
+        0.38
+    } else {
+        0.0
+    };
+    let dim = th::rgba(0x000000, dim_a);
     let mut c = el()
         .key("rc")
         .w(ROW_COVER)
         .h(ROW_COVER)
         .transition(Transition::none())
-        .child(cover(s, t.cover_template(), ROW_COVER, ROW_COVER_R))
+        .child(cover_sm(s, t.cover_template(), ROW_COVER, ROW_COVER_R))
         .child(el().key("rc-dim").absolute(0.0, 0.0).w_full().h_full().radius(ROW_COVER_R).transition(Transition::none()).fill(dim));
-    if playing && queue {
-        c = c.child(
-            row()
-                .key("rc-play-queue")
-                .absolute(0.0, 0.0)
-                .w_full()
-                .h_full()
-                .center()
-                .transition(Transition::none())
-                .child(icon(if s.player.playing { &icons::PAUSE } else { &icons::PLAY }, 16.0).color(th::rgb(0xffffff))),
-        );
-    } else if playing {
-        c = c.child(row().key("rc-mark").absolute(0.0, 0.0).w_full().h_full().center().transition(Transition::none()).gop(1.0, 0.0).child(marker(s))).child(
-            row()
-                .key("rc-toggle")
-                .absolute(0.0, 0.0)
-                .w_full()
-                .h_full()
-                .center()
-                .fill(th::rgba(0x000000, 0.36))
-                .radius(ROW_COVER_R)
-                .gop(0.0, 1.0)
-                .child(icon(if s.player.playing { &icons::PAUSE } else { &icons::PLAY }, 16.0).color(th::rgb(0xffffff))),
-        );
+    if playing {
+        if hovered {
+            c = c.child(
+                row()
+                    .key("rc-toggle")
+                    .absolute(0.0, 0.0)
+                    .w_full()
+                    .h_full()
+                    .center()
+                    .fill(th::rgba(0x000000, 0.36))
+                    .radius(ROW_COVER_R)
+                    .transition(Transition::none())
+                    .child(icon(if s.player.playing { &icons::PAUSE } else { &icons::PLAY }, 16.0).color(th::rgb(0xffffff))),
+            );
+        } else {
+            c = c.child(row().key("rc-mark").absolute(0.0, 0.0).w_full().h_full().center().transition(Transition::none()).child(marker(s)));
+        }
     } else {
-        c = c.child(
-            row()
-                .key("rc-play")
-                .absolute(0.0, 0.0)
-                .w_full()
-                .h_full()
-                .center()
-                .fill(th::rgba(0x000000, 0.36))
-                .radius(ROW_COVER_R)
-                .gop(0.0, 1.0)
-                .child(icon(&icons::PLAY, 16.0).color(th::rgb(0xffffff))),
-        );
+        c = c
+            .child(el().key("rc-play-bg").absolute(0.0, 0.0).w_full().h_full().fill(th::rgba(0x000000, 0.36)).radius(ROW_COVER_R).gop(0.0, 1.0))
+            .child(row().key("rc-play").absolute(0.0, 0.0).w_full().h_full().center().child(icon(&icons::PLAY, 16.0).color(th::rgb(0xffffff)).gop(0.0, 1.0)));
     }
     c
 }
@@ -270,10 +273,11 @@ fn download_action(s: &State, t: &Track) -> El {
             .child(icon(ic, ROW_GLYPH).color(color).looping(rune::LoopSpec::rotation(0.9)));
     }
     let glyph_sz = if matches!(state, Some(DownloadState::Done)) { 14.0 } else { ROW_GLYPH };
-    let mut b = ibtn(format!("download-{}", t.id), ic, glyph_sz, ROW_BTN, color, help_text);
-    if state.is_none() {
-        b = b.gop(0.0, 1.0);
-    }
+    let b = if state.is_none() {
+        ibtn_gop(format!("download-{}", t.id), ic, glyph_sz, ROW_BTN, color, help_text)
+    } else {
+        ibtn(format!("download-{}", t.id), ic, glyph_sz, ROW_BTN, color, help_text)
+    };
     let track = t.clone();
     match state {
         Some(DownloadState::Done) => b.on_press(move |s: &mut State| s.ask_delete_download(track.clone())),
@@ -285,11 +289,11 @@ fn download_action(s: &State, t: &Track) -> El {
 pub fn track_row(s: &State, t: &Track, n: usize, src: ListSrc) -> El {
     let qi = (src == ListSrc::Queue).then(|| s.player.queue.iter().position(|queued| queued.id == t.id).unwrap_or_else(|| n.saturating_sub(1)));
     let num = (src == ListSrc::Detail && !s.detail.is_artist).then_some(n);
-    track_row_at(s, t, src, qi, num)
+    track_row_at(s, t, src, qi, num, false)
 }
 
-pub fn queue_row(s: &State, t: &Track, qi: usize) -> El {
-    track_row_at(s, t, ListSrc::Queue, Some(qi), None).on_press(move |s: &mut State| {
+pub fn queue_row(s: &State, t: &Track, qi: usize, dim_past: bool) -> El {
+    track_row_at(s, t, ListSrc::Queue, Some(qi), None, dim_past).on_press(move |s: &mut State| {
         if s.player.index == Some(qi) && s.player.pending_index.is_none() {
             s.toggle_pause();
         } else {
@@ -298,44 +302,47 @@ pub fn queue_row(s: &State, t: &Track, qi: usize) -> El {
     })
 }
 
-fn track_row_at(s: &State, t: &Track, src: ListSrc, qi: Option<usize>, num: Option<usize>) -> El {
+fn track_row_at(s: &State, t: &Track, src: ListSrc, qi: Option<usize>, num: Option<usize>, dim_past: bool) -> El {
     let queue = src == ListSrc::Queue;
     let playing = match (queue, qi) {
         (true, Some(i)) => s.player.index == Some(i),
         _ => s.current().is_some_and(|c| c.id == t.id),
     };
-    let ink = if playing {
+    let ink = if playing && !queue {
         s.pal().accent
-    } else if t.is_available() {
-        th::text()
-    } else {
+    } else if !s.track_playable(t) {
         th::text3()
+    } else if dim_past {
+        th::text2()
+    } else {
+        th::text()
     };
+    let artist_ink = if dim_past { th::text3() } else { th::text2() };
     let title = t.full_title();
     let liked = s.is_liked(&t.id);
     let hot = format!("row-{}", t.id);
     let moving = marquee_on(s, &hot);
     let room_w = room(&hot);
-    let meta = artists_row_in_width(s, &t.artists, th::SMALL, false, &format!("{hot}-ar"), th::text2(), room_w, moving);
+    let meta = artists_row_in_width(s, &t.artists, th::SMALL, false, &format!("{hot}-ar"), artist_ink, room_w, moving);
     let (id, t2, t3) = (t.id.clone(), t.clone(), t.clone());
     let more_key = format!("more-{}", t.id);
     let more_anchor = more_key.clone();
-    let heart = like_button(s, t, ROW_BTN, liked);
-    let heart = if queue || liked { heart } else { heart.gop(0.0, 1.0) };
+    let heart = like_button(s, t, ROW_BTN, liked, !liked);
 
-    let time = row().absolute(0.0, 0.0).w_full().h_full().items_center().justify_end().gop(1.0, 0.0).child(label(
-        crate::player::fmt_time(t.duration_ms.unwrap_or(0)),
-        th::TIME,
-        th::text3(),
-    ));
-    let more = row().absolute(0.0, 0.0).w_full().h_full().items_center().justify_end().gop(0.0, 1.0).child(
-        ibtn(more_key, &icons::MORE, ROW_GLYPH + 2.0, ROW_BTN, th::text2(), S::More.get(s.lang)).on_press(move |s: &mut State| open_track_menu(s, &t3, qi, more_anchor.clone())),
+    let time = row()
+        .absolute(0.0, 0.0)
+        .w_full()
+        .h_full()
+        .items_center()
+        .justify_end()
+        .child(label(crate::player::fmt_time(t.duration_ms.unwrap_or(0)), th::TIME, th::text3()).gop(1.0, 0.0));
+    let more = row().absolute(0.0, 0.0).w_full().h_full().items_center().justify_end().child(
+        ibtn_gop(more_key, &icons::MORE, ROW_GLYPH + 2.0, ROW_BTN, th::text2(), S::More.get(s.lang))
+            .on_press(move |s: &mut State| open_track_menu(s, &t3, qi, more_anchor.clone())),
     );
     let tail = el().key(format!("row-tail-{}", t.id)).w(ROW_TIME).h(ROW_BTN).child(time).child(more);
     let lead_action = if let Some(i) = qi.filter(|&i| queue && Some(i) > s.player.index) {
-        ibtn(format!("q-rem-{i}-{}", t.id), &icons::CLOSE, 14.0, ROW_BTN, th::text3(), S::RemoveFromQueue.get(s.lang))
-            .gop(0.0, 1.0)
-            .on_press(move |s: &mut State| s.remove_from_queue(i))
+        ibtn_gop(format!("q-rem-{i}-{}", t.id), &icons::CLOSE, 14.0, ROW_BTN, th::text3(), S::RemoveFromQueue.get(s.lang)).on_press(move |s: &mut State| s.remove_from_queue(i))
     } else {
         download_action(s, t)
     };
@@ -353,7 +360,7 @@ fn track_row_at(s: &State, t: &Track, src: ListSrc, qi: Option<usize>, num: Opti
         .radius(10.0)
         .cursor(Cursor::Pointer)
         .fill(if playing { veil(0.07) } else { Color::TRANSPARENT })
-        .hov(veil(0.045))
+        .hov(veil(if playing { 0.095 } else { 0.045 }))
         .press(veil(0.08))
         .on_press(move |s: &mut State| s.play_from_list(src, &id))
         .on_secondary_press(move |s: &mut State, press, _tx: &mut Tx| open_track_menu(s, &t2, qi, press))
@@ -362,7 +369,7 @@ fn track_row_at(s: &State, t: &Track, src: ListSrc, qi: Option<usize>, num: Opti
     if let Some(n) = num {
         r = r.child(label(n.to_string(), th::TIME, if playing { s.pal().accent } else { th::text3() }).w(20.0).align(Align::Center));
     }
-    r.child(row_cover(s, t, playing, queue))
+    r.child(row_cover(s, t, playing, moving, dim_past))
         .child(measure_room(col().grow(1.0).min_w(0.0).h_full().justify_center().gap(2.0).child(title_line(s, t, title, ink, room_w, moving)).child(meta), hot))
         .child(row().key(format!("row-actions-{}", t.id)).w(ROW_ACTIONS).h(ROW_BTN).gap(4.0).justify_end().items_center().child(lead_action).child(heart).child(tail))
 }

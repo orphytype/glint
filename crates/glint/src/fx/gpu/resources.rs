@@ -140,7 +140,7 @@ impl Gpu {
                 multiview_mask: None,
             });
             pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &self.ubufs[u].bind, &[]);
+            pass.set_bind_group(0, &self.ubind, &[u as u32 * self.ustride]);
             pass.set_bind_group(1, bind, &[]);
             pass.draw(0..4, 0..1);
         }

@@ -18,12 +18,15 @@ use crate::i18n::S;
 use crate::theme::{self as th, Pal};
 
 pub use controls::{
-    BTN_H, FIELD_R, MENU_ROW, Weight, bar_play_btn, bone_fill, btn_primary, btn_select, btn_small, btn_soft, button_bone, button_width, ctl_radius, field_surface, ibtn, menu_row,
-    more_link, np_play_btn, pill_icon, plus_badge, quiet_btn, quiet_off, quiet_toggle, round, skip_btn, slider, sort_button, tab_body, tab_pill_w, tab_pill_with_w, tab_track,
-    text_bone,
+    BTN_H, FIELD_R, MENU_ROW, Weight, bar_play_btn, bone_fill, btn_primary, btn_select, btn_small, btn_small_disabled, btn_soft, button_bone, button_width, ctl_radius,
+    field_surface, ibtn, menu_row, more_link, np_play_btn, pill_icon, plus_badge, quiet_btn, quiet_off, quiet_toggle, round, skip_btn, sort_button, tab_body, tab_pill_w,
+    tab_pill_with_w, tab_track, text_bone,
 };
 pub use marquee::{marquee, marquee_hover, marquee_on};
-pub use media::{artist_line_width, artists_row_in_width, cover, cover_border, cover_tile, picture_url, playing_cover, roll, track_title, wave_button, wave_card, wave_glyph};
+pub use media::{
+    artist_line_width, artists_row_in_width, cover, cover_border, cover_sm, cover_tile, picture_url, playing_cover, playing_cover_lg, roll, track_title, wave_button, wave_card,
+    wave_glyph,
+};
 pub use rows::{ListSrc, ROW_COVER, ROW_COVER_R, ROW_H, ROW_PAD, explicit_badge, np_like_button, queue_row, track_row};
 
 pub const TITLE_H: f32 = 60.0;
@@ -126,22 +129,21 @@ pub fn glass_alpha(kind: Glass, radius: f32, alpha: f32) -> El {
     if fx::glass_enabled() {
         return pane.effect(fx::glass(kind)).fx_data([1.0 - alpha, 0.0, 0.0, 0.0]);
     }
-    let (fill, edge, shadow) = match kind {
-        Glass::Dock => (th::pop().alpha(0.96 * alpha), th::veil(0.11 * alpha), Some((8.0, 24.0, if th::light() { 0.14 } else { 0.42 }))),
-        Glass::Card => (th::pop().alpha(0.96 * alpha), th::veil(0.10 * alpha), Some((10.0, 28.0, if th::light() { 0.12 } else { 0.36 }))),
-        Glass::Chip => (th::pop().alpha(0.90 * alpha), th::veil(0.12 * alpha), Some((4.0, 12.0, if th::light() { 0.10 } else { 0.28 }))),
-        Glass::Menu => (th::pop().alpha(alpha), th::veil(0.10 * alpha), None),
+    let (fill, edge, bw) = match kind {
+        Glass::Dock | Glass::Card => (th::pop().alpha(0.96 * alpha), th::veil(0.12 * alpha), 2.0),
+        Glass::Chip => (th::pop().alpha(0.90 * alpha), th::veil(0.13 * alpha), 2.0),
+        Glass::Menu => (th::pop().alpha(alpha), th::veil(0.0), 0.0),
     };
-    let pane = pane.fill(fill).border(1.0, edge);
-    match shadow {
-        Some((y, blur, a)) if alpha > 0.01 => pane.shadow(y, blur, th::rgba(0x000000, a * alpha)),
-        _ => pane,
-    }
+    let pane = pane.fill(fill);
+    if bw > 0.0 { pane.border(bw, edge) } else { pane }
 }
 
 pub fn frost(radius: f32, skin: f32) -> [El; 2] {
     let film = if fx::glass_enabled() { th::FROST } else { 1.0 };
-    [glass_alpha(Glass::Menu, radius, skin), el().absolute(0.0, 0.0).w_full().h_full().radius(radius).fill(th::pop().alpha(film * skin)).transition(Transition::none())]
+    [
+        glass_alpha(Glass::Menu, radius, skin),
+        el().absolute(0.0, 0.0).w_full().h_full().radius(radius).fill(th::pop().alpha(film * skin)).border(2.0, th::veil(0.13 * skin)).transition(Transition::none()),
+    ]
 }
 
 pub fn veil_top(h: f32) -> El {
@@ -169,9 +171,8 @@ pub fn dialog(key: &str, w: f32, title: &str, body: Vec<El>, buttons: Vec<El>, d
         .gap(12.0)
         .radius(16.0)
         .fill(th::pop())
-        .border(1.0, th::hairline())
-        .shadow(16.0, 48.0, th::rgba(0x000000, if th::light() { 0.16 } else { 0.42 }))
-        .transition(Transition::opacity().combined(Transition::scale(0.96)).combined(Transition::offset(0.0, 8.0)).springs(th::RISE))
+        .border(2.0, th::veil(0.12))
+        .transition(pop_in(0.97, 6.0, th::RISE))
         .modal(true, dismiss)
         .on_press(|_s: &mut State| {})
         .child(label(title.to_owned(), th::H2, th::text()).wrap())
@@ -183,7 +184,7 @@ pub fn dialog(key: &str, w: f32, title: &str, body: Vec<El>, buttons: Vec<El>, d
         .h_full()
         .center()
         .fill(th::rgba(0x000000, if th::light() { 0.24 } else { 0.52 }))
-        .transition(Transition::opacity().springs(th::RISE))
+        .transition(Transition::none())
         .on_press(dismiss)
         .child(card)
 }
@@ -209,7 +210,7 @@ pub fn list_heading(key: impl Into<String>, title: &str, more: Option<El>) -> El
 }
 
 pub fn scroll_page(key: impl Into<String>, body: El) -> El {
-    page_shell(key, body.transition(Transition::opacity().combined(Transition::offset(0.0, 14.0)).combined(Transition::scale(0.99)).springs(th::PAGE_IN)))
+    page_shell(key, body.transition(Transition::asymmetric(Transition::offset(0.0, 10.0), Transition::none()).springs(th::PAGE_IN)))
 }
 
 pub fn scroll_page_live(key: impl Into<String>, body: El) -> El {
@@ -235,13 +236,69 @@ fn page_shell(key: impl Into<String>, body: El) -> El {
             s.glide.wheel_to(&wheel_key, e.dy, now, reduce, tx);
             true
         })
-        .on_scroll_offset(move |p: rune::ScrollPos| {
-            crate::app::PAGE_SCROLL.with_borrow_mut(|m| {
-                m.insert(watch_key.clone(), [p.offset[1], p.max[1]]);
-            })
-        })
-        .transition(Transition::opacity().springs(th::LEAVE))
+        .on_scroll_offset(move |p: rune::ScrollPos| crate::app::report_scroll(&watch_key, p))
+        .transition(Transition::none())
         .child(row().w_full().justify_center().transition(Transition::none()).child(body.w_full().max_w(PAGE_MAX).px(PAGE_PAD).pt(TITLE_H + 8.0).pb(foot_room()).gap(44.0)))
+}
+
+const SCROLLBAR_HIT_W: f32 = 14.0;
+const SCROLLBAR_THUMB_W: f32 = 5.0;
+const SCROLLBAR_RIGHT: f32 = 3.0;
+
+/// Slim interactive vertical scrollbar bound to a scroll container's `on_scroll_offset` key.
+/// Moves its thumb via `Live<[f32; 4]>` so scrolling never triggers a view rebuild.
+fn scrollbar(scroll_key: &str, vp_h: f32, top_pad: f32, bottom_pad: f32) -> El {
+    let track_h = (vp_h - top_pad - bottom_pad).max(40.0);
+    let thumb_x = SCROLLBAR_HIT_W - SCROLLBAR_THUMB_W - SCROLLBAR_RIGHT;
+    let live = crate::app::scroll_thumb(scroll_key, vp_h, track_h, thumb_x, SCROLLBAR_THUMB_W);
+    let drag_key = scroll_key.to_owned();
+    let thumb =
+        el().key(format!("sb-thumb-{scroll_key}")).radius(SCROLLBAR_THUMB_W * 0.5).fill(th::veil(0.24)).gcol(th::veil(0.46)).live_rect(&live).transition(Transition::none());
+    el().key(format!("sb-{scroll_key}"))
+        .pin(None, Some(top_pad), Some(0.0), Some(bottom_pad))
+        .w(SCROLLBAR_HIT_W)
+        .hov_group()
+        .transition(Transition::none())
+        .on_drag(move |s: &mut State, d: &mut rune::Drag, tx: &mut Tx| {
+            let Some([offset, max]) = crate::app::page_scroll(&drag_key) else { return };
+            if max <= 2.0 || d.cancelled() {
+                return;
+            }
+            let th = (d.h * (vp_h / (vp_h + max))).clamp(28.0, d.h);
+            let span = (d.h - th).max(1.0);
+            match d.phase {
+                rune::Phase::Down => {
+                    let thumb_y = (offset / max).clamp(0.0, 1.0) * span;
+                    if d.y >= thumb_y - 4.0 && d.y <= thumb_y + th + 4.0 {
+                        d.data = d.y - thumb_y;
+                        s.glide.active = false;
+                        s.scroll_restore = None;
+                    } else {
+                        d.data = -1.0;
+                    }
+                }
+                rune::Phase::Move => {
+                    if d.data < 0.0 {
+                        return;
+                    }
+                    s.glide.active = false;
+                    s.scroll_restore = None;
+                    let frac = ((d.y - d.data) / span).clamp(0.0, 1.0);
+                    tx.scroll_to_instant(&drag_key, 0.0, frac * max);
+                }
+                rune::Phase::Up => {}
+            }
+        })
+        .child(thumb)
+}
+
+/// Interactive scrollbar for the active main page, mounted above the edge blur veils.
+pub fn page_scrollbar(h: f32) -> El {
+    let key = crate::app::PAGE_KEY.with_borrow(Clone::clone);
+    if key.is_empty() {
+        return el().key("page-sb-none");
+    }
+    scrollbar(&key, h, CAPTION_H + 8.0, 12.0)
 }
 
 pub fn wheel_to_page(e: El) -> El {
@@ -255,7 +312,17 @@ pub fn wheel_to_page(e: El) -> El {
 }
 
 pub fn rise(e: El, i: usize) -> El {
-    e.transition(Transition::opacity().combined(Transition::offset(0.0, 12.0)).springs(th::PAGE_IN)).enter_delay(0.04 * i.min(6) as f32)
+    e.transition(Transition::asymmetric(Transition::offset(0.0, 10.0), Transition::none()).springs(th::PAGE_IN)).enter_delay(0.04 * i.min(6) as f32)
+}
+
+/// Scale/offset enter transition without opacity fade so modals and pills avoid offscreen layers.
+pub fn pop_in(scale: f32, dy: f32, springs: rune::SpringPair) -> Transition {
+    Transition {
+        insertion: rune_motion::Effect { scale, offset: rune_motion::Vec2::new(0.0, dy), ..rune_motion::Effect::IDENTITY },
+        removal: rune_motion::Effect::IDENTITY,
+        pop_layout: true,
+        springs,
+    }
 }
 
 pub fn list_state<T>(l: &Load<T>, s: &State) -> Option<El> {

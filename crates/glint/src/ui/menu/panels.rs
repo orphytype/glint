@@ -128,7 +128,7 @@ fn picker(key: &str, width: f32, names: &[&str], current: usize, look: Face, i: 
         .fill(thumb_fill)
         .motion(PICK_SPRING);
     if th::light() {
-        thumb = thumb.shadow(1.0, 4.0, th::rgba(0x000000, 0.12));
+        thumb = thumb.border(1.0, th::veil(0.10));
     }
     let mut choices = col().absolute(PICK_PAD, PICK_PAD).w(width - 2.0 * PICK_PAD).h(height - 2.0 * PICK_PAD);
     let mut line = row().w_full().h(cell);
@@ -322,7 +322,7 @@ pub(super) fn stage_entries(s: &State, pw: f32, win_h: f32) -> Vec<Entry> {
     if body_h <= room {
         return vec![Entry::Block(head, STAGE_HEAD), Entry::Block(body.h(body_h), body_h)];
     }
-    let scroll = col().key("sl-scroll").w_full().h(room).scroll(rune::ScrollSpec { stick_bottom: false }).scroll_edge_fade(12.0).child(body);
+    let scroll = col().key("sl-scroll").w_full().h(room).scroll(rune::ScrollSpec { stick_bottom: false }).child(body);
     vec![Entry::Block(head, STAGE_HEAD), Entry::Block(scroll, room)]
 }
 

@@ -25,10 +25,10 @@ use crate::desktop::Desktop;
 use crate::i18n::Lang;
 use crate::net::Backend;
 use crate::palette::Palette;
-use crate::store::{DownloadStore, Settings, Store};
+use crate::store::{DownloadStore, QualityPref, Settings, Store};
 
 pub use model::{DownloadActivity, FromName, Library, Lives, LyricsUi, Player, PlayingFrom, Popover, Sheet, Source, Station, Toast, TrackMenu, WaveChoice};
-pub use motion::{LYRIC_LEAD_MS, PAGE_KEY, PAGE_SCROLL, Pop, WheelGlide, page_scroll};
+pub use motion::{LYRIC_LEAD_MS, PAGE_KEY, Pop, WheelGlide, clear_scroll, page_scroll, report_scroll, scroll_thumb};
 pub use types::{
     Detail, DiscKind, DiscSort, DownloadFail, DownloadState, LibTab, Load, LoginUi, NpTab, Page, PinnedItem, SearchTab, SearchUi, Session, TrackSort, release_kind_name,
 };
@@ -83,6 +83,8 @@ pub struct State {
     pub cache: Option<Arc<DiskCache>>,
     pub download_store: Option<Arc<DownloadStore>>,
     pub download_confirm: Option<Vec<Track>>,
+    /// Quality picked in the batch download dialog. It does not change playback quality.
+    pub download_quality: QualityPref,
     pub delete_download_confirm: Option<Vec<Track>>,
     pub name_dialog: Option<crate::playlists::NamePurpose>,
     pub name_edit: TextEdit,
@@ -97,6 +99,9 @@ pub struct State {
     /// Measured loudness envelope (`fx::WAVE_N` values, 0..1) per track id for the seek line.
     pub waveforms: HashMap<String, Arc<[f32]>>,
     pub waveform_jobs: HashSet<String>,
+    /// Cached maximum audio quality offered by Yandex per track id.
+    pub track_max_quality: HashMap<String, crate::net::StreamQuality>,
+    pub max_quality_jobs: HashSet<String>,
     /// Downloaded track IDs in newest-first order.
     pub download_order: Vec<String>,
     pub download_activity: Option<DownloadActivity>,
@@ -104,8 +109,6 @@ pub struct State {
     pub headless: bool,
     pub now: f64,
     pub prev_now: f64,
-    pub vol_w: Cell<f32>,
-    pub vol_drawn: Cell<f32>,
     pub win_w: Cell<f32>,
     pub win_size: Cell<[f32; 2]>,
     pub resized_at: Cell<f64>,
@@ -138,13 +141,13 @@ pub struct State {
     pub liked: HashSet<String>,
     pub liked_items: HashSet<String>,
     pub likes_loaded: bool,
-    pub wave_cover: RefCell<(bool, Option<String>)>,
     pub swarm: crate::bugs::Swarm,
     pub bug_geom: RefCell<crate::bugs::Geom>,
     pub library: Library,
     pub search: SearchUi,
     pub detail: Detail,
     pub wave_choice: String,
+    pub wave_cover: RefCell<(bool, Option<String>)>,
     // playback
     pub player: Player,
     pub lyrics: LyricsUi,
@@ -152,6 +155,7 @@ pub struct State {
     pub ly_panel: Cell<bool>,
     pub np_open: bool,
     pub np_tab: NpTab,
+    pub np_tab_prev: NpTab,
     pub menu_open: bool,
     pub menu: Pop,
     pub track_menu: Option<TrackMenu>,
@@ -237,6 +241,8 @@ pub struct State {
     pub boot_playback_done: bool,
     pub downloads_gen: u64,
     pub deleted_downloads: HashSet<String>,
+    pub art_trim_at: Option<f64>,
+    pub art_trimmed_at: f64,
 }
 
 impl State {
@@ -252,6 +258,7 @@ impl State {
             cache,
             download_store,
             download_confirm: None,
+            download_quality: QualityPref::Balanced,
             delete_download_confirm: None,
             name_dialog: None,
             name_edit: TextEdit::new(""),
@@ -263,18 +270,18 @@ impl State {
             download_errors: HashMap::new(),
             waveforms: HashMap::new(),
             waveform_jobs: HashSet::new(),
+            track_max_quality: HashMap::new(),
+            max_quality_jobs: HashSet::new(),
             download_order: Vec::new(),
             download_activity: None,
             backend: Backend::None,
             headless,
             now: 0.0,
             prev_now: 0.0,
-            vol_w: Cell::new(96.0),
-            vol_drawn: Cell::new(-1.0),
             win_w: Cell::new(1280.0),
             win_size: Cell::new([0.0, 0.0]),
             resized_at: Cell::new(f64::NEG_INFINITY),
-            lives: Lives { clock: LiveText::new("0:00"), remaining: LiveText::new("-0:00"), volume: Live::new([0.0, 0.0, 0.0, 4.0]) },
+            lives: Lives { clock: LiveText::new("0:00"), remaining: LiveText::new("-0:00") },
             clock_secs: Cell::new(u64::MAX),
             remaining_secs: Cell::new(u64::MAX),
             clock_text: RefCell::new(String::new()),
@@ -326,11 +333,15 @@ impl State {
                 eq,
                 resume_ms: None,
                 seek_hold: None,
+                current_audio: None,
+                next_audio: None,
             },
             lyrics: LyricsUi::default(),
             ly_e: Vec::new(),
             np_open: false,
             np_tab: NpTab::Closed,
+            np_tab_prev: NpTab::Closed,
+            wave_cover: RefCell::new((false, None)),
             menu_open: false,
             menu: Pop::default(),
             track_menu: None,
@@ -386,7 +397,6 @@ impl State {
             cover_thumb: None,
             liked_items: HashSet::new(),
             likes_loaded: false,
-            wave_cover: RefCell::new((false, None)),
             update: crate::update::Ui::default(),
             update_method: crate::update::method(),
             fkcensor: crate::fkcensor::FkCensor::default(),
@@ -421,6 +431,8 @@ impl State {
             boot_playback_done: headless,
             downloads_gen: 0,
             deleted_downloads: HashSet::new(),
+            art_trim_at: None,
+            art_trimmed_at: 0.0,
             settings,
             store,
         }

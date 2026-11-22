@@ -24,6 +24,7 @@ impl State {
         }
         self.library.collections_fresh = false;
         let (b, uid) = (self.backend.clone(), self.account.as_ref().map_or(0, |a| a.uid));
+        let (fc, fc_on) = (self.fkcensor.clone(), self.settings.fkcensor);
         let b2 = b.clone();
         self.job(async move { b2.home().await }, |s, _, res| match res {
             Ok(v) => {
@@ -37,7 +38,7 @@ impl State {
                 }
             }
         });
-        self.job(async move { b.liked_tracks(uid).await }, move |s, _, res| match res {
+        self.job(async move { b.liked_tracks(uid, &fc, fc_on).await }, move |s, _, res| match res {
             Ok(v) => {
                 s.liked = v.iter().map(|t| t.id.clone()).collect();
                 s.library.tracks = Load::Ready(v);
@@ -247,8 +248,8 @@ impl State {
 
     pub fn open_album(&mut self, id: &str) {
         let generation = self.begin_detail(Page::Album(id.into()));
-        let (b, id) = (self.backend.clone(), id.to_owned());
-        self.job(async move { b.album(&id).await }, move |s, _, res| {
+        let (b, id, fc, fc_on) = (self.backend.clone(), id.to_owned(), self.fkcensor.clone(), self.settings.fkcensor);
+        self.job(async move { b.album(&id, &fc, fc_on).await }, move |s, _, res| {
             if s.detail.generation == generation {
                 match res {
                     Ok(a) => s.show_album(a),
@@ -260,8 +261,8 @@ impl State {
 
     pub fn open_playlist(&mut self, uid: i64, kind: i64) {
         let generation = self.begin_detail(Page::Playlist(uid, kind));
-        let b = self.backend.clone();
-        self.job(async move { b.playlist(uid, kind).await }, move |s, _, res| {
+        let (b, fc, fc_on) = (self.backend.clone(), self.fkcensor.clone(), self.settings.fkcensor);
+        self.job(async move { b.playlist(uid, kind, &fc, fc_on).await }, move |s, _, res| {
             if s.detail.generation == generation {
                 match res {
                     Ok(p) => s.show_playlist(p),
@@ -273,8 +274,8 @@ impl State {
 
     /// Plays an album from its first track without opening its page.
     pub fn play_album(&mut self, id: &str, title: &str) {
-        let (b, id, title) = (self.backend.clone(), id.to_owned(), title.to_owned());
-        self.job(async move { b.album(&id).await }, move |s, _, res| match res {
+        let (b, id, title, fc, fc_on) = (self.backend.clone(), id.to_owned(), title.to_owned(), self.fkcensor.clone(), self.settings.fkcensor);
+        self.job(async move { b.album(&id, &fc, fc_on).await }, move |s, _, res| match res {
             Ok(a) => {
                 let tracks: Vec<Track> = a.tracks().cloned().collect();
                 s.play_list_from(tracks, S::Album, title, Page::Album(a.id));
@@ -285,8 +286,8 @@ impl State {
 
     /// Plays a playlist from its first track without opening its page.
     pub fn play_playlist(&mut self, uid: i64, kind: i64, title: &str) {
-        let (b, title) = (self.backend.clone(), title.to_owned());
-        self.job(async move { b.playlist(uid, kind).await }, move |s, _, res| match res {
+        let (b, title, fc, fc_on) = (self.backend.clone(), title.to_owned(), self.fkcensor.clone(), self.settings.fkcensor);
+        self.job(async move { b.playlist(uid, kind, &fc, fc_on).await }, move |s, _, res| match res {
             Ok(p) => {
                 let tracks: Vec<Track> = p.resolved_tracks().cloned().collect();
                 s.play_list_from(tracks, S::Playlist, title, Page::Playlist(uid, kind));
@@ -305,8 +306,8 @@ impl State {
 
     pub fn open_artist(&mut self, id: &str) {
         let generation = self.begin_detail(Page::Artist(id.into()));
-        let (b, id) = (self.backend.clone(), id.to_owned());
-        self.job(async move { b.artist(&id).await }, move |s, _, res| {
+        let (b, id, fc, fc_on) = (self.backend.clone(), id.to_owned(), self.fkcensor.clone(), self.settings.fkcensor);
+        self.job(async move { b.artist(&id, &fc, fc_on).await }, move |s, _, res| {
             if s.detail.generation == generation {
                 match res {
                     Ok(a) => s.show_artist(a),
@@ -331,8 +332,8 @@ impl State {
             return;
         }
         self.detail.all_tracks = Load::Loading;
-        let (b, generation) = (self.backend.clone(), self.detail.generation);
-        self.job(async move { b.artist_tracks(&id).await }, move |s, _, res| {
+        let (b, generation, fc, fc_on) = (self.backend.clone(), self.detail.generation, self.fkcensor.clone(), self.settings.fkcensor);
+        self.job(async move { b.artist_tracks(&id, &fc, fc_on).await }, move |s, _, res| {
             if s.detail.generation != generation {
                 return;
             }

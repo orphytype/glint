@@ -54,6 +54,7 @@ impl State {
         if self.np_open != open {
             crate::diag_log::event("ui", if open { "np open" } else { "np close" });
             self.log_mem(if open { "np:open" } else { "np:close" });
+            self.art_trim_at = Some(self.now + 2.5);
         }
         self.np_open = open;
     }
@@ -94,6 +95,12 @@ fn open_folder(path: &std::path::Path) {
 }
 
 impl State {
+    /// Whether a track can be played or downloaded right now (available on Yandex, already
+    /// downloaded offline, or backed by an active FkCensor replacement).
+    pub fn track_playable(&self, track: &Track) -> bool {
+        track.is_available() || matches!(self.downloads.get(&track.id), Some(DownloadState::Done)) || (self.settings.fkcensor && self.fkcensor.has_track(&track.id))
+    }
+
     /// Whether `tracks` are downloaded as far as possible (at least one done, all others permanently unavailable).
     pub fn downloads_settled(&self, tracks: &[Track]) -> bool {
         let mut any = false;
@@ -101,7 +108,7 @@ impl State {
             match self.downloads.get(&t.id) {
                 Some(DownloadState::Done) => any = true,
                 Some(DownloadState::Failed) if self.download_errors.get(&t.id).is_some_and(|f| f.lasting()) => {}
-                _ if !t.is_available() => {}
+                _ if !self.track_playable(t) => {}
                 _ => return false,
             }
         }
@@ -188,6 +195,15 @@ impl State {
         }
     }
 
+    pub fn set_quality(&mut self, quality: crate::store::QualityPref) {
+        if self.settings.quality == quality {
+            return;
+        }
+        self.settings.quality = quality;
+        self.mark_settings_dirty();
+        self.reload_current();
+    }
+
     pub fn set_word_lyrics(&mut self, on: bool) {
         self.settings.word_lyrics = on;
         self.apply_lrc();
@@ -202,8 +218,22 @@ impl State {
         if on && let Backend::Live(client) = &self.backend {
             self.refresh_fkcensor(client.clone());
         }
+        self.reapply_fkcensor();
         self.reload_current();
         self.mark_settings_dirty();
+    }
+
+    fn reapply_fkcensor(&mut self) {
+        if self.settings.fkcensor
+            && let Load::Ready(tracks) = &mut self.library.tracks
+        {
+            self.fkcensor.patch_tracks(tracks);
+        }
+        match self.detail.page.clone() {
+            Some(Page::Album(id)) => self.open_album(&id),
+            Some(Page::Artist(id)) => self.open_artist(&id),
+            _ => {}
+        }
     }
 
     pub(super) fn refresh_fkcensor(&mut self, client: ym_api::Client) {
@@ -211,6 +241,7 @@ impl State {
         let fkcensor = self.fkcensor.clone();
         self.job(async move { fkcensor.refresh(&client).await }, |s, _tx, changed| {
             if changed && s.settings.fkcensor {
+                s.reapply_fkcensor();
                 s.reload_current();
             }
         });
@@ -315,6 +346,12 @@ impl State {
         let since = self.now - self.playback_saved_at;
         if (self.playback_dirty && since > 1.0) || (self.player.playing && since > 15.0) {
             self.save_playback_async();
+        }
+        // Trim off-screen decoded covers periodically even while playback keeps `on_rest` from firing.
+        if self.art_trim_at.is_some_and(|at| self.now >= at) || self.now - self.art_trimmed_at >= 30.0 {
+            self.art.trim_idle();
+            self.art_trim_at = None;
+            self.art_trimmed_at = self.now;
         }
         changed
     }

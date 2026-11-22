@@ -193,11 +193,7 @@ impl Gfx {
         }
 
         if !self.layers.is_empty() {
-            let fx = self.fx.get_or_insert_with(|| {
-                let mut r = FxRenderer::new(device, f.format, FxOptions { dither: true });
-                r.add_format(device, wgpu::TextureFormat::Rgba16Float);
-                r
-            });
+            let fx = self.fx.get_or_insert_with(|| FxRenderer::new(device, f.format, FxOptions { dither: true }));
             fx.set_srgb_blend(srgb);
             fx.prepare_with_slots(device, queue, &FxFrame { viewport: [size.0, size.1], scale: 1.0, layers: &self.layers, backdrop: None, sources: &[] }, &self.placements);
         }
@@ -205,9 +201,9 @@ impl Gfx {
         let clear = f.rt.clear_color();
         let timing = self.prof.as_ref().is_some_and(|p| p.state == 0);
         let mut snap: Option<wgpu::TextureView> = None;
-        for i in 0..gpu.used() {
-            let (buf, data) = gpu.uniform(i);
-            f.write_buffer(buf, 0, bytemuck::bytes_of(data));
+        gpu.ensure_uniform_capacity(device, gpu.used() + 16);
+        if let Some((buf, bytes)) = gpu.uniform_upload() {
+            f.write_buffer(buf, 0, bytes);
         }
         f.ui.prepare(device, queue, &mut f.rt.text.atlas, &f.rt.instances, size);
         let jobs = &self.jobs;
@@ -243,7 +239,7 @@ impl Gfx {
                         return;
                     }
                     if let EffectPhase::Draw(pass) = phase
-                        && gpu.has_pipe(s.format, job.pipe)
+                        && gpu.ensure_layer_pipe(device, s.format, job.pipe)
                     {
                         let u = gpu.upload_in_layer(device, queue, job.u, s.origin, s.size);
                         let b = Binds { bd: None, pyr: None, tag: job.tag };
@@ -269,7 +265,12 @@ impl Gfx {
                         fx.blur_backdrop(device, queue, enc, bd, k);
                     }
                 }
-                EffectPhase::Draw(pass) => fx.draw_layer_in(pass, s.format, s.origin, k),
+                EffectPhase::Draw(pass) => {
+                    if s.in_layer && s.format != f.format {
+                        fx.add_format(device, s.format);
+                    }
+                    fx.draw_layer_in(pass, s.format, s.origin, k);
+                }
             }
         });
         gpu.finish(device, queue, pass_size);

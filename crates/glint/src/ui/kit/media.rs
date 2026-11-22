@@ -19,37 +19,46 @@ pub fn cover_border() -> Color {
     veil(if th::light() { 0.12 } else { 0.15 })
 }
 
-/// Cover art loaded at the single 300x300 size so every view shares one cached image.
-pub fn cover(s: &State, template: Option<&str>, pt: f32, radius: f32) -> El {
-    let base = el().w(pt).h(pt).radius(radius).clip_rounded(radius).fill(veil(0.06)).transition(Transition::none());
+fn cover_px(s: &State, template: Option<&str>, px: u32, pt: f32, radius: f32) -> El {
+    let base = el().w(pt).h(pt).radius(radius).fill(veil(0.06)).transition(Transition::none());
     let edge = el().absolute(0.0, 0.0).w_full().h_full().radius(radius).border(1.0, cover_border());
-    match State::cover_key(template) {
-        Some(key) => base.child(picture(s, &key, "img")).child(edge),
+    match State::cover_key_px(template, px) {
+        Some(key) => base.child(picture(s, &key, "img", [radius; 4])).child(edge),
         None => base.center().child(icon(&icons::NOTE, pt * 0.42).color(th::text3())).child(edge),
     }
 }
 
+/// Cover art loaded at 300x300 for cards, page headers, and medium tiles.
+pub fn cover(s: &State, template: Option<&str>, pt: f32, radius: f32) -> El {
+    cover_px(s, template, crate::art::COVER_MD, pt, radius)
+}
+
+/// Cover art loaded at 100x100 for track lists, queues, small avatars, and pins.
+pub fn cover_sm(s: &State, template: Option<&str>, pt: f32, radius: f32) -> El {
+    cover_px(s, template, crate::art::COVER_SM, pt, radius)
+}
+
 /// Borderless cover tile for collages framed by one outer border.
-pub fn cover_tile(s: &State, template: Option<&str>, pt: f32) -> El {
-    let base = el().w(pt).h(pt).fill(veil(0.06)).transition(Transition::none());
+pub fn cover_tile(s: &State, template: Option<&str>, pt: f32, corners: [f32; 4]) -> El {
+    let base = el().w(pt).h(pt).corners(corners).fill(veil(0.06)).transition(Transition::none());
     match State::cover_key(template) {
-        Some(key) => base.child(picture(s, &key, "img")),
+        Some(key) => base.child(picture(s, &key, "img", corners)),
         None => base.center().child(icon(&icons::NOTE, pt * 0.42).color(th::text3())),
     }
 }
 
-fn picture(s: &State, key: &str, name: &str) -> El {
+fn picture(s: &State, key: &str, name: &str, corners: [f32; 4]) -> El {
     let px = s.art.pixels(key);
-    el().key(format!("{name}-{key}")).absolute(0.0, 0.0).w_full().h_full().pixels_fit(&px, SurfaceFit::Fill).transition(Transition::none())
+    el().key(format!("{name}-{key}")).absolute(0.0, 0.0).w_full().h_full().corners(corners).pixels_fit(&px, SurfaceFit::Fill).transition(Transition::none())
 }
 
-pub fn picture_url(s: &State, url: &str) -> El {
-    picture(s, url, "pic")
+pub fn picture_url(s: &State, url: &str, radius: f32) -> El {
+    picture(s, url, "pic", [radius; 4])
 }
 
-/// Playing track cover with previous-cover hold while decoding and a zero-draw stage marker.
+/// Playing track cover at 300x300 (mini-player bar) with previous-cover hold while decoding.
 pub fn playing_cover(s: &State, t: &Track, pt: f32, radius: f32, track_key: &str) -> El {
-    let base = el().w(pt).h(pt).radius(radius).clip_rounded(radius).fill(veil(0.06)).transition(Transition::none());
+    let base = el().w(pt).h(pt).radius(radius).fill(veil(0.06)).transition(Transition::none());
     let edge = el().absolute(0.0, 0.0).w_full().h_full().radius(radius).border(1.0, cover_border());
     let Some(key) = State::cover_key(t.cover_template()) else {
         return base.center().child(icon(&icons::NOTE, pt * 0.42).color(th::text3())).child(edge);
@@ -59,15 +68,42 @@ pub fn playing_cover(s: &State, t: &Track, pt: f32, radius: f32, track_key: &str
         && let Some(prev) = s.palette_key.as_deref()
         && prev != key
     {
-        c = c.child(picture(s, prev, "img-prev"));
+        c = c.child(picture(s, prev, "img-prev", [radius; 4]));
     }
-    c.child(picture(s, &key, "img")).child(edge).child(el().key(track_key.to_owned()).absolute(0.0, 0.0).w_full().h_full().transition(Transition::none()).fx(fx::COVER_MARK))
+    c.child(picture(s, &key, "img", [radius; 4]))
+        .child(edge)
+        .child(el().key(track_key.to_owned()).absolute(0.0, 0.0).w_full().h_full().transition(Transition::none()).fx(fx::COVER_MARK))
+}
+
+/// Playing track hero cover at 600x600 (Now Playing), holding the cached 300x300 or previous
+/// cover underneath until the high-res image finishes decoding without mutating the tree mid-flight.
+pub fn playing_cover_lg(s: &State, t: &Track, pt: f32, radius: f32, track_key: &str, settled: bool) -> El {
+    let base = el().w(pt).h(pt).radius(radius).fill(veil(0.06)).transition(Transition::none());
+    let edge = el().absolute(0.0, 0.0).w_full().h_full().radius(radius).border(1.0, cover_border());
+    let Some(key_lg) = State::cover_key_px(t.cover_template(), crate::art::COVER_LG) else {
+        return base.center().child(icon(&icons::NOTE, pt * 0.42).color(th::text3())).child(edge);
+    };
+    let mut c = base;
+    let lg_ready = s.art.ready(&key_lg);
+    if !lg_ready || !settled {
+        if !lg_ready && settled {
+            s.art.watch(&key_lg);
+        }
+        if let Some(key_md) = State::cover_key(t.cover_template())
+            && s.art.ready(&key_md)
+        {
+            c = c.child(picture(s, &key_md, "img-md", [radius; 4]));
+        } else if let Some(prev) = s.palette_key.as_deref() {
+            c = c.child(picture(s, prev, "img-prev", [radius; 4]));
+        }
+    }
+    c.child(picture(s, &key_lg, "img", [radius; 4]))
+        .child(edge)
+        .child(el().key(track_key.to_owned()).absolute(0.0, 0.0).w_full().h_full().transition(Transition::none()).fx(fx::COVER_MARK))
 }
 
 pub fn roll(name: &str, id: &str, line: El) -> El {
-    let enter = Transition::opacity().combined(Transition::offset(0.0, 9.0));
-    let leave = Transition::opacity().combined(Transition::offset(0.0, -7.0));
-    el().key(format!("{name}-{id}")).w_full().min_w(0.0).transition(Transition::asymmetric(enter, leave).springs(th::RISE)).child(line)
+    el().key(format!("{name}-{id}")).w_full().min_w(0.0).transition(Transition::asymmetric(Transition::offset(0.0, 8.0), Transition::none()).springs(th::RISE)).child(line)
 }
 
 pub fn track_title(s: &State, t: &Track, key: &'static str, style: TextStyle, width: f32) -> El {
@@ -127,7 +163,6 @@ pub fn wave_card(s: &State, key: &str, caption: &str, name: &str, station: Stati
     let on = playing && s.player.playing;
     let seed = (key.bytes().fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(u32::from(b))) % 997) as f32 + 0.37;
     let hovered = !under() && s.wave_hover.as_deref() == Some(key);
-    let [hue, sat, light] = s.palette.wave;
     let owner = key.to_owned();
     let wave_name = name.to_owned();
     let go = col()
@@ -137,10 +172,11 @@ pub fn wave_card(s: &State, key: &str, caption: &str, name: &str, station: Stati
         .grow(1.0)
         .min_w(0.0)
         .h_full()
-        .pl(16.0)
-        .pr(if more.is_some() { 12.0 } else { 20.0 })
-        .gap(2.0)
+        .pl(14.0)
+        .pr(if more.is_some() { 10.0 } else { 18.0 })
+        .gap(1.0)
         .justify_center()
+        .corners(if more.is_some() { [12.0, 0.0, 0.0, 12.0] } else { [12.0; 4] })
         .cursor(Cursor::Pointer)
         .hov(veil(0.04))
         .press(veil(0.10))
@@ -155,18 +191,17 @@ pub fn wave_card(s: &State, key: &str, caption: &str, name: &str, station: Stati
         .child(label(caption.to_owned(), th::SMALL, th::text2()).truncate())
         .child(
             row()
-                .gap(7.0)
+                .gap(6.0)
                 .items_center()
                 .min_w(0.0)
-                .child(icon(if on { &icons::PAUSE } else { &icons::PLAY }, 24.0).color(th::text()).ml(-3.0).mt(-3.0))
+                .child(icon(if on { &icons::PAUSE } else { &icons::PLAY }, 20.0).color(th::text()).ml(-2.0).mt(-1.0))
                 .child(label(name.to_owned(), th::H3, th::text()).truncate().min_w(0.0)),
         );
     let mut c = row()
         .key(key.to_owned())
-        .h(66.0)
+        .h(58.0)
         .items_center()
-        .radius(14.0)
-        .clip_rounded(14.0)
+        .radius(12.0)
         .transition(Transition::none())
         .on_hover_change(move |s: &mut State, over: bool, _tx: &mut Tx| {
             if over {
@@ -175,28 +210,29 @@ pub fn wave_card(s: &State, key: &str, caption: &str, name: &str, station: Stati
                 s.wave_hover = None;
             }
         })
-        .child(blobs::ribbon(format!("{key}-ribbon"), seed, hue, sat, light, hovered, playing))
+        .child(blobs::ribbon(format!("{key}-ribbon"), seed, s.palette.wave, hovered, playing, 12.0))
         .child(go);
     if let Some(choices) = more {
         let anchor = format!("{key}-more");
         let open = s.popover_open && matches!(&s.popover, Some(Popover::Waves { anchor: a, .. }) if *a == anchor);
         let a2 = anchor.clone();
-        c = c.child(el().w(1.0).h(28.0).fill(th::text().alpha(0.18))).child(
+        c = c.child(el().w(1.0).h(24.0).fill(th::text().alpha(0.18))).child(
             row()
                 .key(anchor)
                 .role("button")
                 .label(S::MoreWaves.get(s.lang))
                 .help(S::MoreWaves.get(s.lang))
                 .checked(open)
-                .w(46.0)
+                .w(44.0)
                 .h_full()
+                .corners([0.0, 12.0, 12.0, 0.0])
                 .center()
                 .cursor(Cursor::Pointer)
                 .hov(veil(0.06))
                 .press(veil(0.12))
                 .transition(Transition::none())
                 .on_press(move |s: &mut State| s.open_popover(Popover::Waves { choices: choices.clone(), anchor: a2.clone() }))
-                .child(icon(&icons::CHEVRON_DOWN, 18.0).color(th::text()).rotate(if open { std::f32::consts::PI } else { 0.0 })),
+                .child(icon(&icons::CHEVRON_DOWN, 17.0).color(th::text()).rotate(if open { std::f32::consts::PI } else { 0.0 })),
         );
     }
     match w {
@@ -240,7 +276,6 @@ pub fn wave_button(s: &State, key: &str, caption: &str, name: &str, station: Sta
     let on = playing && s.player.playing;
     let seed = (key.bytes().fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(u32::from(b))) % 997) as f32 + 0.37;
     let hovered = !under() && s.wave_hover.as_deref() == Some(key);
-    let [hue, sat, light] = s.palette.wave;
     let r = ctl_radius(size);
     let owner = key.to_owned();
     let wave_name = name.to_owned();
@@ -254,7 +289,6 @@ pub fn wave_button(s: &State, key: &str, caption: &str, name: &str, station: Sta
         .w(size)
         .h(size)
         .radius(r)
-        .clip_rounded(r)
         .center()
         .cursor(Cursor::Pointer)
         .press_scale(th::PRESS)
@@ -273,7 +307,7 @@ pub fn wave_button(s: &State, key: &str, caption: &str, name: &str, station: Sta
                 s.start_station(&station, &wave_name);
             }
         })
-        .child(blobs::ribbon(format!("{key}-ribbon"), seed, hue, sat, light, hovered, playing));
+        .child(blobs::ribbon(format!("{key}-ribbon"), seed, s.palette.wave, hovered, playing, r));
     b = b.child(if on { icon(&icons::PAUSE, (size * 0.38).round()).color(th::text()) } else { wave_glyph((size * 0.60).round(), th::text()) });
     let edge = if playing { th::text().alpha(0.55) } else { veil(0.14) };
     b.child(el().absolute(0.0, 0.0).w_full().h_full().radius(r).border(1.0, edge))
@@ -281,7 +315,7 @@ pub fn wave_button(s: &State, key: &str, caption: &str, name: &str, station: Sta
 
 fn avatar(s: &State, a: &Artist, size: f32) -> El {
     if a.cover_template().is_some() {
-        return cover(s, a.cover_template(), size, size * 0.5);
+        return cover_sm(s, a.cover_template(), size, size * 0.5);
     }
     let initial = a.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
     row().w(size).h(size).radius(size * 0.5).center().fill(veil(0.10)).child(label(initial, th::LABEL, th::text2()))

@@ -175,7 +175,14 @@ fn lyric_line(i: usize, line: &LyricLine, e: f32, active: bool, ctx: &LineCtx) -
     if timed && active {
         text = text.spans(sung_spans(&line.words, ctx.pos_ms));
     }
-    let mut block = col().key(format!("ly-row-{i}")).w_full().gap(6.0).motion(rune::Spring::NONE).child(text.motion(rune::Spring::NONE));
+    let mut block = col()
+        .key(format!("ly-row-{i}"))
+        .w_full()
+        .gap(6.0)
+        .animated_changes()
+        .transition(rune::Transition::none())
+        .motion(rune::Spring::NONE)
+        .child(text.motion(rune::Spring::NONE));
     let target_scale = if !ctx.synced || active { 1.0 } else { 0.92 };
     let scale_anim: rune::Anim = if ctx.reduce || ctx.resizing { rune::Anim::INSTANT } else { rune::Spring::new(0.28, 0.0).into() };
     block = block.origin(ox, 0.5).scale(target_scale).scale_motion(scale_anim);

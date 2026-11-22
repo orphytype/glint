@@ -325,13 +325,14 @@ pub fn sheet(s: &State, cx: &Cx<State>, w: f32, h: f32) -> El {
         let e = arrival(p, 0.5 + 0.06 * i.min(5) as f32);
         stack = stack.child(el().key(format!("sheet-sec-{i}-of-{n}")).w(right_w).opacity(e).offset(0.0, (1.0 - e) * 18.0).transition(Transition::none()).child(sec));
     }
+    let scroll_key = format!("sheet-scroll-{}", s.sheet_seq);
+    let scroll_h = (ch - right_top).max(80.0);
     let scroll = col()
-        .key(format!("sheet-scroll-{}", s.sheet_seq))
+        .key(scroll_key)
         .absolute(right_x, right_top)
         .w(right_w + PAD)
-        .h(ch - right_top)
+        .h(scroll_h)
         .scroll(rune::ScrollSpec { stick_bottom: false })
-        .scroll_edge_fade(22.0)
         .child(col().w(right_w).pt(2.0).pb(PAD).child(stack));
 
     let buttons_in = arrival(p, 0.55);
@@ -355,15 +356,13 @@ pub fn sheet(s: &State, cx: &Cx<State>, w: f32, h: f32) -> El {
     let face_a = if has_from { smooth(p / 0.3) } else { 1.0 };
     let melt = cover_key.as_deref().and_then(|k| s.art.soft(k)).map(|px| {
         let (strength, wash) = if th::light() { (0.5, 0.64) } else { (0.6, 0.6) };
-        el().absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
-            .child(el().absolute(0.0, 0.0).w_full().h_full().opacity(strength).pixels_fit(&px, rune::SurfaceFit::Fill))
-            .child(el().absolute(0.0, 0.0).w_full().h_full().linear_gradient(std::f32::consts::PI, [(0.0, th::pop().alpha(wash * 0.72)), (1.0, th::pop().alpha(wash))]))
+        el().absolute(0.0, 0.0).w_full().h_full().child(el().absolute(0.0, 0.0).w_full().h_full().radius(radius).opacity(strength).pixels_fit(&px, rune::SurfaceFit::Fill)).child(
+            el().absolute(0.0, 0.0).w_full().h_full().radius(radius).linear_gradient(std::f32::consts::PI, [(0.0, th::pop().alpha(wash * 0.72)), (1.0, th::pop().alpha(wash))]),
+        )
     });
     let glow_at = [((cov[0] + cov[2] * 0.5 - rect[0]) / rect[2]).clamp(0.0, 1.0), ((cov[1] + cov[3] * 0.5 - rect[1]) / rect[3]).clamp(0.0, 1.0)];
-    let face = el().key("sheet-face").absolute(0.0, 0.0).w_full().h_full().fill(th::pop()).opacity(face_a).transition(Transition::none()).children(melt).child(
-        el().absolute(0.0, 0.0).w_full().h_full().radial_gradient(
+    let face = el().key("sheet-face").absolute(0.0, 0.0).w_full().h_full().radius(radius).fill(th::pop()).opacity(face_a).transition(Transition::none()).children(melt).child(
+        el().absolute(0.0, 0.0).w_full().h_full().radius(radius).radial_gradient(
             glow_at,
             rect[2].max(rect[3]) * 0.6,
             [(0.0, glow.alpha(if th::light() { 0.12 } else { 0.2 })), (1.0, glow.alpha(0.0))],
@@ -382,8 +381,7 @@ pub fn sheet(s: &State, cx: &Cx<State>, w: f32, h: f32) -> El {
     };
     let pic = pull_handle(pic.help(S::GoToAlbum.get(lang)), ch, Some(tap));
 
-    let card_shadow = (if th::light() { 0.18 } else { 0.5 }) * face_a * (1.0 - pull);
-    let card = el()
+    let mut card = el()
         .key("sheet-panel")
         .role("dialog")
         .label(head.kind.get(lang))
@@ -391,17 +389,18 @@ pub fn sheet(s: &State, cx: &Cx<State>, w: f32, h: f32) -> El {
         .w(rect[2])
         .h(rect[3])
         .radius(radius)
-        .clip_rounded(radius)
         .scale(1.0 - 0.1 * pull)
         .opacity(if has_from { 1.0 } else { a })
         .transition(Transition::none())
         .motion(if p >= 0.999 && drag == 0.0 { th::SLIDE } else { rune::Spring::NONE })
         .on_press(|_s: &mut State| {})
-        .border(1.0, th::veil(0.08 * face_a))
-        .shadow(24.0, 64.0, th::rgba(0x000000, card_shadow))
         .child(face)
         .child(content)
-        .child(pic);
+        .child(pic)
+        .child(el().absolute(0.0, 0.0).w_full().h_full().radius(radius).border(2.0, th::veil(0.13 * face_a)).transition(Transition::none()));
+    if p < 0.999 {
+        card = card.clip_rounded(radius);
+    }
     let card = if s.sheet_open { card.modal(true, |s: &mut State| s.sheet_open = false) } else { card };
     layer.child(card)
 }

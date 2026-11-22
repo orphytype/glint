@@ -331,11 +331,7 @@ fn platform_system_info() -> (String, String, u64, String) {
         .unwrap_or_else(|| "unknown".into());
     let ram_mb = fs::read_to_string("/proc/meminfo")
         .ok()
-        .and_then(|s| {
-            s.lines()
-                .find_map(|l| l.strip_prefix("MemTotal:"))
-                .and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok())
-        })
+        .and_then(|s| s.lines().find_map(|l| l.strip_prefix("MemTotal:")).and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok()))
         .map_or(0, |kb| kb / 1024);
     (os, cpu, ram_mb, "unknown".into())
 }
@@ -344,11 +340,7 @@ fn platform_system_info() -> (String, String, u64, String) {
 fn sample_process_memory() -> String {
     let rss_kb = fs::read_to_string("/proc/self/status")
         .ok()
-        .and_then(|s| {
-            s.lines()
-                .find_map(|l| l.strip_prefix("VmRSS:"))
-                .and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok())
-        })
+        .and_then(|s| s.lines().find_map(|l| l.strip_prefix("VmRSS:")).and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok()))
         .unwrap_or(0);
     format!("rss={:.1}MiB", rss_kb as f64 / 1024.0)
 }

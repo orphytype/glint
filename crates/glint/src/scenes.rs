@@ -75,6 +75,7 @@ pub const SCENES: &[(&str, Scene)] = &[
     ("wave-tune-ru", wave_tune_ru),
     ("update-popover", update_popover),
     ("dock-menu", dock_menu),
+    ("download-quality", download_quality),
     ("actions", actions),
     ("np-waves", np_waves),
     ("np-look", np_look),
@@ -517,10 +518,10 @@ fn update_popover(s: &mut State) {
     home_ru(s);
     s.update_method = glint_update::Method::WindowsInstaller;
     s.update = crate::update::Ui::Available(glint_update::Release {
-        version: "0.9.1".into(),
-        page_url: "https://github.com/orphytype/glint/releases/tag/v0.9.1".into(),
-        notes: "Cleaner headers, track lists and Now Playing controls.\n• Redesigned My Wave tuning menu and pre-lyrics animation.\n• Fixed idle GPU load, window restore freeze, and reduced memory use.\n• Added local anonymized diagnostic logs up to 1 MB in Settings.".into(),
-        asset: Some(glint_update::Asset { name: "Glint-0.9.1-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
+        version: "0.9.2".into(),
+        page_url: "https://github.com/orphytype/glint/releases/tag/v0.9.2".into(),
+        notes: "Audio quality gets a pill in the mini player and a picker for batch downloads.\n• The quality menu shows each tier with its bitrate.\n• Covers load at the size each view needs, with the large Now Playing cover showing the cached one first.".into(),
+        asset: Some(glint_update::Asset { name: "Glint-0.9.2-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
     });
     s.open_popover(crate::app::Popover::Update { anchor: "update-pill".into() });
     s.pop.t = 1.0;
@@ -531,6 +532,13 @@ fn dock_menu(s: &mut State) {
     home_ru(s);
     s.open_player_menu(rune::PopupAnchor::Key("bar-more".into()));
     s.tmenu.t = 1.0;
+}
+
+/// The batch download dialog with its quality picker.
+fn download_quality(s: &mut State) {
+    let c = signed_in(s);
+    s.page = Page::Library;
+    s.download_confirm = Some(c.liked_tracks());
 }
 
 /// What can be done with an album (its "..." menu).
@@ -665,10 +673,10 @@ fn settings_update(s: &mut State) {
     settings(s);
     s.update_method = glint_update::Method::WindowsInstaller;
     s.update = crate::update::Ui::Available(glint_update::Release {
-        version: "0.9.1".into(),
-        page_url: "https://github.com/orphytype/glint/releases/tag/v0.9.1".into(),
-        notes: "Cleaner headers, track lists and Now Playing controls.\n• Redesigned My Wave tuning menu and pre-lyrics animation.".into(),
-        asset: Some(glint_update::Asset { name: "Glint-0.9.1-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
+        version: "0.9.2".into(),
+        page_url: "https://github.com/orphytype/glint/releases/tag/v0.9.2".into(),
+        notes: "Audio quality gets a pill in the mini player and a picker for batch downloads.\n• The quality menu shows each tier with its bitrate.".into(),
+        asset: Some(glint_update::Asset { name: "Glint-0.9.2-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
     });
 }
 

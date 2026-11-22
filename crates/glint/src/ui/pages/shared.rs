@@ -43,7 +43,6 @@ pub(super) fn hscroll(key: String, cards: Vec<El>) -> El {
             .gap(CARD_GAP)
             .py(6.0)
             .scroll_x()
-            .scroll_edge_fade(30.0)
             .on_scroll_offset(move |p: rune::ScrollPos| {
                 ROWS.with_borrow_mut(|m| {
                     m.insert(watch.clone(), [p.offset[0], p.max[0], p.viewport[0]]);
@@ -154,10 +153,8 @@ fn media_card(s: &State, spec: CardSpec<'_>, play: OnPlay, on: impl Fn(&mut Stat
                 .h(40.0)
                 .radius(20.0)
                 .center()
-                .fill(th::rgb(0xffffff))
-                .shadow(4.0, 14.0, th::rgba(0x000000, 0.30))
-                .gop(0.0, 1.0)
-                .child(icon(&icons::PLAY, 17.0).color(th::rgb(0x0a0a0a)).ml(1.0)),
+                .child(el().absolute(0.0, 0.0).w_full().h_full().radius(20.0).fill(th::rgb(0xffffff)).gop(0.0, 1.0))
+                .child(icon(&icons::PLAY, 17.0).color(th::rgb(0x0a0a0a)).ml(1.0).gop(0.0, 1.0)),
         );
     }
     let reduce = s.settings.reduce_motion;
@@ -452,7 +449,7 @@ pub(super) fn name_on(name: &str, family: Family, side: f32, color: rune::Color)
         .into_iter()
         .map(|t| {
             let (w, h) = rune::text::measure(&t, &[], th::name_on(probe), None);
-            let size = (probe * (bw / w.max(1.0)).min(bh / h.max(1.0))).floor().clamp(12.0, 22.0);
+            let size = (probe * (bw / w.max(1.0)).min(bh / h.max(1.0))).floor().clamp(11.0, 22.0);
             (t, size)
         })
         .fold((name.to_owned(), 0.0f32), |best, o| if o.1 > best.1 + 1.0 { o } else { best });

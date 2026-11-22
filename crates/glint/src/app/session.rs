@@ -243,6 +243,8 @@ impl State {
         self.page = Page::Home;
         self.np_open = false;
         self.launch_play = false;
+        self.track_max_quality.clear();
+        self.max_quality_jobs.clear();
     }
 
     pub fn sign_out(&mut self) {

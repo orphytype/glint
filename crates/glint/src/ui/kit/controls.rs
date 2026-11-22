@@ -1,6 +1,6 @@
 //! Buttons, tabs, sliders, menu rows, and skeleton placeholders.
 
-use rune::{Color, Cursor, Drag, El, Icon, Phase, Transition, Tx, el, icon, row, text};
+use rune::{Color, Cursor, El, Icon, Transition, el, icon, row, text};
 
 use super::{Hover as _, caps, label};
 use crate::app::State;
@@ -20,20 +20,38 @@ pub fn ctl_radius(h: f32) -> f32 {
 }
 
 pub fn ibtn(key: impl Into<String>, ic: &'static Icon, glyph: f32, size: f32, color: Color, name: &str) -> El {
-    row()
+    ibtn_with(key, ic, glyph, size, color, name, false)
+}
+
+/// Icon button whose glyph fades in with the surrounding hover group without isolating the row.
+pub(super) fn ibtn_gop(key: impl Into<String>, ic: &'static Icon, glyph: f32, size: f32, color: Color, name: &str) -> El {
+    ibtn_with(key, ic, glyph, size, color, name, true)
+}
+
+fn ibtn_with(key: impl Into<String>, ic: &'static Icon, glyph: f32, size: f32, color: Color, name: &str, hover_only: bool) -> El {
+    let mut g = icon(ic, glyph).color(color);
+    let r = ctl_radius(size);
+    let mut b = row()
         .key(key)
         .role("button")
         .label(name)
         .help(name)
         .w(size)
         .h(size)
-        .radius(ctl_radius(size))
+        .radius(r)
         .center()
         .cursor(Cursor::Pointer)
-        .hov(veil(0.07))
         .press(veil(0.12))
-        .press_scale(th::PRESS)
-        .child(icon(ic, glyph).color(color))
+        .press_scale(th::PRESS);
+    if hover_only {
+        g = g.gop(0.0, 1.0);
+        // Put `.hov` on a leaf sibling so the button doesn't become a hover group owner and hide
+        // the row's hover from the glyph.
+        b = b.child(el().key("hov").absolute(0.0, 0.0).w_full().h_full().radius(r).hov(veil(0.07)));
+    } else {
+        b = b.hov(veil(0.07));
+    }
+    b.child(g)
 }
 
 pub(super) fn quiet_halo(glyph: f32) -> El {
@@ -74,10 +92,11 @@ pub fn skip_btn(s: &State, forward: bool, key: &str, ic: &'static Icon, glyph: f
     quiet_btn(key.to_owned(), ic, glyph, size, color, name).on_press(move |s: &mut State| if forward { s.next() } else { s.prev() })
 }
 
-pub(super) fn swap_glyph(key: String, g: El, pops: bool) -> El {
+pub(super) fn swap_glyph(key: String, g: El, box_size: f32, glyph_size: f32, pops: bool) -> El {
     let pop = rune::SpringPair::new(rune::Spring::new(0.34, 0.3), rune::Spring::new(0.1, 0.0));
     let enter = if pops { Transition::scale(0.6).allow_small_scale().combined(Transition::opacity()) } else { Transition::opacity() };
-    el().key(key).absolute(0.0, 0.0).w_full().h_full().center().transition(Transition::asymmetric(enter, Transition::opacity()).springs(pop)).child(g)
+    let off = (box_size - glyph_size) * 0.5;
+    g.key(key).absolute(off, off).animated_changes().transition(Transition::asymmetric(enter, Transition::opacity()).springs(pop))
 }
 
 pub fn np_play_btn(s: &State, size: f32, glyph: f32) -> El {
@@ -89,14 +108,15 @@ pub fn bar_play_btn(s: &State, size: f32, glyph: f32) -> El {
 }
 
 fn play_btn_with(s: &State, size: f32, glyph: f32, play: &'static Icon, pause: &'static Icon, key: &str, quiet: bool) -> El {
-    let (g, state) = if s.player.loading {
-        (icon(&icons::SPINNER, glyph * 0.8).color(th::text()).looping(rune::LoopSpec::rotation(0.9)), "load")
+    let (g, glyph_side, state) = if s.player.loading {
+        let side = glyph * 0.8;
+        (icon(&icons::SPINNER, side).color(th::text()).looping(rune::LoopSpec::rotation(0.9)), side, "load")
     } else if s.player.playing {
-        (icon(pause, glyph).color(th::text()), "pause")
+        (icon(pause, glyph).color(th::text()), glyph, "pause")
     } else {
-        (icon(play, glyph).color(th::text()), "play")
+        (icon(play, glyph).color(th::text()), glyph, "play")
     };
-    let g = swap_glyph(format!("{key}-{}-{state}", size as u32), g, true);
+    let g = swap_glyph(format!("{key}-{}-{state}", size as u32), g, size, glyph_side, true);
     let label_str = if s.player.playing { S::Pause.get(s.lang) } else { S::Play.get(s.lang) };
     let b = row().key(format!("{key}-{}", size as u32)).role("button").label(label_str).help(label_str).w(size).h(size).radius(size * 0.5).center().cursor(Cursor::Pointer);
     let b = if quiet { b.hov_group().child(quiet_halo(glyph)) } else { b.hov(veil(0.08)).press(veil(0.14)) };
@@ -115,7 +135,7 @@ pub enum Weight {
 
 fn surface_pill(base: El, weight: Weight, w: f32, h: f32) -> El {
     let radius = ctl_radius(h);
-    let b = base.w(w).h(h).radius(radius).clip_rounded(radius).cursor(Cursor::Pointer).press_scale(th::PRESS).hov_group();
+    let b = base.w(w).h(h).radius(radius).cursor(Cursor::Pointer).press_scale(th::PRESS).hov_group();
     let (fill, edge, lift) = match weight {
         Weight::Solid => (th::solid(), None, th::on_solid().alpha(0.10)),
         Weight::Soft => (veil(0.05), Some(veil(0.08)), veil(0.05)),
@@ -178,6 +198,20 @@ pub fn btn_small(key: impl Into<String>, name: &str, ic: Option<&'static Icon>) 
     r.child(text(name.to_owned()).font(th::BODY_M).color(th::text()))
 }
 
+/// Disabled companion to `btn_small` styled with muted colors instead of group opacity.
+pub fn btn_small_disabled(key: impl Into<String>, name: &str, ic: Option<&'static Icon>) -> El {
+    let tw = text::measure(name, &[], th::BODY_M, None).0.ceil();
+    let w = if ic.is_some() { 10.0 + 15.0 + 7.0 + tw + 12.0 } else { 12.0 + tw + 12.0 };
+    let radius = ctl_radius(32.0);
+    let ink = th::text().alpha(0.42);
+    let mut r = row().key(key).role("button").label(name).disabled(true).w(w + 2.0).h(32.0).gap(7.0).center().radius(radius).fill(veil(0.025)).border(1.0, veil(0.045));
+    r = if ic.is_some() { r.pl(10.0).pr(12.0) } else { r.px(12.0) };
+    if let Some(i) = ic {
+        r = r.child(icon(i, 15.0).color(ink));
+    }
+    r.child(text(name.to_owned()).font(th::BODY_M).color(ink))
+}
+
 pub fn btn_select(key: impl Into<String>, current: &str, w: f32, open: bool) -> El {
     surface_pill(row().key(key).role("button").label(current).pl(12.0).pr(9.0).gap(8.0).items_center(), Weight::Soft, w, 32.0)
         .child(text(current.to_owned()).font(th::BODY_M).color(th::text()).truncate().grow(1.0).min_w(0.0))
@@ -202,7 +236,6 @@ pub fn pill_icon(key: impl Into<String>, weight: Weight, ic: &'static Icon, widt
         .w(width)
         .h(BTN_H)
         .radius(radius)
-        .clip_rounded(radius)
         .center()
         .cursor(Cursor::Pointer)
         .press_scale(th::PRESS)
@@ -278,9 +311,8 @@ pub fn plus_badge(lang: Lang) -> El {
 }
 
 pub fn tab_body(key: impl Into<String>, body: El) -> El {
-    let enter = Transition::opacity().combined(Transition::offset(0.0, 10.0));
     let springs = rune::SpringPair::new(rune::Spring::new(0.26, 0.0), rune::Spring::new(0.07, 0.0));
-    el().key(key).w_full().transition(Transition::asymmetric(enter, Transition::opacity()).springs(springs)).enter_delay(0.07).child(body)
+    el().key(key).w_full().transition(Transition::asymmetric(Transition::offset(0.0, 8.0), Transition::none()).springs(springs)).child(body)
 }
 
 pub fn tab_pill_w(name: &str, count: Option<usize>) -> f32 {
@@ -322,7 +354,7 @@ pub fn tab_track(key: impl Into<String>, tabs: Vec<(El, f32)>, at: usize) -> El 
     let total = 8.0 + tabs.iter().map(|(_, w)| *w).sum::<f32>() + 2.0 * tabs.len().saturating_sub(1) as f32;
     let mut plate = el().key(format!("{key}-plate")).absolute(x, 4.0).w(pw).h(TAB_PILL_H).radius(7.0).fill(if th::light() { th::pop() } else { veil(0.10) }).motion(TAB_SPRING);
     if th::light() {
-        plate = plate.shadow(1.0, 3.0, th::rgba(0x000000, 0.10));
+        plate = plate.border(1.0, veil(0.10));
     }
     let items = row().absolute(0.0, 0.0).h(36.0).px(4.0).gap(2.0).items_center().children(tabs.into_iter().map(|(e, _)| e));
     el().key(key).w(total).h(36.0).radius(10.0).fill(veil(0.04)).border(1.0, veil(0.07)).child(plate).child(items)
@@ -346,23 +378,4 @@ pub fn menu_row(key: impl Into<String>, ic: &'static Icon, text: &str, on: bool)
         .press(veil(0.10))
         .child(icon(ic, MENU_GLYPH).color(if on { th::text() } else { th::text2() }))
         .child(label(text.to_owned(), th::BODY, th::text()).truncate().min_w(0.0))
-}
-
-pub fn slider(key: impl Into<String>, fill: &rune::Live<[f32; 4]>, height: f32, color: Color, on: impl Fn(&mut State, f32, bool) + 'static) -> El {
-    let key = key.into();
-    let hit_h = height + 18.0;
-    let drag = move |s: &mut State, d: &mut Drag, _tx: &mut Tx| {
-        let f = if d.w > 0.0 { (d.x / d.w).clamp(0.0, 1.0) } else { 0.0 };
-        on(s, f, d.phase == Phase::Up);
-    };
-    el().key(key.clone()).role("slider").w_full().h(hit_h).cursor(Cursor::Pointer).on_drag(drag).child(
-        el().key(format!("{key}-track"))
-            .absolute(0.0, (hit_h - height) * 0.5)
-            .w_full()
-            .h(height)
-            .radius(height * 0.5)
-            .fill(veil(0.16))
-            .clip_rounded(height * 0.5)
-            .child(el().h(height).radius(height * 0.5).fill(color).live_rect(fill)),
-    )
 }

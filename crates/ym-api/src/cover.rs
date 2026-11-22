@@ -30,3 +30,8 @@ pub fn is_trusted_host(url: &str) -> bool {
     let host = host.split(':').next().unwrap_or("");
     host == "yandex.net" || host.ends_with(".yandex.net") || host.ends_with(".yandex.ru") || host.ends_with(".yandex.com") || host.ends_with(".yastatic.net")
 }
+
+/// Hosts allowed for album/track artwork: Yandex CDNs plus FkCensorData cover mirrors.
+pub fn is_trusted_image_host(url: &str) -> bool {
+    is_trusted_host(url) || url.starts_with("https://raw.githubusercontent.com/fcensor-data/") || url.starts_with("https://t2.genius.com/unsafe/")
+}

@@ -240,6 +240,7 @@ strings! {
     Download => "Download", "Скачать";
     DownloadAll => "Download all", "Скачать всё";
     DownloadConfirm => "Download all tracks?", "Скачать все треки?";
+    DownloadQuality => "Download quality", "Качество скачивания";
     DeleteDownload => "Delete download", "Удалить скачанное";
     DeleteDownloadConfirm => "Delete downloaded track?", "Удалить скачанный трек?";
     DeleteDownloadNote => "The downloaded file and its offline data will be removed.", "Скачанный файл и офлайн-данные будут удалены.";
@@ -302,7 +303,7 @@ strings! {
     SizeSmall => "Small", "Мелкий";
     SizeMedium => "Medium", "Средний";
     SizeLarge => "Large", "Крупный";
-    SearchCollection => "Search the collection", "Поиск в коллекции";
+    SearchCollection => "Search", "Поиск";
     Collection => "Collection", "Коллекция";
     Resume => "Resume", "Продолжить";
     CopyTitle => "Copy title", "Скопировать название";
@@ -360,15 +361,15 @@ strings! {
     WaveLook => "Look", "Вид";
     WaveForm => "Shape", "Форма";
     WavePrint => "Print", "Печать";
-    FormLiquid => "Liquid", "Капля";
+    FormLiquid => "Drop", "Капля";
     FormFlower => "Flower", "Цветок";
     FormPinwheel => "Pinwheel", "Вертушка";
     FormCloud => "Cloud", "Облако";
-    RerollShapes => "Other shapes", "Другие формы";
     PrintSmooth => "Smooth", "Гладко";
     PrintDither => "Dither", "Дизеринг";
     PrintDots => "Dots", "Точки";
     PrintLines => "Lines", "Линии";
+    RerollShapes => "New shapes", "Другие формы";
     // now playing
     NowPlaying => "Now playing", "Сейчас играет";
     NoLyrics => "No lyrics for this track", "Для этого трека нет текста";
@@ -415,11 +416,10 @@ strings! {
     QualitySaver => "Saver", "Экономия";
     QualityBalanced => "Balanced", "Баланс";
     QualityBest => "Best", "Лучшее";
-    QualityLossless => "Lossless", "Без потерь";
-    QualityShortSaver => "Eco", "Эконом";
-    QualityShortBalanced => "HQ", "Баланс";
-    QualityShortBest => "Max", "Макс.";
-    QualityShortLossless => "FLAC", "FLAC";
+    QualityMax => "Max", "Макс.";
+    QualityNow => "Playing", "Сейчас";
+    QualityMaxForTrack => "Max for track", "Максимум для трека";
+    Kbps => "kbps", "кбит/с";
     PlayerLayout => "Player layout", "Вид плеера";
     PlayerLayoutAuto => "Automatic", "Автоматически";
     PlayerLayoutCompact => "Compact", "Компактный";
@@ -527,7 +527,7 @@ strings! {
     SignedInAs => "Signed in with Yandex ID", "Вход через Яндекс ID";
     AccentNote => "The first one takes its colour from the cover.", "Первый берёт цвет обложки.";
     ReduceMotionNote => "Pages fade in instead of sliding. The lyrics, the background and the shapes on Home stay still.", "Страницы появляются без сдвигов и пружин. Текст, фон и фигуры на главной не двигаются.";
-    QualityNote => "Higher quality uses more traffic. Lossless plays FLAC where a track has it.", "Чем выше качество, тем больше трафика. «Без потерь» играет FLAC, если он есть у трека.";
+    QualityNote => "Higher quality uses more traffic. Best plays FLAC when a track has it, otherwise the highest available bitrate.", "Чем выше качество, тем больше трафика. «Лучшее» включает FLAC, если он есть у трека, иначе максимальный доступный битрейт.";
     PlayerLayoutNote => "Compact leaves more room for the lyrics and the queue. Large cover fills the window. Automatic switches to compact in a low window.", "В «Компактном» больше места тексту и очереди. «Крупная обложка» растягивает обложку на всё окно. «Автоматически» включает компактный вид в невысоком окне.";
     SetSound => "Sound", "Звук";
     SetPlayerScreen => "Now playing screen", "Экран плеера";

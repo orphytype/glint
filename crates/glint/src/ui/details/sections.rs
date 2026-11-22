@@ -103,7 +103,7 @@ fn release(s: &State, t: &Track, width: f32) -> Option<El> {
         sub.push(format!("{n} {}", S::Tracks.get(lang).to_lowercase()));
     }
     let page = Page::Album(al.id.clone());
-    let pic = el().w(52.0).h(52.0).radius(10.0).child(kit::cover(s, al.cover_template().or(t.cover_template()), 52.0, 10.0));
+    let pic = el().w(52.0).h(52.0).radius(10.0).child(kit::cover_sm(s, al.cover_template().or(t.cover_template()), 52.0, 10.0));
     let r = lead_row("sheet-release", pic, al.title.clone(), Some(sub.join(" · ")), false, width).on_press(move |s: &mut State| go_to(s, page.clone()));
     Some(section("sheet-release-sec", S::FromRelease.get(lang), r))
 }
@@ -201,7 +201,7 @@ fn similar(s: &State, width: f32) -> Option<El> {
                 .hov_group()
                 .press_scale(th::PRESS)
                 .on_press(move |s: &mut State| go_to(s, Page::Artist(id.clone())))
-                .child(el().w(SIM_PIC).h(SIM_PIC).radius(SIM_PIC * 0.5).gop(0.88, 1.0).child(kit::cover(s, artist.cover_template(), SIM_PIC, SIM_PIC * 0.5)))
+                .child(kit::cover(s, artist.cover_template(), SIM_PIC, SIM_PIC * 0.5))
                 .child(label(artist.name.clone(), th::SMALL, th::text2()).gcol(th::text()).wrap().max_lines(2).align(Align::Center).w(cell - 6.0)),
         );
     }

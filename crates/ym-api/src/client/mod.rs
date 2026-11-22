@@ -45,7 +45,7 @@ pub(crate) const FILE_INFO_CLIENT: &str = "YandexMusicDesktopAppWindows/5.95.0";
 pub(super) const APP_UA: &str = concat!("Glint/", env!("CARGO_PKG_VERSION"), " (unofficial client)");
 
 const MAX_JSON_BYTES: u64 = 64 << 20;
-pub(super) const MAX_AUDIO_BYTES: u64 = 256 << 20;
+pub(super) const MAX_AUDIO_BYTES: u64 = 4 << 30;
 pub(super) const MAX_IMAGE_BYTES: u64 = 16 << 20;
 pub(super) const MAX_TEXT_BYTES: u64 = 4 << 20;
 /// How many ids one batch request carries.
@@ -185,9 +185,15 @@ impl Client {
         self.call(self.api(Method::POST, path).form(form)).await
     }
 
-    /// A plain GET of a (checked) absolute URL, without credentials.
-    pub(super) async fn fetch(&self, url: &str, max: u64, timeout_secs: u64, mut progress: impl FnMut(u64, Option<u64>)) -> Result<Vec<u8>> {
-        let resp = self.inner.http.get(url).header(USER_AGENT, CLIENT_ID).timeout(Duration::from_secs(timeout_secs)).send().await?;
+    /// A plain GET of a (checked) absolute URL, without credentials. When `timeout_secs` is `None`,
+    /// the transfer relies on the client's connect and per-chunk read timeouts so multi-hour audio
+    /// downloads are not cut short while bytes keep arriving.
+    pub(super) async fn fetch(&self, url: &str, max: u64, timeout_secs: Option<u64>, mut progress: impl FnMut(u64, Option<u64>)) -> Result<Vec<u8>> {
+        let mut req = self.inner.http.get(url).header(USER_AGENT, CLIENT_ID);
+        if let Some(secs) = timeout_secs {
+            req = req.timeout(Duration::from_secs(secs));
+        }
+        let resp = req.send().await?;
         let status = resp.status();
         if !status.is_success() {
             return Err(Error::Http { status: status.as_u16(), body: String::new() });
@@ -196,7 +202,7 @@ impl Client {
     }
 
     pub(crate) async fn fetch_text(&self, url: &str) -> Result<String> {
-        let bytes = self.fetch(url, MAX_TEXT_BYTES, 20, |_, _| {}).await?;
+        let bytes = self.fetch(url, MAX_TEXT_BYTES, Some(20), |_, _| {}).await?;
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 }

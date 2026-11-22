@@ -224,7 +224,7 @@ fn history(s: &State) -> El {
                 .hov(th::veil(0.05))
                 .press(th::veil(0.09))
                 .hov_group()
-                .transition(Transition::opacity().combined(Transition::scale(0.9)).springs(th::SOFT))
+                .transition(kit::pop_in(0.92, 0.0, th::SOFT))
                 .on_press(move |s: &mut State| s.search_again(&again))
                 .child(icon(&icons::CLOCK, 14.0).color(th::text3()).gcol(th::text2()))
                 .child(label(q.clone(), th::BODY, th::text2()).gcol(th::text()).truncate().max_w(240.0))
@@ -292,7 +292,11 @@ fn mood_tile(s: &State, id: &'static str, w: f32, h: f32) -> El {
         .child(art)
         .child(
             col().gap(3.0).max_w(w - side - 30.0).child(label(name.to_owned(), th::name_on(17.0), th::text()).truncate()).child(
-                row().gap(5.0).items_center().gop(0.0, 1.0).child(icon(hint_icon, 11.0).color(th::text2())).child(label(hint.get(s.lang).to_owned(), th::SMALL, th::text2())),
+                row()
+                    .gap(5.0)
+                    .items_center()
+                    .child(icon(hint_icon, 11.0).color(th::text2()).gop(0.0, 1.0))
+                    .child(label(hint.get(s.lang).to_owned(), th::SMALL, th::text2()).gop(0.0, 1.0)),
             ),
         )
 }
@@ -400,7 +404,6 @@ fn top_card(s: &State, r: &SearchResult) -> Option<El> {
             .gap(16.0)
             .justify_between()
             .radius(24.0)
-            .clip_rounded(24.0)
             .cursor(Cursor::Pointer)
             .fill(th::veil(0.05))
             .border_gradient(1.0, th::veil(0.10), th::veil(0.02))
@@ -419,7 +422,23 @@ fn top_card(s: &State, r: &SearchResult) -> Option<El> {
         }
         r
     };
-    let play = |key: &str| kit::round(key.to_owned(), kit::Weight::Solid, &icons::PLAY, 52.0, 22.0, S::Play.get(lang)).absolute(0.0, 0.0).gop(0.0, 1.0);
+    let play = |key: &str| {
+        let r = kit::ctl_radius(52.0);
+        row()
+            .key(key.to_owned())
+            .role("button")
+            .label(S::Play.get(lang))
+            .help(S::Play.get(lang))
+            .absolute(0.0, 0.0)
+            .w(52.0)
+            .h(52.0)
+            .radius(r)
+            .center()
+            .cursor(Cursor::Pointer)
+            .press_scale(th::PRESS)
+            .child(el().absolute(0.0, 0.0).w_full().h_full().radius(r).fill(th::solid()).gop(0.0, 1.0))
+            .child(icon(&icons::PLAY, 22.0).color(th::on_solid()).gop(0.0, 1.0))
+    };
     if let Some(a) = artist {
         let id = a.id.clone();
         let card = base(format!("sr-best-ar-{}", a.id), &a.name)

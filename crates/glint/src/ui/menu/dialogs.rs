@@ -1,13 +1,14 @@
 //! Confirmation and text-input dialogs (batch downloads, download deletion, playlist naming/deletion).
 
-use rune::{El, row};
+use rune::{Cursor, El, icon, row};
 
 use crate::app::State;
 use crate::i18n::S;
+use crate::store::QualityPref;
 use crate::theme as th;
 use crate::ui::{
-    icons,
-    kit::{self, label},
+    icons, np_icons,
+    kit::{self, Hover as _, label},
 };
 
 pub fn download_confirm(s: &State, w: f32, _h: f32) -> El {
@@ -17,13 +18,45 @@ pub fn download_confirm(s: &State, w: f32, _h: f32) -> El {
         "download-confirm",
         w,
         S::DownloadConfirm.get(lang),
-        vec![label(lang.download_confirm_note(count), th::BODY, th::text2()).wrap()],
+        vec![label(lang.download_confirm_note(count), th::BODY, th::text2()).wrap(), label(S::DownloadQuality.get(lang), th::BODY_M, th::text2()), download_quality_choice(s)],
         vec![
             kit::btn_soft("download-cancel", S::Cancel.get(lang), None).on_press(|s: &mut State| s.cancel_download()),
             kit::btn_primary("download-accept", S::DownloadAll.get(lang), Some(&icons::DOWNLOAD)).on_press(|s: &mut State| s.confirm_download()),
         ],
         State::cancel_download,
     )
+}
+
+/// Quality for this batch only. Playback quality stays as the listener set it.
+fn download_quality_choice(s: &State) -> El {
+    let lang = s.lang;
+    let mut choice = row().key("download-quality").padding(3.0).gap(2.0).radius(9.0).fill(th::veil(0.05)).border(1.0, th::veil(0.08)).items_center();
+    for quality in [QualityPref::Saver, QualityPref::Balanced, QualityPref::Best] {
+        let on = s.download_quality == quality;
+        let text = np_icons::quality_label(quality).get(lang);
+        let ink = if on { th::text() } else { th::text2() };
+        let mut cell = row()
+            .key(format!("download-q-{quality:?}"))
+            .role("radio")
+            .label(text)
+            .checked(on)
+            .h(30.0)
+            .px(10.0)
+            .gap(6.0)
+            .radius(7.0)
+            .items_center()
+            .cursor(Cursor::Pointer)
+            .hov(th::veil(if on { 0.0 } else { 0.05 }))
+            .press(th::veil(0.10))
+            .on_press(move |s: &mut State| s.download_quality = quality)
+            .child(icon(np_icons::quality_icon(quality), 16.0).color(ink))
+            .child(label(text, th::BODY_M, ink));
+        if on {
+            cell = cell.fill(if th::light() { th::pop() } else { th::veil(0.14) });
+        }
+        choice = choice.child(cell);
+    }
+    choice
 }
 
 pub fn delete_download_confirm(s: &State, w: f32, _h: f32) -> El {

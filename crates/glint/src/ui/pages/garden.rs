@@ -60,8 +60,7 @@ pub(super) fn garden(s: &State, cw: f32) -> El {
     let lang = s.lang;
     let seed = s.home_seed;
     let mut rng = Rng::new(seed);
-    let gap = 18.0;
-    let (big, bx, cell, spots, total_h) = garden_layout(cw, gap);
+    let (big, bx, by, cell, spots, total_h) = garden_layout(cw);
     let hover = if kit::under() { None } else { s.garden_hover };
 
     let mut g = el().key("garden").w_full().h(total_h).transition(Transition::none());
@@ -88,7 +87,7 @@ pub(super) fn garden(s: &State, cw: f32) -> El {
     let wave_shape = blobs::wave(format!("hm-wave-shape-{seed}"), wave_seed, fill, look, s.settings.wave_look, big).absolute(0.0, 0.0);
     let tune_open = s.popover_open && matches!(s.popover, Some(Popover::WaveTune { .. }));
     let tune = kit::quiet_toggle("hm-wave-tune", &icons::TUNE, 18.0, 34.0, tune_open, S::WaveTune.get(lang))
-        .absolute(big - 38.0, 4.0)
+        .absolute((big * 0.80).min(big - 36.0), (big * 0.08).max(4.0))
         .on_press(|s: &mut State| s.open_popover(Popover::WaveTune { anchor: "hm-wave-tune".into() }));
     let go = move |s: &mut State| {
         if dock::wave_playing(s) {
@@ -104,13 +103,13 @@ pub(super) fn garden(s: &State, cw: f32) -> El {
         _ => format!("{}: {mood}", S::Mood.get(lang)),
     };
     let wave_name = S::WaveTitle.get(lang);
-    let room_w = big * 0.62;
-    let mut title_size = (big * 0.085).clamp(22.0, 34.0);
+    let room_w = big * 0.66;
+    let mut title_size = (big * 0.088).clamp(18.0, 34.0);
     for _ in 0..2 {
-        let room = room_w - 26.0 - 4.0 - (title_size * 0.95).round();
+        let room = room_w - 22.0 - 4.0 - (title_size * 0.95).round();
         let (tw, _) = rune::text::measure(wave_name, &[], th::name_on(title_size), None);
         if tw > room {
-            title_size = (title_size * room / tw).floor().max(16.0);
+            title_size = (title_size * room / tw).floor().max(15.0);
         }
     }
     let glyph = (title_size * 0.95).round();
@@ -130,8 +129,8 @@ pub(super) fn garden(s: &State, cw: f32) -> El {
                 .role("button")
                 .label(if playing { S::Pause.get(lang) } else { S::Play.get(lang) })
                 .max_w(room_w)
-                .pl(8.0)
-                .pr(18.0)
+                .pl(6.0)
+                .pr(14.0)
                 .py(4.0)
                 .gap(4.0)
                 .radius(14.0)
@@ -146,7 +145,7 @@ pub(super) fn garden(s: &State, cw: f32) -> El {
         .child(kit::roll("hero-line", &line, line_el));
     g = g.child(
         el().key("hm-wave")
-            .absolute(bx, 0.0)
+            .absolute(bx, by)
             .w(big)
             .h(big)
             .transition(Transition::none())
@@ -162,9 +161,13 @@ pub(super) fn garden(s: &State, cw: f32) -> El {
     );
 
     let fg = th::text();
+    let calm = ((cell - 104.0) / 76.0).clamp(0.0, 1.0);
+    let jit = 7.0 * calm;
+    let lo = 1.0 - 0.05 * calm;
+    let hi = 1.0 + 0.12 * calm;
     for (i, id) in MOODS.into_iter().enumerate() {
-        let size = cell * rng.range(0.94, 1.14);
-        let (jx, jy) = (rng.range(-8.0, 8.0), rng.range(-8.0, 8.0));
+        let size = cell * rng.range(lo, hi);
+        let (jx, jy) = (rng.range(-jit, jit), rng.range(-jit, jit));
         let x = spots[i][0] + (cell - size) * 0.5 + jx;
         let y = spots[i][1] + (cell - size) * 0.5 + jy;
         let on = now && s.wave_choice == id;
@@ -232,69 +235,52 @@ fn shape_bone(key: &str, family: Family, seed: f32, form: u8, side: f32, order: 
     Some(out)
 }
 
-/// Computes `(big_size, big_x, cell_size, mood_positions, total_height)` without heap allocations.
-fn garden_layout(cw: f32, gap: f32) -> (f32, f32, f32, [[f32; 2]; 7], f32) {
+/// Computes `(big_size, big_x, big_y, cell_size, mood_positions, total_height)` cleanly across
+/// wide desktop windows and compact small windows alike.
+fn garden_layout(cw: f32) -> (f32, f32, f32, f32, [[f32; 2]; 7], f32) {
     const N: usize = MOODS.len();
-    const MIN: f32 = 140.0;
-    let beside_min = 4.0 * MIN + 3.0 * gap;
-    let big = (cw * 0.42).clamp(260.0, 420.0).min(cw - 32.0 - beside_min);
+    const COLS: usize = 4;
     let mut spots = [[0.0f32; 2]; N];
-    if big >= 260.0 {
-        let (mx, mw) = (big + 32.0, cw - big - 32.0);
-        let cols = 4usize;
-        let cell = ((mw - gap * (cols as f32 - 1.0)) / cols as f32).min(186.0);
-        let rows = N.div_ceil(cols);
+    if cw >= 640.0 {
+        let t = ((cw - 640.0) / 360.0).clamp(0.0, 1.0);
+        let gap = 10.0 + 8.0 * t;
+        let sep = 14.0 + 18.0 * t;
+        let min_cell = 104.0 + 36.0 * t;
+        let beside_min = COLS as f32 * min_cell + (COLS as f32 - 1.0) * gap;
+        let big = (cw * (0.35 + 0.05 * t)).clamp(216.0, 410.0).min(cw - sep - beside_min).max(204.0);
+        let mw = (cw - big - sep).max(beside_min);
+        let cell = ((mw - gap * (COLS as f32 - 1.0)) / COLS as f32).clamp(96.0, 186.0);
+        let rows = N.div_ceil(COLS);
+        let grid_w = COLS as f32 * cell + (COLS as f32 - 1.0) * gap;
         let grid_h = rows as f32 * cell + (rows as f32 - 1.0) * gap;
-        let grid_w = cols as f32 * cell + (cols as f32 - 1.0) * gap;
-        let (gx0, my) = (mx + (mw - grid_w) * 0.5, ((big - grid_h) * 0.5).max(0.0));
+        let pair_w = big + sep + grid_w;
+        let x0 = ((cw - pair_w) * 0.5).max(0.0);
+        let total_h = big.max(grid_h);
+        let by = (total_h - big) * 0.5;
+        let gx0 = x0 + big + sep;
+        let my = (total_h - grid_h) * 0.5;
         for (i, spot) in spots.iter_mut().enumerate() {
-            let (r, c) = (i / cols, i % cols);
-            let in_row = (N - r * cols).min(cols);
-            let shift = (cols - in_row) as f32 * (cell + gap) * 0.5;
+            let (r, c) = (i / COLS, i % COLS);
+            let in_row = (N - r * COLS).min(COLS);
+            let shift = (COLS - in_row) as f32 * (cell + gap) * 0.5;
             *spot = [gx0 + shift + c as f32 * (cell + gap), my + r as f32 * (cell + gap)];
         }
-        return (big, 0.0, cell, spots, big.max(grid_h));
+        return (big, x0, by, cell, spots, total_h);
     }
-    let lonely = |c: usize| {
-        let beside = 2 * (c - 2);
-        beside < N && (N - beside) % c == 1
-    };
-    let cell_of = |c: usize| (cw - gap * (c as f32 - 1.0)) / c as f32;
-    let near = (((cw + gap) / (150.0 + gap)).round() as usize).clamp(3, 6);
-    let cols = [near, near + 1, near.saturating_sub(1)].into_iter().find(|&c| (3..=6).contains(&c) && cell_of(c) >= 108.0 && !lonely(c)).unwrap_or(near);
-    let cell = ((cw - gap * (cols as f32 - 1.0)) / cols as f32).min(200.0);
-    let big = 2.0 * cell + gap;
-    let grid_w = cols as f32 * cell + (cols as f32 - 1.0) * gap;
-    let x0 = (cw - grid_w) * 0.5;
-    let mut cells = [(0usize, 0usize); N];
-    let mut row_counts = [0usize; 8];
-    let mut count = 0;
-    let mut r = 0;
-    while count < N {
-        for c in if r < 2 { 2 } else { 0 }..cols {
-            if count < N {
-                cells[count] = (r, c);
-                row_counts[r] += 1;
-                count += 1;
-            }
-        }
-        r += 1;
+    // Ultra-narrow window: center My Wave cleanly above a balanced 4 + 3 mood grid.
+    let gap = 10.0;
+    let big = (cw * 0.52).clamp(200.0, 252.0);
+    let cell = ((cw - gap * (COLS as f32 - 1.0)) / COLS as f32).clamp(84.0, 132.0);
+    let rows = N.div_ceil(COLS);
+    let grid_w = COLS as f32 * cell + (COLS as f32 - 1.0) * gap;
+    let grid_h = rows as f32 * cell + (rows as f32 - 1.0) * gap;
+    let gx0 = ((cw - grid_w) * 0.5).max(0.0);
+    let my = big + 14.0;
+    for (i, spot) in spots.iter_mut().enumerate() {
+        let (r, c) = (i / COLS, i % COLS);
+        let in_row = (N - r * COLS).min(COLS);
+        let shift = (COLS - in_row) as f32 * (cell + gap) * 0.5;
+        *spot = [gx0 + shift + c as f32 * (cell + gap), my + r as f32 * (cell + gap)];
     }
-    for (i, &(rr, cc)) in cells.iter().enumerate() {
-        let first = if rr < 2 { 2 } else { 0 };
-        let in_row = row_counts[rr];
-        let slots = cols - first;
-        let y = rr as f32 * (cell + gap);
-        spots[i] = if in_row == slots {
-            [x0 + cc as f32 * (cell + gap), y]
-        } else {
-            let left = x0 + first as f32 * (cell + gap);
-            let width = slots as f32 * cell + (slots as f32 - 1.0) * gap;
-            let space = (width - in_row as f32 * cell) / (in_row as f32 + 1.0);
-            let j = (cc - first) as f32;
-            [left + space * (j + 1.0) + j * cell, y]
-        };
-    }
-    let rows = r.max(2);
-    (big, x0, cell, spots, rows as f32 * cell + (rows as f32 - 1.0) * gap)
+    (big, (cw - big) * 0.5, 0.0, cell, spots, my + grid_h)
 }

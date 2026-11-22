@@ -28,4 +28,28 @@ icons! {
     QUEUE => r#"<path d="M4 6H20M4 11H20M4 16H12.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/><path d="M16 13.6C16 13.1 16.5 12.8 16.9 13.1L20.4 15.4C20.8 15.7 20.8 16.3 20.4 16.6L16.9 18.9C16.5 19.2 16 18.9 16 18.4Z" fill="currentColor"/>"#;
     LOOK => r#"<circle cx="12" cy="12" r="7.6" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M12 4.4A7.6 7.6 0 0 1 12 19.6Z" fill="currentColor"/>"#;
     MORE => r#"<circle cx="6" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="18" cy="12" r="1.6" fill="currentColor"/>"#;
+    QUALITY_SAVER => r#"<circle cx="6.5" cy="12" r="1.3" fill="currentColor"/><path d="M12 8.2V15.8" stroke="currentColor" stroke-width="1.85" stroke-linecap="round"/><circle cx="17.5" cy="12" r="1.3" fill="currentColor"/>"#;
+    QUALITY_BALANCED => r#"<path d="M7 9.2V14.8M12 5.8V18.2M17 9.2V14.8" stroke="currentColor" stroke-width="1.85" stroke-linecap="round"/>"#;
+    QUALITY_BEST => r#"<path d="M4.6 10V14M8.3 7V17M12 4.6V19.4M15.7 7V17M19.4 10V14" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>"#;
+}
+
+/// Custom audio quality icon for each playback bitrate tier.
+pub fn quality_icon(q: crate::store::QualityPref) -> &'static Icon {
+    use crate::store::QualityPref;
+    match q {
+        QualityPref::Saver => &QUALITY_SAVER,
+        QualityPref::Balanced => &QUALITY_BALANCED,
+        QualityPref::Best => &QUALITY_BEST,
+    }
+}
+
+/// Localized label key for each playback bitrate tier.
+pub fn quality_label(q: crate::store::QualityPref) -> crate::i18n::S {
+    use crate::i18n::S;
+    use crate::store::QualityPref;
+    match q {
+        QualityPref::Saver => S::QualitySaver,
+        QualityPref::Balanced => S::QualityBalanced,
+        QualityPref::Best => S::QualityBest,
+    }
 }

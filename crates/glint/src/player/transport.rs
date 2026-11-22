@@ -105,7 +105,7 @@ impl State {
             }
             let Ok(batch) = res else { return };
             let known: std::collections::HashSet<&str> = s.player.queue.iter().map(|t| t.id.as_str()).collect();
-            let fresh: Vec<Track> = batch.tracks.into_iter().filter(|t| t.is_available() && !known.contains(t.id.as_str())).collect();
+            let fresh: Vec<Track> = batch.tracks.into_iter().filter(|t| s.track_playable(t) && !known.contains(t.id.as_str())).collect();
             if let Source::Wave { batch: b, round, .. } = &mut s.player.source {
                 *b = batch.batch_id;
                 *round += 1;
@@ -338,7 +338,9 @@ impl State {
         self.player.pos_ms = 0;
         self.player.dur_ms = 0;
         self.player.next = None;
+        self.player.next_audio = None;
         self.player.next_loading = None;
+        self.player.current_audio = None;
         self.player.resume_ms = None;
         self.player.seek_hold = None;
         self.playback_dirty = true;

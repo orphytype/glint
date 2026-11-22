@@ -173,7 +173,7 @@ fn track_entries(s: &State, m: &TrackMenu, h: f32) -> Vec<Entry> {
             _ => "np-more".to_owned(),
         };
         let look_anchor = anchor.clone();
-        out.push(Entry::Row(row_of("tm-quality", &icons::EQ, S::Quality.get(lang)).on_press(move |s: &mut State| {
+        out.push(Entry::Row(row_of("tm-quality", np_icons::quality_icon(s.settings.quality), S::Quality.get(lang)).on_press(move |s: &mut State| {
             s.open_popover(Popover::Quality { anchor: anchor.clone() });
         })));
         out.push(Entry::Row(row_of("tm-look", &np_icons::LOOK, S::StageLook.get(lang)).on_press(move |s: &mut State| {

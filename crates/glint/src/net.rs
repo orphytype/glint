@@ -37,12 +37,139 @@ pub enum Backend {
     Live(Client),
 }
 
-/// What `audio` hands back: the file and the container it most likely is.
+/// Container/codec family of an audio stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioCodec {
+    Flac,
+    Aac,
+    Mp3,
+    Other,
+}
+
+impl AudioCodec {
+    pub fn from_codec(codec: &str) -> AudioCodec {
+        let c = codec.to_ascii_lowercase();
+        if c.contains("flac") {
+            AudioCodec::Flac
+        } else if c.contains("aac") || c.contains("m4a") || c.contains("mp4") {
+            AudioCodec::Aac
+        } else if c.contains("mp3") {
+            AudioCodec::Mp3
+        } else {
+            AudioCodec::Other
+        }
+    }
+
+    pub fn from_ext(ext: &str) -> AudioCodec {
+        match ext {
+            "flac" => AudioCodec::Flac,
+            "m4a" => AudioCodec::Aac,
+            "mp3" => AudioCodec::Mp3,
+            _ => AudioCodec::Other,
+        }
+    }
+
+    pub fn name(self) -> Option<&'static str> {
+        match self {
+            AudioCodec::Flac => Some("FLAC"),
+            AudioCodec::Aac => Some("AAC"),
+            AudioCodec::Mp3 => Some("MP3"),
+            AudioCodec::Other => None,
+        }
+    }
+}
+
+/// Format and average bitrate of a track stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StreamQuality {
+    pub codec: AudioCodec,
+    /// Average bitrate in kbps (`0` when unknown).
+    pub bitrate_kbps: u32,
+}
+
+impl StreamQuality {
+    pub fn format_full(self, lang: crate::i18n::Lang) -> String {
+        let kbps = crate::i18n::S::Kbps.get(lang);
+        match (self.codec.name(), self.bitrate_kbps) {
+            (Some(c), b) if b > 0 => format!("{c} · {b} {kbps}"),
+            (Some(c), _) => c.to_owned(),
+            (None, b) if b > 0 => format!("{b} {kbps}"),
+            _ => String::new(),
+        }
+    }
+
+    pub fn format_compact(self, lang: crate::i18n::Lang) -> String {
+        let kbps = crate::i18n::S::Kbps.get(lang);
+        match (self.codec, self.bitrate_kbps) {
+            (AudioCodec::Flac, b) if b > 0 => format!("FLAC {b}"),
+            (AudioCodec::Flac, _) => "FLAC".to_owned(),
+            (_, b) if b > 0 => format!("{b} {kbps}"),
+            _ => String::new(),
+        }
+    }
+
+    /// True when `self` offers meaningfully higher fidelity than `other`.
+    pub fn is_higher_than(self, other: StreamQuality) -> bool {
+        (self.codec == AudioCodec::Flac && other.codec != AudioCodec::Flac) || self.bitrate_kbps > other.bitrate_kbps.saturating_add(24)
+    }
+}
+
+#[cfg(feature = "tooling")]
+pub fn fixture_max_quality(track: &Track) -> StreamQuality {
+    let h = track.id.bytes().fold(2166136261u32, |a, b| (a ^ u32::from(b)).wrapping_mul(16777619));
+    if h % 3 != 0 {
+        StreamQuality { codec: AudioCodec::Flac, bitrate_kbps: 840 + (h % 180) }
+    } else {
+        StreamQuality { codec: AudioCodec::Mp3, bitrate_kbps: 320 }
+    }
+}
+
+#[cfg(feature = "tooling")]
+pub fn fixture_playing_quality(track: &Track, pref: crate::store::QualityPref) -> StreamQuality {
+    match pref {
+        crate::store::QualityPref::Saver => StreamQuality { codec: AudioCodec::Aac, bitrate_kbps: 64 },
+        crate::store::QualityPref::Balanced => StreamQuality { codec: AudioCodec::Mp3, bitrate_kbps: 192 },
+        crate::store::QualityPref::Best => fixture_max_quality(track),
+    }
+}
+
+/// What `audio` hands back: the file, container, stream format/bitrate and source flags.
 pub struct Audio {
     pub bytes: Arc<[u8]>,
     pub ext: &'static str,
+    pub quality: StreamQuality,
+    /// Loaded from the local download store instead of fetched over the network.
+    pub from_disk: bool,
     /// FckCensor's uncensored version of the track, not Yandex's own.
     pub clean: bool,
+}
+
+/// Estimates average audio bitrate in kbps from the raw payload bytes and track duration,
+/// skipping FLAC metadata blocks and ID3v2 tags (including embedded cover art).
+fn estimate_bitrate_kbps(bytes: &[u8], ext: &str, duration_ms: Option<u64>) -> u32 {
+    let Some(dur_ms) = duration_ms.filter(|&d| d > 0) else { return 0 };
+    let payload = if ext == "flac" && bytes.starts_with(b"fLaC") {
+        let mut off = 4usize;
+        while off + 4 <= bytes.len() {
+            let head = bytes[off];
+            let len = ((bytes[off + 1] as usize) << 16) | ((bytes[off + 2] as usize) << 8) | (bytes[off + 3] as usize);
+            off = off.saturating_add(4).saturating_add(len);
+            if head & 0x80 != 0 {
+                break;
+            }
+        }
+        if off < bytes.len() { bytes.len() - off } else { bytes.len() }
+    } else if bytes.len() > 10 && &bytes[0..3] == b"ID3" {
+        let tag = ((usize::from(bytes[6] & 0x7f) << 21)
+            | (usize::from(bytes[7] & 0x7f) << 14)
+            | (usize::from(bytes[8] & 0x7f) << 7)
+            | usize::from(bytes[9] & 0x7f))
+            + 10;
+        if tag < bytes.len() { bytes.len() - tag } else { bytes.len() }
+    } else {
+        bytes.len()
+    };
+    ((payload as u64 * 8 + dur_ms / 2) / dur_ms) as u32
 }
 
 /// The container an audio file really is, from its first bytes. Cached downloads have no codec
@@ -110,14 +237,19 @@ impl Backend {
         }
     }
 
-    pub async fn liked_tracks(&self, uid: i64) -> Result<Vec<Track>> {
+    pub async fn liked_tracks(&self, uid: i64, fkcensor: &crate::fkcensor::FkCensor, fkcensor_on: bool) -> Result<Vec<Track>> {
         match self {
             #[cfg(feature = "tooling")]
             Backend::Fixture(c) => Ok(c.liked_tracks()),
             Backend::Live(c) => {
                 let refs = c.liked_track_refs(uid).await?;
                 let ids: Vec<String> = refs.iter().map(|r| r.id.clone()).collect();
-                c.tracks(&ids).await
+                let mut tracks = c.tracks(&ids).await?;
+                if fkcensor_on {
+                    fkcensor.ensure_loaded(c).await;
+                    fkcensor.patch_tracks(&mut tracks);
+                }
+                Ok(tracks)
             }
             Backend::None => Err(no_session()),
         }
@@ -184,30 +316,59 @@ impl Backend {
         }
     }
 
-    pub async fn album(&self, id: &str) -> Result<Album> {
+    pub async fn album(&self, id: &str, fkcensor: &crate::fkcensor::FkCensor, fkcensor_on: bool) -> Result<Album> {
         match self {
             #[cfg(feature = "tooling")]
             Backend::Fixture(c) => c.album(id).ok_or(ym_api::Error::Api("album not found".into())),
-            Backend::Live(c) => c.album(id).await,
+            Backend::Live(c) => {
+                let res = c.album(id).await;
+                if !fkcensor_on {
+                    return res;
+                }
+                match res {
+                    Ok(album) => Ok(fkcensor.merge_album(c, id, Some(album)).await.unwrap_or_default()),
+                    Err(e) => match fkcensor.merge_album(c, id, None).await {
+                        Some(album) => Ok(album),
+                        None => Err(e),
+                    },
+                }
+            }
             Backend::None => Err(no_session()),
         }
     }
 
-    pub async fn playlist(&self, uid: i64, kind: i64) -> Result<Playlist> {
+    pub async fn playlist(&self, uid: i64, kind: i64, fkcensor: &crate::fkcensor::FkCensor, fkcensor_on: bool) -> Result<Playlist> {
         match self {
             #[cfg(feature = "tooling")]
             Backend::Fixture(c) => c.playlist(kind).ok_or(ym_api::Error::Api("playlist not found".into())),
-            Backend::Live(c) => c.playlist(uid, kind).await,
+            Backend::Live(c) => {
+                let mut pl = c.playlist(uid, kind).await?;
+                if fkcensor_on {
+                    fkcensor.ensure_loaded(c).await;
+                    for entry in &mut pl.tracks {
+                        if let Some(track) = entry.track.as_mut() {
+                            fkcensor.patch_tracks(std::slice::from_mut(track));
+                        }
+                    }
+                }
+                Ok(pl)
+            }
             Backend::None => Err(no_session()),
         }
     }
 
     /// All of an artist's tracks (up to the API's 500-track page), most popular first.
-    pub async fn artist_tracks(&self, id: &str) -> Result<Vec<Track>> {
+    pub async fn artist_tracks(&self, id: &str, fkcensor: &crate::fkcensor::FkCensor, fkcensor_on: bool) -> Result<Vec<Track>> {
         match self {
             #[cfg(feature = "tooling")]
             Backend::Fixture(c) => Ok(c.artist_tracks(id)),
-            Backend::Live(c) => c.artist_tracks(id, 500).await,
+            Backend::Live(c) => {
+                let mut tracks = c.artist_tracks(id, 500).await?;
+                if fkcensor_on {
+                    fkcensor.merge_artist_tracks(c, id, &mut tracks).await;
+                }
+                Ok(tracks)
+            }
             Backend::None => Err(no_session()),
         }
     }
@@ -222,20 +383,33 @@ impl Backend {
         }
     }
 
-    pub async fn artist(&self, id: &str) -> Result<ArtistPage> {
+    pub async fn artist(&self, id: &str, fkcensor: &crate::fkcensor::FkCensor, fkcensor_on: bool) -> Result<ArtistPage> {
         match self {
             #[cfg(feature = "tooling")]
             Backend::Fixture(c) => c.artist(id).ok_or(ym_api::Error::Api("artist not found".into())),
-            Backend::Live(c) => c.artist(id).await,
+            Backend::Live(c) => {
+                let mut page = c.artist(id).await?;
+                if fkcensor_on {
+                    fkcensor.merge_artist(c, id, &mut page).await;
+                }
+                Ok(page)
+            }
             Backend::None => Err(no_session()),
         }
     }
 
-    pub async fn search(&self, text: &str, kind: SearchKind) -> Result<SearchResult> {
+    pub async fn search(&self, text: &str, kind: SearchKind, fkcensor: &crate::fkcensor::FkCensor, fkcensor_on: bool) -> Result<SearchResult> {
         match self {
             #[cfg(feature = "tooling")]
             Backend::Fixture(c) => Ok(c.search(text)),
-            Backend::Live(c) => c.search(text, kind, 0).await,
+            Backend::Live(c) => {
+                let mut res = c.search(text, kind, 0).await?;
+                if fkcensor_on {
+                    fkcensor.ensure_loaded(c).await;
+                    fkcensor.merge_search(text, &mut res);
+                }
+                Ok(res)
+            }
             Backend::None => Err(no_session()),
         }
     }
@@ -373,11 +547,24 @@ impl Backend {
         }
     }
 
-    pub async fn lyrics(&self, track: &Track) -> Result<Lyrics> {
+    pub async fn lyrics(&self, track: &Track, fkcensor: &crate::fkcensor::FkCensor, fkcensor_on: bool) -> Result<Lyrics> {
         match self {
             #[cfg(feature = "tooling")]
             Backend::Fixture(c) => Ok(c.lyrics(track)),
-            Backend::Live(c) => c.lyrics(track).await,
+            Backend::Live(c) => {
+                if fkcensor_on {
+                    fkcensor.ensure_loaded(c).await;
+                    if let Some(url) = fkcensor.lyrics_url(&track.id)
+                        && let Ok(lrc) = c.fetch_fkcensor_lrc(&url).await
+                    {
+                        let parsed = Lyrics::from_lrc(&lrc, ym_api::LyricsSource::Yandex);
+                        if parsed.has_words() {
+                            return Ok(parsed);
+                        }
+                    }
+                }
+                c.lyrics(track).await
+            }
             Backend::None => Err(no_session()),
         }
     }
@@ -415,6 +602,9 @@ impl Backend {
             #[cfg(feature = "tooling")]
             Backend::Fixture(_) => Err(ym_api::Error::Api("the scene fixtures have no audio".into())),
             Backend::Live(c) => {
+                if fkcensor_on {
+                    fkcensor.ensure_loaded(c).await;
+                }
                 let replacement = fkcensor_on.then(|| fkcensor.replacement(&track.id)).flatten();
                 let q = format!("{quality:?}");
                 // A downloaded copy in any quality plays before anything is asked of the network,
@@ -427,28 +617,37 @@ impl Backend {
                     && let Some(bytes) = find("replacement")
                 {
                     let ext = sniff_ext(&bytes);
-                    return Ok(Audio { bytes, ext, clean: true });
+                    let quality = StreamQuality { codec: AudioCodec::from_ext(ext), bitrate_kbps: estimate_bitrate_kbps(&bytes, ext, track.duration_ms) };
+                    return Ok(Audio { bytes, ext, quality, from_disk: true, clean: true });
                 }
                 let local = find("original");
                 if replacement.is_none()
                     && let Some(bytes) = local.clone()
                 {
                     let ext = sniff_ext(&bytes);
-                    return Ok(Audio { bytes, ext, clean: false });
+                    let quality = StreamQuality { codec: AudioCodec::from_ext(ext), bitrate_kbps: estimate_bitrate_kbps(&bytes, ext, track.duration_ms) };
+                    return Ok(Audio { bytes, ext, quality, from_disk: true, clean: false });
                 }
                 // With the original on disk, the clean version gets only a short wait: offline,
-                // the download must not sit behind a connection that never comes.
-                let wait = if local.is_some() { std::time::Duration::from_secs(4) } else { std::time::Duration::from_secs(120) };
-                if let Some(replacement) = replacement
-                    && let Ok(Ok(data)) = tokio::time::timeout(wait, c.fetch_fkcensor_audio(&replacement.url)).await
-                {
-                    let bytes: Arc<[u8]> = data.into();
-                    let ext = sniff_ext(&bytes);
-                    return Ok(Audio { bytes, ext, clean: true });
+                // the download must not sit behind a connection that never comes. Without a local
+                // fallback, rely on reqwest's per-chunk read timeout so long tracks finish cleanly.
+                if let Some(replacement) = replacement {
+                    let fetched = if local.is_some() {
+                        tokio::time::timeout(std::time::Duration::from_secs(4), c.fetch_fkcensor_audio(&replacement.url)).await.ok().and_then(Result::ok)
+                    } else {
+                        c.fetch_fkcensor_audio(&replacement.url).await.ok()
+                    };
+                    if let Some(data) = fetched {
+                        let bytes: Arc<[u8]> = data.into();
+                        let ext = sniff_ext(&bytes);
+                        let quality = StreamQuality { codec: AudioCodec::from_ext(ext), bitrate_kbps: estimate_bitrate_kbps(&bytes, ext, track.duration_ms) };
+                        return Ok(Audio { bytes, ext, quality, from_disk: false, clean: true });
+                    }
                 }
                 if let Some(bytes) = local {
                     let ext = sniff_ext(&bytes);
-                    return Ok(Audio { bytes, ext, clean: false });
+                    let quality = StreamQuality { codec: AudioCodec::from_ext(ext), bitrate_kbps: estimate_bitrate_kbps(&bytes, ext, track.duration_ms) };
+                    return Ok(Audio { bytes, ext, quality, from_disk: true, clean: false });
                 }
                 let info = c.stream(&track.id, quality).await?;
                 let data = c.fetch_audio(&info, |_, _| {}).await?;
@@ -462,9 +661,35 @@ impl Backend {
                 } else {
                     sniff_ext(&bytes)
                 };
-                Ok(Audio { bytes, ext, clean: false })
+                let codec = match AudioCodec::from_ext(ext) {
+                    AudioCodec::Other => AudioCodec::from_codec(&info.codec),
+                    c => c,
+                };
+                let bitrate_kbps = if info.bitrate_kbps > 0 { info.bitrate_kbps } else { estimate_bitrate_kbps(&bytes, ext, track.duration_ms) };
+                Ok(Audio { bytes, ext, quality: StreamQuality { codec, bitrate_kbps }, from_disk: false, clean: false })
             }
             Backend::None => Err(no_session()),
+        }
+    }
+
+    /// Probes the highest audio format and bitrate Yandex offers for `track` without downloading it.
+    pub async fn max_quality(&self, track: &Track) -> Option<StreamQuality> {
+        match self {
+            #[cfg(feature = "tooling")]
+            Backend::Fixture(_) => Some(fixture_max_quality(track)),
+            Backend::Live(c) => {
+                let info = c.stream(&track.id, ym_api::Quality::Best).await.ok()?;
+                let codec = AudioCodec::from_codec(&info.codec);
+                let bitrate_kbps = if info.bitrate_kbps > 0 {
+                    info.bitrate_kbps
+                } else if let Some(dur_ms) = track.duration_ms.filter(|&d| d > 0) {
+                    c.audio_size(&info).await.map_or(0, |sz| ((sz * 8 + dur_ms / 2) / dur_ms) as u32)
+                } else {
+                    0
+                };
+                Some(StreamQuality { codec, bitrate_kbps })
+            }
+            Backend::None => None,
         }
     }
 
@@ -478,7 +703,7 @@ impl Backend {
 
     /// A cover as pixels, for fixtures or callers that need decoded RGBA directly.
     pub async fn image(&self, url: &str, max_side: u32) -> Option<Decoded> {
-        let max_side = max_side.min(art::COVER_PX);
+        let max_side = max_side.min(art::COVER_LG);
         #[cfg(feature = "tooling")]
         if let Some((hue, style, seed, size)) = fixtures::parse_cover_url(url) {
             let _permit = decode_limiter().acquire().await.ok()?;

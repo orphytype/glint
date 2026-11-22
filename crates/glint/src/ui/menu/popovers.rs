@@ -14,7 +14,7 @@ use crate::theme as th;
 use crate::ui::{
     icons,
     kit::{self, Hover as _, ListSrc, label, menu_row},
-    settings,
+    np_icons, settings,
 };
 
 const DOWNLOAD_ROW_H: f32 = 44.0;
@@ -195,7 +195,8 @@ pub(super) fn download_entries(s: &State) -> Vec<Entry> {
         }
     }
     const LIST_H: f32 = 220.0;
-    let list_h = (ids.len() as f32 * DOWNLOAD_ROW_H).min(LIST_H);
+    let total_h = ids.len() as f32 * DOWNLOAD_ROW_H;
+    let list_h = total_h.min(LIST_H);
     let ids: Rc<[String]> = ids.into();
     let row_ids = Rc::clone(&ids);
     let rows = col().key("download-manager-list").w_full().growth(rune::GrowthSpec::default()).virtual_rows(
@@ -204,7 +205,8 @@ pub(super) fn download_entries(s: &State) -> Vec<Entry> {
         move |_: &State, i| Cow::Owned(row_ids[i].clone()),
         move |s: &State, i| download_row(s, &ids[i]),
     );
-    vec![download_head(s), Entry::Block(col().key("download-manager-scroll").w_full().h(list_h).scroll(rune::ScrollSpec { stick_bottom: false }).child(rows), list_h)]
+    let scroll = col().key("download-manager-scroll").w_full().h(list_h).scroll(rune::ScrollSpec { stick_bottom: false }).child(rows);
+    vec![download_head(s), Entry::Block(scroll, list_h)]
 }
 
 fn download_row(s: &State, id: &str) -> El {
@@ -248,7 +250,7 @@ fn download_row(s: &State, id: &str) -> El {
                     s.open_sheet(Sheet::Track(Box::new(open_track.clone())));
                 }
             })
-            .child(kit::cover(s, track.cover_template(), 32.0, 8.0));
+            .child(kit::cover_sm(s, track.cover_template(), 32.0, 8.0));
     }
     row = row.child(
         col()
@@ -396,19 +398,27 @@ pub(super) fn disc_sort_entries(s: &State) -> Vec<Entry> {
 }
 
 pub(super) fn quality_entries(s: &State) -> Vec<Entry> {
-    [(QualityPref::Saver, S::QualitySaver), (QualityPref::Balanced, S::QualityBalanced), (QualityPref::Best, S::QualityBest), (QualityPref::Lossless, S::QualityLossless)]
+    let lang = s.lang;
+    let max = crate::ui::dock::current_track_max_quality(s);
+    [QualityPref::Saver, QualityPref::Balanced, QualityPref::Best]
         .into_iter()
-        .map(|(quality, text)| {
+        .map(|quality| {
+            let text = np_icons::quality_label(quality).get(lang);
             let selected = s.settings.quality == quality;
+            let ink = if selected { th::text() } else { th::text2() };
+            let detail = crate::ui::dock::quality_rate_text(quality, max, lang, false);
+            let check = row().w(16.0).h_full().center().children(selected.then(|| icon(&icons::CHECK, 15.0).color(th::text())));
             Entry::Row(
                 row()
                     .key(format!("quality-{quality:?}"))
                     .role("radio")
-                    .label(text.get(s.lang))
+                    .label(text)
                     .checked(selected)
                     .w_full()
                     .h(kit::MENU_ROW)
-                    .px(10.0)
+                    .pl(10.0)
+                    .pr(8.0)
+                    .gap(8.0)
                     .items_center()
                     .radius(8.0)
                     .cursor(Cursor::Pointer)
@@ -416,11 +426,13 @@ pub(super) fn quality_entries(s: &State) -> Vec<Entry> {
                     .hov(th::veil(0.06))
                     .press(th::veil(0.10))
                     .on_press(move |s: &mut State| {
-                        s.settings.quality = quality;
-                        s.mark_settings_dirty();
+                        s.set_quality(quality);
                         s.close_popover();
                     })
-                    .child(label(text.get(s.lang), th::BODY, if selected { th::text() } else { th::text2() })),
+                    .child(icon(np_icons::quality_icon(quality), 18.0).color(ink))
+                    .child(label(text, th::BODY, ink).grow(1.0).min_w(0.0).truncate())
+                    .child(label(detail, th::MONO, if selected { th::text2() } else { th::text3() }))
+                    .child(check),
             )
         })
         .collect()

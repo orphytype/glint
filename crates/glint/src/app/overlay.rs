@@ -157,6 +157,15 @@ impl State {
         }
     }
 
+    /// Switches the Now Playing side panel while remembering the previous tab for smooth transitions.
+    pub fn set_np_tab(&mut self, tab: NpTab) {
+        if self.np_tab == tab {
+            return;
+        }
+        self.np_tab_prev = self.np_panel();
+        self.np_tab = tab;
+    }
+
     /// Active side panel on Now Playing, keeping the lyrics panel steady while the next track's
     /// lyrics are in flight so it never flashes shut between tracks.
     pub fn np_panel(&self) -> NpTab {

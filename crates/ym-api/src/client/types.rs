@@ -7,11 +7,9 @@ pub enum Quality {
     Saver,
     /// Up to 192 kbps.
     Balanced,
-    /// The best lossy rendition (320 kbps MP3 / 256 kbps AAC).
+    /// The highest rendition available for the track: FLAC when offered, else the best lossy stream.
     #[default]
     Best,
-    /// FLAC when the account and the track have it, else the best lossy one.
-    Lossless,
 }
 
 impl Quality {
@@ -19,8 +17,8 @@ impl Quality {
     pub(crate) fn file_info_name(self) -> &'static str {
         match self {
             Quality::Saver => "nq",
-            Quality::Balanced | Quality::Best => "hq",
-            Quality::Lossless => "lossless",
+            Quality::Balanced => "hq",
+            Quality::Best => "lossless",
         }
     }
 }
@@ -73,6 +71,7 @@ pub struct StreamInfo {
     pub urls: Vec<String>,
     pub codec: String,
     pub bitrate_kbps: u32,
+    pub size_bytes: u64,
 }
 
 /// What happened, for the Wave's feedback channel.

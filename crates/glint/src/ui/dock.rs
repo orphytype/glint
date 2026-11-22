@@ -65,7 +65,16 @@ pub fn rail(s: &State, w: f32) -> El {
             .child(nav_plate(on));
         if on {
             // The marker glides from place to place.
-            b = b.child(el().key("nav-mark").matched("nav-mark").absolute(-(RAIL_W - NAV_BTN) * 0.5 + 1.0, (NAV_BTN - 18.0) * 0.5).w(3.0).h(18.0).radius(1.5).fill(th::text()));
+            b = b.child(
+                el().key("nav-mark")
+                    .matched("nav-mark")
+                    .animated_changes()
+                    .absolute(-(RAIL_W - NAV_BTN) * 0.5 + 1.0, (NAV_BTN - 18.0) * 0.5)
+                    .w(3.0)
+                    .h(18.0)
+                    .radius(1.5)
+                    .fill(th::text()),
+            );
         }
         places = places.child(b.child(icon(if on { on_icon } else { off }, NAV_GLYPH).color(if on { th::text() } else { th::text3() })));
     }
@@ -120,8 +129,9 @@ pub fn rail(s: &State, w: f32) -> El {
         .h_full()
         .items_center()
         .transition(Transition::none())
+        .instant_changes()
         .child(row().key("rail-top").w(RAIL_W).h(TITLE_H).center().window_drag().transition(Transition::none()).child(profile(s)))
-        .child(places.mt(28.0))
+        .child(places.mt(8.0))
         // The pins take the room between the places and the foot buttons and scroll inside it,
         // so many of them never run under the downloads and settings.
         .child(
@@ -133,7 +143,6 @@ pub fn rail(s: &State, w: f32) -> El {
                 .mt(12.0)
                 .mb(8.0)
                 .scroll(rune::ScrollSpec { stick_bottom: false })
-                .scroll_edge_fade(14.0)
                 .child(col().w_full().items_center().py(6.0).child(pinned)),
         )
         .child(downloads)
@@ -159,7 +168,6 @@ fn pinned_strip(s: &State) -> El {
             .w(PINNED_BTN)
             .h(PINNED_BTN)
             .radius(radius)
-            .clip_rounded(radius)
             .cursor(Cursor::Pointer)
             .press_scale(th::PRESS)
             .hov_group()
@@ -167,7 +175,7 @@ fn pinned_strip(s: &State) -> El {
             .on_secondary_press(move |s: &mut State, _press, _tx: &mut Tx| {
                 s.open_popover(Popover::Pinned { item: menu_item.clone(), anchor: format!("pinned-{item_key}") });
             })
-            .child(kit::cover(s, item.cover.as_deref(), PINNED_BTN, radius));
+            .child(kit::cover_sm(s, item.cover.as_deref(), PINNED_BTN, radius));
         cover = cover.child(el().absolute(0.0, 0.0).w_full().h_full().radius(radius).fill(th::veil(0.0)).hov(th::veil(0.10)));
         rail = rail.child(cover);
     }
@@ -239,11 +247,11 @@ pub fn nav_chip(key: &'static str, ic: &'static Icon, name: &str, on: bool) -> E
 /// The account's picture, `size` points across (its initial until the picture is in, or when it
 /// has none).
 pub fn account_picture(s: &State, size: f32, initial: &str) -> El {
-    let base = row().w(size).h(size).radius(size * 0.5).clip_rounded(size * 0.5).center().fill(th::veil(0.08)).transition(Transition::none());
+    let base = row().w(size).h(size).radius(size * 0.5).center().fill(th::veil(0.08)).transition(Transition::none());
     let style = if size >= 36.0 { th::H3 } else { th::BODY_M };
     let base = base.child(label(initial.to_owned(), style, th::text()));
     match &s.avatar {
-        Some(url) => base.child(kit::picture_url(s, url)),
+        Some(url) => base.child(kit::picture_url(s, url, size * 0.5)),
         None => base,
     }
 }
@@ -293,6 +301,7 @@ pub fn bar(s: &State, w: f32) -> El {
         // moving layer, which made the dock blur disappear for one or more frames whenever a tab
         // remounted the page below it.
         .transition(Transition::none())
+        .instant_changes()
         // The bar is a surface of its own: a press or the pointer over it never reaches the page
         // underneath, and while the pointer is on it the page takes no hover (`kit::set_under`).
         .on_press(|_s: &mut State| {})
@@ -338,7 +347,7 @@ fn playing(s: &State, width: f32) -> El {
         .child(if s.np_open {
             el().key("bar-cover-gap").w(BAR_COVER).h(BAR_COVER)
         } else {
-            kit::playing_cover(s, t, BAR_COVER, 10.0, "bar-cover-mark").key("bar-cover").matched("np-cover").motion(th::FLIGHT)
+            kit::playing_cover(s, t, BAR_COVER, 10.0, "bar-cover-mark").key("bar-cover").matched("np-cover").animated_changes().motion(th::FLIGHT)
         })
         .child(
             col()
@@ -357,44 +366,45 @@ fn playing(s: &State, width: f32) -> El {
         .gap(6.0)
         .items_center()
         .justify_center()
-        .child(kit::quiet_btn("dock-dislike", &ni::DISLIKE, 17.0, 32.0, th::text3(), S::Dislike.get(lang)).on_press(move |s: &mut State| s.dislike(&bad)))
+        .child(kit::np_like_button(s, t, 32.0, 17.0))
         .child(shuffle_btn(s))
         .child(kit::skip_btn(s, false, "prev", &ni::PREV, 18.0, 32.0, th::text2()))
         .child(kit::bar_play_btn(s, 36.0, 22.0))
         .child(kit::skip_btn(s, true, "next", &ni::NEXT, 18.0, 32.0, th::text2()))
         .child(repeat_btn(s))
-        .child(kit::np_like_button(s, t, 32.0, 17.0));
+        .child(kit::quiet_btn("dock-dislike", &ni::DISLIKE, 17.0, 32.0, th::text3(), S::Dislike.get(lang)).on_press(move |s: &mut State| s.dislike(&bad)));
+    let time_w = if s.player.dur_ms >= 3_600_000 { 58.0 } else { 40.0 };
     let seek = row()
         .key("bar-seek")
         .w_full()
         .h(16.0)
         .gap(8.0)
         .items_center()
-        .child(label("0:00", th::MONO, th::text3()).live_text(&s.lives.clock).w(40.0).align(Align::End))
+        .child(label("0:00", th::MONO, th::text3()).live_text(&s.lives.clock).w(time_w).align(Align::End))
         .child(row().grow(1.0).min_w(0.0).child(seek_bars("seek", crate::ui::np::seed_of(&t.id), 18.0)))
-        .child(label("-0:00", th::MONO, th::text3()).live_text(&s.lives.remaining).w(40.0));
+        .child(label("-0:00", th::MONO, th::text3()).live_text(&s.lives.remaining).w(time_w));
     let middle = col().key("bar-mid").w(mid_w).gap(2.0).items_center().child(transport).child(seek);
 
     let mut right = row().key("bar-right").w(side_w).h(56.0).gap(2.0).justify_end().items_center();
-    let inline_vol = side_w >= 265.0;
-    let rbtn = if inline_vol { 34.0 } else { BTN };
+    let inline_vol = side_w >= 285.0;
+    let rbtn = if inline_vol { 32.0 } else { BTN };
     if !compact {
         let lyrics = if s.lyrics_missing() {
             kit::quiet_off("bar-lyrics", &ni::LYRICS, 18.0, rbtn, S::NoLyricsShort.get(lang))
         } else {
             kit::quiet_btn("bar-lyrics", &ni::LYRICS, 18.0, rbtn, th::text2(), S::Lyrics.get(lang)).on_press(|s: &mut State| {
-                s.np_tab = NpTab::Lyrics;
+                s.set_np_tab(NpTab::Lyrics);
                 s.set_np(true);
             })
         };
         right = right.child(lyrics).child(kit::quiet_btn("bar-queue", &ni::QUEUE, 18.0, rbtn, th::text2(), S::Queue.get(lang)).on_press(|s: &mut State| {
-            s.np_tab = NpTab::Queue;
+            s.set_np_tab(NpTab::Queue);
             s.set_np(true);
         }));
     }
     // The volume is right there in a wide bar (a slider beside the speaker, which mutes); in a
     // narrow one the speaker opens the volume card on hover and mutes on click.
-    right = right.child(quality_btn_at(s, "bar-quality"));
+    right = right.child(bar_quality_btn(s, rbtn, compact));
     right = if inline_vol { right.child(volume_inline(s)) } else { right.child(volume_btn(s)) };
     // What can be done with the track (as the right click on it, or the open player's "more").
     right = right.child(
@@ -409,7 +419,7 @@ fn playing(s: &State, width: f32) -> El {
         .pr(10.0)
         .items_center()
         .justify_between()
-        .transition(Transition::opacity().springs(th::RISE))
+        .transition(Transition::none())
         .child(now)
         .child(middle)
         .child(right)
@@ -430,7 +440,7 @@ pub(super) fn volume_wheel(s: &mut State, e: rune::WheelEvent, _tx: &mut Tx) -> 
     true
 }
 
-fn toggle_mute_remembered(s: &mut State) {
+pub(super) fn toggle_mute_remembered(s: &mut State) {
     let v = s.player.volume;
     if v > 0.01 {
         UNMUTED.with(|c| c.set(v));
@@ -438,6 +448,29 @@ fn toggle_mute_remembered(s: &mut State) {
     } else {
         s.set_volume(UNMUTED.with(std::cell::Cell::get).max(0.05));
     }
+}
+
+/// Modern horizontal volume slider shared by the mini-player bar and Now Playing.
+pub(super) fn volume_slider(s: &State, key: &'static str, w: f32) -> El {
+    let v = s.player.volume.clamp(0.0, 1.0);
+    let fill_w = if v > 0.005 { (w * v).max(4.0) } else { 0.0 };
+    let thumb_x = (w * v - 6.0).clamp(0.0, (w - 12.0).max(0.0));
+    el().key(key)
+        .role("slider")
+        .label(S::Volume.get(s.lang))
+        .w(w)
+        .h(28.0)
+        .cursor(Cursor::Pointer)
+        .hov_group()
+        .instant_changes()
+        .on_wheel(volume_wheel)
+        .on_drag(|s: &mut State, d: &mut Drag, _tx: &mut Tx| {
+            let f = if d.w > 0.0 { (d.x / d.w).clamp(0.0, 1.0) } else { 0.0 };
+            s.set_volume(f);
+        })
+        .child(el().absolute(0.0, 12.0).w(w).h(4.0).radius(2.0).fill(th::veil(0.16)))
+        .child(el().absolute(0.0, 12.0).w(fill_w).h(4.0).radius(2.0).fill(th::text2()).gcol(th::text()))
+        .child(el().absolute(thumb_x, 8.0).w(12.0).h(12.0).radius(6.0).fill(th::text()).gop(0.0, 1.0))
 }
 
 /// The speaker and a slider beside it: pressing the speaker mutes (and brings the volume back),
@@ -451,25 +484,8 @@ fn volume_inline(s: &State) -> El {
     } else {
         &ni::VOLUME
     };
-    let speaker = kit::quiet_btn("vol-mute", ic, 18.0, 32.0, th::text2(), S::Volume.get(s.lang)).on_wheel(volume_wheel).on_press(toggle_mute_remembered);
-    let w = 72.0;
-    let slider = el()
-        .key("vol-inline")
-        .role("slider")
-        .label(S::Volume.get(s.lang))
-        .w(w)
-        .h(28.0)
-        .cursor(Cursor::Pointer)
-        .hov_group()
-        .on_wheel(volume_wheel)
-        .on_drag(|s: &mut State, d: &mut Drag, _tx: &mut Tx| {
-            let f = if d.w > 0.0 { (d.x / d.w).clamp(0.0, 1.0) } else { 0.0 };
-            s.set_volume(f);
-        })
-        .child(el().absolute(0.0, 12.0).w(w).h(4.0).radius(2.0).fill(th::veil(0.16)))
-        .child(el().absolute(0.0, 12.0).w((w * v).max(4.0)).h(4.0).radius(2.0).fill(th::text2()).gcol(th::text()))
-        .child(el().absolute((w * v - 6.0).clamp(0.0, w - 12.0), 8.0).w(12.0).h(12.0).radius(6.0).fill(th::text()).shadow(1.0, 3.0, th::rgba(0x000000, 0.3)).gop(0.0, 1.0));
-    row().key("vol-inline-row").gap(2.0).pr(4.0).items_center().child(speaker).child(slider)
+    let speaker = kit::quiet_btn("vol-mute", ic, 18.0, 30.0, th::text2(), S::Volume.get(s.lang)).on_wheel(volume_wheel).on_press(toggle_mute_remembered);
+    row().key("vol-inline-row").gap(2.0).pr(4.0).items_center().child(speaker).child(volume_slider(s, "vol-inline", 60.0))
 }
 
 /// The speaker opens the volume card on hover, adjusts volume on wheel, and mutes on click.
@@ -498,31 +514,95 @@ fn volume_btn(s: &State) -> El {
         .on_press(toggle_mute_remembered)
 }
 
-pub(super) fn quality_btn_at(s: &State, key: &'static str) -> El {
-    let text = match s.settings.quality {
-        QualityPref::Saver => S::QualityShortSaver,
-        QualityPref::Balanced => S::QualityShortBalanced,
-        QualityPref::Best => S::QualityShortBest,
-        QualityPref::Lossless => S::QualityShortLossless,
-    };
+const BADGE_STYLE: rune::TextStyle = rune::TextStyle::new(11.0, 500.0).family(th::SANS).tracking(0.15).lh(14.0).features("'tnum' 1");
+
+/// Cached maximum audio quality offered by Yandex for the currently playing track.
+pub(super) fn current_track_max_quality(s: &State) -> Option<crate::net::StreamQuality> {
+    s.current().and_then(|t| s.track_max_quality.get(&t.id).copied())
+}
+
+fn quality_tip(s: &State) -> String {
+    let lang = s.lang;
+    let base = format!("{} · {}", S::Quality.get(lang), ni::quality_label(s.settings.quality).get(lang));
+    let cur = s.player.current_audio;
+    let max = current_track_max_quality(s);
+    match (cur, max) {
+        (Some(c), Some(m)) if m.is_higher_than(c) => {
+            format!("{base} · {}: {} · {}: {}", S::QualityNow.get(lang), c.format_full(lang), S::QualityMaxForTrack.get(lang), m.format_full(lang))
+        }
+        (Some(c), _) => {
+            let fmt = c.format_full(lang);
+            if fmt.is_empty() { base } else { format!("{base} · {fmt}") }
+        }
+        (None, Some(m)) => {
+            let fmt = m.format_full(lang);
+            if fmt.is_empty() { base } else { format!("{base} · {}: {fmt}", S::QualityMaxForTrack.get(lang)) }
+        }
+        (None, None) => base,
+    }
+}
+
+/// What the quality menu and the bar plate show for a tier: its bitrate, capped by the track.
+pub(crate) fn quality_rate_text(quality: QualityPref, max: Option<crate::net::StreamQuality>, lang: crate::i18n::Lang, compact: bool) -> String {
+    let kbps = S::Kbps.get(lang);
+    match quality {
+        QualityPref::Saver => {
+            let rate = max.map(|m| m.bitrate_kbps).filter(|&b| b > 0 && b < 64).unwrap_or(64);
+            format!("{rate} {kbps}")
+        }
+        QualityPref::Balanced => {
+            let rate = max.map(|m| m.bitrate_kbps).filter(|&b| b > 0 && b < 192).unwrap_or(192);
+            format!("{rate} {kbps}")
+        }
+        QualityPref::Best => {
+            let text = if compact { max.map(|m| m.format_compact(lang)) } else { max.map(|m| m.format_full(lang)) };
+            text.filter(|t| !t.is_empty()).unwrap_or_else(|| S::QualityMax.get(lang).to_owned())
+        }
+    }
+}
+
+/// The plate in the bar shows the quality the listener picked, not the stream still playing.
+fn bar_quality_text(s: &State) -> String {
+    quality_rate_text(s.settings.quality, current_track_max_quality(s), s.lang, true)
+}
+
+fn quality_pill(s: &State, key: &'static str, text: String, h: f32) -> El {
+    let open = s.popover_open && matches!(&s.popover, Some(Popover::Quality { anchor }) if anchor == key);
+    let tip = quality_tip(s);
     row()
         .key(key)
         .role("button")
-        .label(S::Quality.get(s.lang))
-        .help(S::Quality.get(s.lang))
-        .h(24.0)
-        .min_w(36.0)
-        .px(7.0)
-        .mx(3.0)
-        .radius(7.0)
+        .label(tip.as_str())
+        .help(tip)
+        .checked(open)
+        .h(h)
+        .px(8.0)
+        .radius(h * 0.5)
         .items_center()
-        .justify_center()
         .cursor(Cursor::Pointer)
-        .border(1.0, th::veil(0.12))
+        .fill(th::veil(if open { 0.12 } else { 0.06 }))
+        .border(1.0, th::veil(if open { 0.16 } else { 0.08 }))
         .hov(th::veil(0.06))
         .press(th::veil(0.10))
+        .press_scale(th::PRESS)
         .on_press(move |s: &mut State| s.open_popover(Popover::Quality { anchor: key.into() }))
-        .child(label(text.get(s.lang), th::MONO, th::text2()))
+        .child(label(text, BADGE_STYLE, if open { th::text() } else { th::text2() }))
+}
+
+fn bar_quality_btn(s: &State, size: f32, compact: bool) -> El {
+    if !compact {
+        return quality_pill(s, "bar-quality", bar_quality_text(s), 24.0).mx(2.0);
+    }
+    quality_btn_at(s, "bar-quality", size, th::text2())
+}
+
+pub(super) fn quality_btn_at(s: &State, key: &'static str, size: f32, rest: rune::Color) -> El {
+    let q = s.settings.quality;
+    let tip = quality_tip(s);
+    let open = s.popover_open && matches!(&s.popover, Some(Popover::Quality { anchor }) if anchor == key);
+    let ic = ni::quality_icon(q);
+    let b = if open { kit::quiet_toggle(key, ic, 18.0, size, true, &tip) } else { kit::quiet_btn(key, ic, 18.0, size, rest, &tip) };
+    b.on_press(move |s: &mut State| s.open_popover(Popover::Quality { anchor: key.into() }))
 }
 
 /// Whether My Wave is what is playing.

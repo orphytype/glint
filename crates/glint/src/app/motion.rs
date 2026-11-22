@@ -60,7 +60,7 @@ impl Pop {
             (self.t, self.v) = (target, 0.0);
             return true;
         }
-        let omega = std::f32::consts::TAU / if open { 0.62 } else { 0.5 };
+        let omega = std::f32::consts::TAU / if open { 0.42 } else { 0.36 };
         self.spring(target, omega, 1.0, dt)
     }
 
@@ -103,9 +103,33 @@ const WHEEL_SPRING: rune::Spring = rune::Spring::new(0.24, 0.0);
 /// How far ahead of playback the synced lyrics run, in milliseconds.
 pub const LYRIC_LEAD_MS: u64 = 250;
 
+struct ScrollThumb {
+    rect: rune::Live<[f32; 4]>,
+    vp_h: f32,
+    track_h: f32,
+    x: f32,
+    w: f32,
+}
+
+impl ScrollThumb {
+    fn sync(&self, offset: f32, max: f32) {
+        if max <= 2.0 || self.track_h <= 1.0 || self.vp_h <= 1.0 {
+            self.rect.set([self.x, 0.0, 0.0, 0.0]);
+            return;
+        }
+        let total = self.vp_h + max;
+        let thumb_h = (self.track_h * (self.vp_h / total)).clamp(28.0, self.track_h);
+        let frac = (offset / max).clamp(0.0, 1.0);
+        let y = frac * (self.track_h - thumb_h);
+        self.rect.set([self.x, y, self.w, thumb_h]);
+    }
+}
+
 thread_local! {
-    /// Last reported `[offset, max]` scroll position for each page scroll key.
-    pub static PAGE_SCROLL: RefCell<HashMap<String, [f32; 2]>> = RefCell::new(HashMap::new());
+    /// Last reported `[offset, max]` scroll position for each scroll container key.
+    static PAGE_SCROLL: RefCell<HashMap<String, [f32; 2]>> = RefCell::new(HashMap::new());
+    /// Live thumb rectangles updated directly from `on_scroll_offset` without rebuilding the view.
+    static SCROLL_THUMBS: RefCell<HashMap<String, ScrollThumb>> = RefCell::new(HashMap::new());
     /// Scroll key of the active page, used to forward wheel events over inner widgets.
     pub static PAGE_KEY: RefCell<String> = const { RefCell::new(String::new()) };
 }
@@ -113,6 +137,51 @@ thread_local! {
 /// Last reported `[offset, max]` scroll state for `key`.
 pub fn page_scroll(key: &str) -> Option<[f32; 2]> {
     PAGE_SCROLL.with_borrow(|m| m.get(key).copied())
+}
+
+/// Records the latest scroll position and moves the matching live scrollbar thumb in place.
+pub fn report_scroll(key: &str, p: rune::ScrollPos) {
+    let (offset, max) = (p.offset[1], p.max[1]);
+    PAGE_SCROLL.with_borrow_mut(|m| {
+        if m.len() > 24 && !m.contains_key(key) {
+            m.retain(|k, _| !k.starts_with("sheet-scroll-"));
+        }
+        m.insert(key.to_owned(), [offset, max]);
+    });
+    SCROLL_THUMBS.with_borrow(|m| {
+        if let Some(t) = m.get(key) {
+            t.sync(offset, max);
+        }
+    });
+}
+
+/// Registers geometry for `key`'s scrollbar thumb and returns its live `[x, y, w, h]` handle.
+pub fn scroll_thumb(key: &str, vp_h: f32, track_h: f32, x: f32, w: f32) -> rune::Live<[f32; 4]> {
+    let pos = page_scroll(key).unwrap_or([0.0, 0.0]);
+    SCROLL_THUMBS.with_borrow_mut(|m| {
+        if m.len() > 24 && !m.contains_key(key) {
+            m.retain(|k, _| !k.starts_with("sheet-scroll-"));
+        }
+        let t = m.entry(key.to_owned()).or_insert_with(|| ScrollThumb { rect: rune::Live::new([x, 0.0, 0.0, 0.0]), vp_h, track_h, x, w });
+        t.vp_h = vp_h;
+        t.track_h = track_h;
+        t.x = x;
+        t.w = w;
+        t.sync(pos[0], pos[1]);
+        t.rect.clone()
+    })
+}
+
+/// Drops cached scroll state for `key` (called before switching to a page so stale thumbs hide).
+pub fn clear_scroll(key: &str) {
+    PAGE_SCROLL.with_borrow_mut(|m| {
+        m.remove(key);
+    });
+    SCROLL_THUMBS.with_borrow(|m| {
+        if let Some(t) = m.get(key) {
+            t.sync(0.0, 0.0);
+        }
+    });
 }
 
 impl WheelGlide {

@@ -44,9 +44,6 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     }
     fx::set_resizing(s.is_resizing());
     fx::set_effects_off(s.settings.effects == crate::store::Effects::Off);
-    if let Some([bw, _]) = cx.layout_size("vol-track") {
-        s.vol_w.set(bw);
-    }
     s.win_w.set(w);
     // Until the GPU takes over, the launch screen covers the whole window, so the page under it is
     // left out. Its turned mood names would stop the CPU from painting the first frame, and its
@@ -89,9 +86,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         .child(el().key("fx-pulse").absolute(0.0, 0.0).size(0.0, 0.0).live_offset(&s.fx_pulse).transition(Transition::none()))
         .child(el().key("field").absolute(0.0, 0.0).w_full().h_full().fx(fx::FIELD).paint_order(PAINT_FIELD));
     if logged_in {
-        if np_full {
-            app = app.child(np::page(s, w, h, 1.0, true)).child(kit::snapshot());
-        } else {
+        if !np_full {
             // Under a player that is coming over, the page leaves at once when it is covered (its
             // own fade out would play on top of the player).
             let page = if np_open { pages::page(s, w, h).transition(Transition::none()) } else { pages::page(s, w, h) };
@@ -101,25 +96,39 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .child(kit::snapshot())
                 .child(kit::veil_top(TITLE_H + 24.0))
                 .child(kit::veil_bottom(if bar_on { BAR_H + BAR_GAP + 28.0 } else { 40.0 }))
+                .child(kit::page_scrollbar(h))
                 .child(dock::rail(s, w));
+        }
+        // Opening: bar sits beneath `np` so `np-cover` flies unobstructed above everything.
+        if bar_on && np_open && !np_full {
+            kit::set_under(on_card);
+            app = app.child(dock::bar(s, w));
+            kit::set_under(on_surface);
+        }
+        if np_full || np_moving {
+            app = app.child(np::page(s, w, h, if np_full { 1.0 } else { np_t }, np_open, np_full));
+        }
+        // Single backdrop snapshot when settled on Now Playing, so opening/closing never runs two
+        // full-screen backdrop copies and blur pyramid sets in the same frame.
+        if np_full {
+            app = app.child(kit::snapshot());
+        }
+        // Closing (or browsing): bar sits above the fading `np` curtain so `bar-cover` flies cleanly
+        // back down into the mini-player without being hidden behind `np-canvas`.
+        if bar_on && !np_open {
+            kit::set_under(on_card);
+            app = app.child(dock::bar(s, w));
+            kit::set_under(on_surface);
         }
     } else {
         app = app.child(kit::snapshot()).child(login::page(s));
     }
-    if bar_on && !np_full {
-        kit::set_under(on_card);
-        app = app.child(dock::bar(s, w));
-        kit::set_under(on_surface);
-    }
-    if np_moving {
-        app = app.child(np::page(s, w, h, np_t, np_open)).child(kit::snapshot().key("np-snapshot"));
-    }
     kit::set_under(false);
     app = app.child(titlebar(s, ins.leading, ins.trailing, logged_in, np_open));
     if logged_in && (np_full || np_moving) {
-        app = app.child(np_close(s, ins.leading, if np_open { np_t } else { 0.0 }));
+        app = app.child(np_close(s, ins.leading, if np_open { np_t } else { 0.0 }, np_full));
         if np_open {
-            app = app.child(np_source(s, w, h, ins.leading, ins.trailing, np_t));
+            app = app.child(np_source(s, w, h, ins.leading, ins.trailing, np_t, np_full));
         }
     }
     if logged_in && s.menu_visible() {
@@ -217,26 +226,36 @@ fn titlebar(s: &State, lead: f32, trail: f32, logged_in: bool, np: bool) -> El {
 /// Name"; pressing it leads there. It is glass, as tall as the way out beside it and in the same
 /// colours, and like it comes and goes through its glass's own `hide` (`t`: how far the player is
 /// open).
-fn np_source(s: &State, w: f32, h: f32, lead: f32, trail: f32, t: f32) -> El {
+fn chip_surface(radius: f32, alpha: f32, glass_on: bool) -> El {
+    if glass_on {
+        return kit::glass_alpha(Glass::Chip, radius, alpha);
+    }
+    let a = alpha.clamp(0.0, 1.0);
+    el().absolute(0.0, 0.0).w_full().h_full().radius(radius).fill(th::pop().alpha(0.72 * a)).border(2.0, th::veil(0.13 * a)).transition(Transition::none())
+}
+
+fn np_source(s: &State, w: f32, h: f32, lead: f32, trail: f32, t: f32, settled: bool) -> El {
     let Some(from) = &s.playing_from else { return el() };
     let t = t.clamp(0.0, 1.0);
     let text = from.line(s.lang);
-    let panel_open = s.np_panel() != crate::app::NpTab::Closed;
-    let (x, side, _, _) = np::columns(s, w, h, panel_open);
+    let (cover_x, cover) = np::cover_span(s, w, h);
     let c = dock::CHIP;
-    // Stay clear of `np-close` on the left, the window caption controls on the right, and the side
-    // panel when lyrics or the queue are open.
+    // Stay centered over the cover, never touching `np-close` on the left, the window caption
+    // controls on the right, or sticking out past the cover's edges.
     let min_x = kit::CHROME_INSET + lead + c + 12.0;
     let win_right = (w - trail - 16.0).max(min_x + 80.0);
-    let max_right = if panel_open { (x + side).max(min_x + 120.0).min(win_right) } else { win_right };
-    let max_pw = side.min((max_right - min_x).max(80.0)).max(80.0);
-    let max_text = (max_pw - 56.0).max(0.0);
+    let left_bound = min_x.max(cover_x);
+    let right_bound = (cover_x + cover).min(win_right).max(left_bound + 80.0).min(win_right);
+    let max_pw = (right_bound - left_bound).max(80.0);
+    let overhead = 14.0 + 18.0 + 8.0 + 14.0;
+    let max_text = (max_pw - overhead).max(0.0);
     let tw = rune::text::measure(&text, &[], th::SMALL, None).0.ceil().min(max_text);
-    let pw = (56.0 + tw).min(max_pw);
+    let pw = (overhead + tw + 2.0).min(max_pw);
     let glyph = if from.wave { kit::wave_glyph(18.0, th::text().alpha(t)) } else { icon(&icons::QUEUE, 16.0).color(th::text().alpha(t)).w(18.0) };
     let page = from.page.clone();
-    let cx = x + side * 0.5;
-    let px = (cx - pw * 0.5).clamp(min_x, (max_right - pw).max(min_x));
+    let cx = cover_x + cover * 0.5;
+    let px = (cx - pw * 0.5).clamp(left_bound, (right_bound - pw).max(left_bound));
+    let slide = if s.is_resizing() || !settled { rune::Spring::NONE } else { th::SLIDE };
     let mut pill = row()
         .key("np-source")
         .role(if page.is_some() { "link" } else { "note" })
@@ -245,17 +264,17 @@ fn np_source(s: &State, w: f32, h: f32, lead: f32, trail: f32, t: f32) -> El {
         .w(pw)
         .max_w(max_pw)
         .h(c)
-        .pl(14.0)
-        .pr(16.0)
+        .px(14.0)
         .gap(8.0)
         .radius(c * 0.5)
         .items_center()
         .no_window_drag()
         .transition(Transition::none())
-        .motion(rune::Spring::NONE)
-        .child(kit::glass_alpha(Glass::Chip, c * 0.5, t))
+        .animated_changes()
+        .motion(slide)
+        .child(chip_surface(c * 0.5, t, settled))
         .child(glyph)
-        .child(label(text, th::SMALL, th::text().alpha(t)).truncate().max_w(max_text));
+        .child(label(text, th::SMALL, th::text().alpha(t)).truncate().grow(1.0).min_w(0.0));
     if let Some(p) = page {
         pill = pill.cursor(Cursor::Pointer).press_scale(th::PRESS).on_press(move |s: &mut State| s.go(p.clone()));
     }
@@ -265,7 +284,7 @@ fn np_source(s: &State, w: f32, h: f32, lead: f32, trail: f32, t: f32) -> El {
 /// The way out of the player, at the window's top left. It is glass, which cannot take a group
 /// fade, so it comes and goes with the player through its own `hide` (`t`: how far the player is
 /// open).
-fn np_close(s: &State, lead: f32, t: f32) -> El {
+fn np_close(s: &State, lead: f32, t: f32, settled: bool) -> El {
     let t = t.clamp(0.0, 1.0);
     let c = dock::CHIP;
     row()
@@ -283,7 +302,7 @@ fn np_close(s: &State, lead: f32, t: f32) -> El {
         .press_scale(th::PRESS)
         .transition(Transition::none())
         .motion(rune::Spring::NONE)
-        .child(kit::glass_alpha(Glass::Chip, c * 0.5, t))
+        .child(chip_surface(c * 0.5, t, settled))
         .child(icon(&icons::CHEVRON_DOWN, kit::GLYPH).color(th::text().alpha(t)))
         .on_press(|s: &mut State| s.set_np(false))
 }
@@ -353,7 +372,7 @@ fn island(s: &State, w: f32) -> El {
         .gap(9.0)
         .items_center()
         .justify_center()
-        .transition(Transition::opacity().combined(Transition::scale(0.9)).springs(rune::SpringPair::new(rune::Spring::new(0.3, 0.0), rune::Spring::new(0.18, 0.0))))
+        .transition(kit::pop_in(0.95, 0.0, rune::SpringPair::new(rune::Spring::new(0.26, 0.0), rune::Spring::new(0.14, 0.0))))
         .child(say.glyph)
         .child(label(say.text, th::BODY_M, th::rgb(0xf4f4f4)).truncate().max_w(max_text));
     let mut pill = row()
@@ -362,13 +381,11 @@ fn island(s: &State, w: f32) -> El {
         .w(iw)
         .h(ISLAND_H)
         .radius(ISLAND_H * 0.5)
-        .clip_rounded(ISLAND_H * 0.5)
         .fill(th::rgb(0x000000))
-        .border(1.0, if th::light() { th::rgba(0x000000, 0.0) } else { th::rgba(0xffffff, 0.09) })
-        .shadow(8.0, 24.0, th::rgba(0x000000, if th::light() { 0.22 } else { 0.40 }))
+        .border(2.0, if th::light() { th::rgba(0x000000, 0.14) } else { th::rgba(0xffffff, 0.14) })
         .no_window_drag()
         .motion(ISLAND_SPRING)
-        .transition(Transition::opacity().combined(Transition::scale(0.4)).springs(ISLAND_IN))
+        .transition(kit::pop_in(0.6, 0.0, ISLAND_IN).allow_small_scale())
         .child(line);
     if let Some(id) = say.toast {
         pill = pill.cursor(Cursor::Pointer).press_scale(th::PRESS).on_press(move |s: &mut State| s.toasts.retain(|t| t.id != id));

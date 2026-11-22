@@ -194,11 +194,11 @@ fn shape_slot(base: El, data: [f32; 4]) -> El {
 /// while its wave plays (`on`).
 /// `sat` and `light` (0..1 each) travel in the hue's slot: `hue + 360 * (s + 16 * l)`, each in
 /// sixteen steps.
-pub fn ribbon(key: impl Into<String>, seed: f32, hue: f32, sat: f32, light: f32, hovered: bool, on: bool) -> El {
+pub fn ribbon(key: impl Into<String>, seed: f32, [hue, sat, light]: [f32; 3], hovered: bool, on: bool, radius: f32) -> El {
     let look = Look { chosen: on, hovered, order: 0 };
     let (sq, lq) = ((sat.clamp(0.0, 1.0) * 15.0).round(), (light.clamp(0.0, 1.0) * 15.0).round());
     let packed = hue.rem_euclid(360.0).min(359.9) + 360.0 * (sq + 16.0 * lq);
-    shape_slot(el().key(key).absolute(0.0, 0.0).w_full().h_full().transition(Transition::none()), [Family::Ribbon as u32 as f32, seed, packed, look.flags()])
+    shape_slot(el().key(key).absolute(0.0, 0.0).w_full().h_full().radius(radius).transition(Transition::none()), [Family::Ribbon as u32 as f32, seed, packed, look.flags()])
 }
 
 /// My Wave's shape (`Family::Liquid`) filling a `side` box, in the form and print the user picked

@@ -1,6 +1,6 @@
 //! Playback quality, Now Playing backdrop, lyrics appearance, and 10-band equalizer tabs.
 
-use rune::{Color, Cursor, Drag, El, Tx, col, el, row};
+use rune::{Cursor, Drag, El, Tx, col, el, icon, row};
 use ym_audio::{BANDS, MAX_GAIN_DB};
 
 use super::{ROW_PAD, group, item, item_below, segmented, toggle, words};
@@ -9,8 +9,8 @@ use crate::i18n::{Lang, S};
 use crate::store::{PlayerLayout, QualityPref};
 use crate::theme::{self as th, veil};
 use crate::ui::{
-    kit::{self, label},
-    menu,
+    kit::{self, Hover as _, label},
+    menu, np_icons,
 };
 
 const LEVEL_W: f32 = 200.0;
@@ -21,16 +21,36 @@ const HZ_LABELS: [&str; BANDS] = ["31.5", "63", "125", "250", "500", "1k", "2k",
 
 pub(super) fn playback(s: &State, k: &rune_kit::Kit) -> Vec<El> {
     let lang = s.lang;
-    let qs = [QualityPref::Saver, QualityPref::Balanced, QualityPref::Best, QualityPref::Lossless];
-    let q = segmented(
-        k,
-        &[S::QualitySaver.get(lang), S::QualityBalanced.get(lang), S::QualityBest.get(lang), S::QualityLossless.get(lang)],
-        qs.iter().position(|q| *q == s.settings.quality).unwrap_or(0),
-        move |s, i| {
-            s.settings.quality = qs[i];
-            s.mark_settings_dirty();
-        },
-    );
+    let qs = [QualityPref::Saver, QualityPref::Balanced, QualityPref::Best];
+    let mut q = row().key("set-quality").padding(3.0).gap(2.0).radius(9.0).fill(veil(0.05)).border(1.0, veil(0.08)).items_center();
+    for quality in qs {
+        let on = s.settings.quality == quality;
+        let text = np_icons::quality_label(quality).get(lang);
+        let ink = if on { th::text() } else { th::text2() };
+        let mut cell = row()
+            .key(format!("set-q-{quality:?}"))
+            .role("radio")
+            .label(text)
+            .checked(on)
+            .h(28.0)
+            .px(10.0)
+            .gap(6.0)
+            .radius(6.5)
+            .items_center()
+            .cursor(Cursor::Pointer)
+            .hov(veil(if on { 0.0 } else { 0.05 }))
+            .press(veil(0.10))
+            .on_press(move |s: &mut State| s.set_quality(quality))
+            .child(icon(np_icons::quality_icon(quality), 16.0).color(ink))
+            .child(label(text, th::BODY_M, ink));
+        if on {
+            cell = cell.fill(if th::light() { th::pop() } else { veil(0.14) });
+            if th::light() {
+                cell = cell.border(1.0, veil(0.10));
+            }
+        }
+        q = q.child(cell);
+    }
     let layouts = [PlayerLayout::Auto, PlayerLayout::Comfortable, PlayerLayout::Compact, PlayerLayout::Cover];
     let layout = segmented(
         k,
@@ -51,8 +71,11 @@ pub(super) fn playback(s: &State, k: &rune_kit::Kit) -> Vec<El> {
         screen.push(item(name.get(lang), None, look_choice(s, k, i, opts)));
     }
     screen.extend(backdrop_rows(s, k));
-    let reset = kit::btn_small("set-look-reset", S::StageReset.get(lang), None);
-    let reset = if menu::look_changed(s) { reset.on_press(menu::reset_look) } else { reset.disabled(true).opacity(0.45) };
+    let reset = if menu::look_changed(s) {
+        kit::btn_small("set-look-reset", S::StageReset.get(lang), None).on_press(menu::reset_look)
+    } else {
+        kit::btn_small_disabled("set-look-reset", S::StageReset.get(lang), None)
+    };
     screen.push(item(S::StageLook.get(lang), Some(S::StageResetNote.get(lang)), reset));
     vec![
         group(
@@ -131,7 +154,7 @@ pub(in crate::ui) fn level_w(key: &str, value: f32, lw: f32, set: impl Fn(&mut S
         })
         .child(el().absolute(0.0, 10.0).w(lw).h(4.0).radius(2.0).fill(veil(0.12)))
         .child(el().absolute(0.0, 10.0).w((lw * v).max(4.0)).h(4.0).radius(2.0).fill(ink))
-        .child(el().absolute((lw * v - 8.0).clamp(0.0, lw - 16.0), 4.0).w(16.0).h(16.0).radius(8.0).fill(Color::WHITE).shadow(1.0, 4.0, th::rgba(0x000000, 0.3)))
+        .child(el().absolute((lw * v - 8.0).clamp(0.0, lw - 16.0), 4.0).w(16.0).h(16.0).radius(8.0).fill(ink))
 }
 
 pub(super) fn lyrics(s: &State, k: &rune_kit::Kit) -> Vec<El> {
@@ -179,7 +202,9 @@ fn eq_band(s: &State, i: usize) -> El {
     let knob_y = EQ_PAD + (0.5 - g / (2.0 * MAX_GAIN_DB)) * usable;
     let mid_y = EQ_PAD + 0.5 * usable;
     let (top, height) = if knob_y < mid_y { (knob_y, mid_y - knob_y) } else { (mid_y, knob_y - mid_y) };
-    let color = if enabled { th::text() } else { th::text3() };
+    let color = if enabled { th::text() } else { th::text3().alpha(0.55) };
+    let rail = veil(if enabled { 0.14 } else { 0.07 });
+    let tick = veil(if enabled { 0.26 } else { 0.13 });
     let value = if g.abs() < 0.05 { "0".to_owned() } else { format!("{g:+.1}") };
     let mx = EQ_W * 0.5;
     let hz = HZ_LABELS[i];
@@ -202,16 +227,19 @@ fn eq_band(s: &State, i: usize) -> El {
                 s.apply_eq();
             }
         })
-        .child(el().absolute(mx - 1.0, EQ_PAD).w(2.0).h(usable).radius(1.0).fill(veil(0.14)))
-        .child(el().absolute(mx - 8.0, mid_y - 0.5).w(16.0).h(1.0).fill(veil(0.26)))
+        .child(el().absolute(mx - 1.0, EQ_PAD).w(2.0).h(usable).radius(1.0).fill(rail))
+        .child(el().absolute(mx - 8.0, mid_y - 0.5).w(16.0).h(1.0).fill(tick))
         .child(el().absolute(mx - 1.5, top).w(3.0).h(height.max(0.5)).radius(1.5).fill(color))
         .child(el().absolute(mx - 6.0, knob_y - 6.0).w(12.0).h(12.0).radius(6.0).fill(color));
 
-    col().key(format!("eq-col-{i}")).w(EQ_W).gap(4.0).items_center().child(label(value, th::MONO, if enabled { th::text2() } else { th::text3() })).child(slider).child(label(
-        hz,
-        th::MONO,
-        th::text3(),
-    ))
+    col()
+        .key(format!("eq-col-{i}"))
+        .w(EQ_W)
+        .gap(4.0)
+        .items_center()
+        .child(label(value, th::MONO, if enabled { th::text2() } else { th::text3().alpha(0.55) }))
+        .child(slider)
+        .child(label(hz, th::MONO, if enabled { th::text3() } else { th::text3().alpha(0.55) }))
 }
 
 pub(super) fn equalizer(s: &State, k: &rune_kit::Kit) -> Vec<El> {
@@ -225,7 +253,7 @@ pub(super) fn equalizer(s: &State, k: &rune_kit::Kit) -> Vec<El> {
         s.player.eq.preamp_db = 0.0;
         s.apply_eq();
     });
-    let bands = row().w_full().px(ROW_PAD - 4.0).pt(14.0).pb(12.0).justify_between().opacity(if enabled { 1.0 } else { 0.45 }).children((0..BANDS).map(|i| eq_band(s, i)));
+    let bands = row().w_full().px(ROW_PAD - 4.0).pt(14.0).pb(12.0).justify_between().children((0..BANDS).map(|i| eq_band(s, i)));
     let on = toggle(k, enabled, S::EqEnabled.get(lang), |s| {
         s.player.eq.enabled = !s.player.eq.enabled;
         s.apply_eq();

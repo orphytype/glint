@@ -108,24 +108,18 @@ pub(super) fn flow_menu(name: &'static str, t: f32, open: bool, flow: &Flow, ent
     for (i, entry) in entries.into_iter().enumerate() {
         let a = ((t - 0.16 - 0.04 * i as f32) / 0.40).clamp(0.0, 1.0);
         let a = a * a * (3.0 - 2.0 * a);
-        items = items.child(match entry {
-            Entry::Row(r) => r.opacity(a),
-            Entry::Divider => divider().opacity(a),
-            Entry::Head(hd) => hd.opacity(a),
-            Entry::Block(b, _) => b.opacity(a),
-        });
+        let el = match entry {
+            Entry::Row(r) => r,
+            Entry::Divider => divider(),
+            Entry::Head(hd) => hd,
+            Entry::Block(b, _) => b,
+        };
+        items = items.child(if a < 0.999 { el.opacity(a) } else { el });
     }
-    let card = el()
-        .key(format!("{name}-card"))
-        .absolute(x, y)
-        .w(w)
-        .h(h)
-        .radius(radius)
-        .clip_rounded(radius)
-        .border(1.0, th::veil(0.10 * skin))
-        .children(kit::frost(radius, skin))
-        .transition(Transition::none())
-        .child(items);
+    let mut card = el().key(format!("{name}-card")).absolute(x, y).w(w).h(h).radius(radius).children(kit::frost(radius, skin)).transition(Transition::none()).child(items);
+    if t < 0.995 {
+        card = card.clip_rounded(radius);
+    }
     let card = if open { card.modal(true, move |s: &mut State| close(s)) } else { card };
 
     let mut layer = el().key(format!("{name}-layer")).absolute(0.0, 0.0).w_full().h_full().transition(Transition::none()).instant_changes();
@@ -144,7 +138,7 @@ pub fn popover(s: &State, cx: &Cx<State>, w: f32, h: f32) -> El {
     let (list, width) = match p {
         Popover::Actions { .. } => (popovers::action_entries(s), 248.0),
         Popover::Waves { choices, .. } => (popovers::wave_entries(s, choices), 300.0),
-        Popover::Quality { .. } => (popovers::quality_entries(s), 220.0),
+        Popover::Quality { .. } => (popovers::quality_entries(s), 272.0),
         Popover::Stage { .. } => {
             let pw = panels::stage_w(s, w, h);
             (panels::stage_entries(s, pw, h), pw)
@@ -225,14 +219,12 @@ pub fn volume(s: &State, cx: &Cx<State>, w: f32, h: f32) -> El {
         .center()
         .transition(Transition::none())
         .child(label(format!("{pct}"), th::MONO, th::text2()).opacity(((t - 0.15) / 0.3).clamp(0.0, 1.0)));
-    let card = el()
+    let mut card = el()
         .key("vol-card")
         .absolute(x, y)
         .w(cw)
         .h(ch)
         .radius(radius)
-        .clip_rounded(radius)
-        .border(1.0, th::veil(0.10 * skin))
         .children(kit::frost(radius, skin))
         .transition(Transition::none())
         .on_press(|_s: &mut State| {})
@@ -248,6 +240,9 @@ pub fn volume(s: &State, cx: &Cx<State>, w: f32, h: f32) -> El {
         })
         .child(number)
         .child(field);
+    if t < 0.995 {
+        card = card.clip_rounded(radius);
+    }
     el().key("vol-layer").absolute(0.0, 0.0).w(0.0).h(0.0).transition(Transition::none()).child(kit::snapshot().key("vol-snap").w(w).h(h)).child(card)
 }
 
