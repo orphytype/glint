@@ -13,7 +13,6 @@ mod backdrop;
 mod bugs;
 mod desktop;
 mod diag_log;
-#[cfg(feature = "tooling")]
 mod find;
 mod fixtures;
 mod fkcensor;
