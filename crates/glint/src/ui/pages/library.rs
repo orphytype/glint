@@ -1,6 +1,6 @@
 //! Library page: Liked tracks header, collection tabs, live search filter, and card grids.
 
-use rune::{Cursor, El, col, el, icon, row, text_input};
+use rune::{El, col, el, icon, row, text_input};
 
 use super::detail::{HEAD_COVER_R, HEAD_GAP, HEAD_SIDE, HEAD_SIDE_S, HEAD_STEP_BUTTONS, HEAD_STEP_BY};
 use super::shared::{GRID_GAP, album_card, artist_card, column, fit, grid, play_button, playlist_card, track_list};
@@ -49,8 +49,18 @@ pub(super) fn library(s: &State, w: f32) -> El {
     let p = s.pal();
     let lang = s.lang;
     let tab = s.library.tab;
-    let q = s.library.filter.text.trim().to_lowercase();
-    let matches_q = |hay: &str| hay.to_lowercase().contains(&q);
+    let q = s.library.filter.text.trim().to_owned();
+    let query = crate::find::Query::new(&q);
+    // Everything when there is no query; otherwise what the query finds, closest matches only.
+    let pick = |n: usize, fields: &dyn Fn(usize) -> Vec<String>| -> Vec<usize> {
+        match &query {
+            None => (0..n).collect(),
+            Some(qr) => crate::find::best((0..n).map(|i| {
+                let f = fields(i);
+                qr.tier(&f.iter().map(String::as_str).collect::<Vec<_>>())
+            })),
+        }
+    };
     let count = |n: Option<usize>| n.filter(|n| *n > 0);
     let tabs = [
         (LibTab::Tracks, S::Tracks, count(s.library.tracks.get().map(Vec::len))),
@@ -78,46 +88,18 @@ pub(super) fn library(s: &State, w: f32) -> El {
         .placeholder(S::SearchCollection.get(lang), th::text3())
         .caret(p.accent, p.accent.alpha(0.30))
         .on_edit(|s: &mut State| &mut s.library.filter);
-    let mut field = kit::field_surface(row())
-        .key("lib-search-field")
-        .h(LIB_CTL_H)
-        .pl(10.0)
-        .pr(4.0)
-        .gap(8.0)
-        .radius(kit::ctl_radius(LIB_CTL_H))
-        .items_center()
-        .child(icon(&icons::SEARCH, 16.0).color(th::text3()))
-        .child(input);
-    if !q.is_empty() {
-        field = field.child(kit::ibtn("lib-search-clear", &icons::CLOSE, 14.0, 28.0, th::text2(), S::ClearSearch.get(lang)).on_press(|s: &mut State| s.library.filter.clear()));
-    }
+    let clear = (!q.is_empty()).then(|| kit::search_clear("lib-search-clear", lang).on_press(|s: &mut State| s.library.filter.clear()));
+    let field = kit::search_field("lib-search-field", LIB_CTL_H, input, clear);
     let cw = column(w);
     let new_pl = (tab == LibTab::Playlists).then(|| {
-        kit::field_surface(row())
-            .key("lib-new-pl")
-            .role("button")
-            .label(S::NewPlaylist.get(lang))
-            .help(S::NewPlaylist.get(lang))
-            .w(LIB_CTL_H)
-            .h(LIB_CTL_H)
-            .radius(kit::ctl_radius(LIB_CTL_H))
-            .center()
-            .cursor(Cursor::Pointer)
-            .press_scale(th::PRESS)
-            .press(th::veil(0.10))
-            .child(icon(&icons::PLUS, 18.0).color(th::text()))
-            .on_press_tx(|s: &mut State, tx: &mut rune::Tx| {
+        kit::field_icon_btn("lib-new-pl", &icons::PLUS, S::NewPlaylist.get(lang)).on_press_tx(|s: &mut State, tx: &mut rune::Tx| {
                 s.ask_new_playlist(None);
                 tx.focus_when_shown("name-field", false);
             })
     });
     let sort_now =
         (tab == LibTab::Tracks && s.library.tracks.get().is_some_and(|v| v.len() > 2)).then(|| (s.library.sort != TrackSort::Original).then(|| s.library.sort.name().get(lang)));
-    let sort_w = match sort_now {
-        None => 0.0,
-        Some(None) => 31.0,
-        Some(Some(lbl)) => 43.0 + rune::text::measure(lbl, &[], th::BODY_M, None).0.ceil(),
-    };
+    let sort_w = sort_now.map_or(0.0, kit::sort_button_w);
     let sort_btn = sort_now.map(|now| {
         let open = s.popover_open && matches!(s.popover, Some(Popover::LibSort { .. }));
         kit::sort_button("lib-sort", s, now, open).on_press(|s: &mut State| s.open_popover(Popover::LibSort { anchor: "lib-sort".into() }))
@@ -146,7 +128,7 @@ pub(super) fn library(s: &State, w: f32) -> El {
             .key("lib-meta")
             .grow(1.0)
             .min_w(0.0)
-            .child(label(S::Liked.get(lang).to_owned(), th::TITLE_D, th::text()))
+            .child(label(S::Liked.get(lang).to_owned(), th::RELEASE, th::text()))
             .child(label(lead, th::SMALL, th::text3()).mt(HEAD_STEP_BY));
         if liked.is_some() {
             let more_on = s.popover_open && matches!(s.popover, Some(Popover::Liked { .. }));
@@ -159,16 +141,22 @@ pub(super) fn library(s: &State, w: f32) -> El {
                     let list = s.list(ListSrc::Liked);
                     s.play_all(list, false);
                 }))
-                .child(kit::round("lib-shuffle", kit::Weight::Soft, &icons::SHUFFLE, kit::BTN_H, 18.0, S::Shuffle.get(lang)).on_press(|s: &mut State| {
-                    let list = s.list(ListSrc::Liked);
-                    s.play_all(list, true);
-                }))
-                .child(kit::wave_button(s, "lib-wave", S::WaveByCollection.get(lang), S::LikedTracks.get(lang), Station::Collection, kit::BTN_H))
-                .child(
-                    kit::pill_icon("lib-more", kit::Weight::Soft, &icons::MORE, kit::BTN_H, 20.0, S::More.get(lang))
-                        .checked(more_on)
-                        .on_press(|s: &mut State| s.open_popover(Popover::Liked { anchor: "lib-more".into() })),
-                );
+                .child(kit::button_group(
+                    "lib-group",
+                    vec![
+                        kit::seg_icon("lib-shuffle", &icons::SHUFFLE, S::Shuffle.get(lang)).on_press(|s: &mut State| {
+                            let list = s.list(ListSrc::Liked);
+                            s.play_all(list, true);
+                        }),
+                        kit::seg_wave(s, "lib-wave", S::WaveByCollection.get(lang), S::LikedTracks.get(lang), Station::Collection),
+                        {
+                            let more = kit::seg_icon("lib-more", &icons::MORE, S::More.get(lang))
+                                .checked(more_on)
+                                .on_press(|s: &mut State| s.open_popover(Popover::Liked { anchor: "lib-more".into() }));
+                            if more_on { more.fill(th::veil(0.09)) } else { more }
+                        },
+                    ],
+                ));
             meta = meta.child(buttons);
         }
         let hero = if cw < 640.0 {
@@ -191,20 +179,11 @@ pub(super) fn library(s: &State, w: f32) -> El {
                 let n = if q.is_empty() && sort == TrackSort::Original {
                     v.len()
                 } else {
-                    let key = (q.clone(), sort, v.as_ptr() as usize, v.len());
+                    let key = (q, sort, v.as_ptr() as usize, v.len());
                     let mut shown = s.library.shown.borrow_mut();
                     let mut cached_key = s.library.shown_key.borrow_mut();
                     if *cached_key != key {
-                        *shown = if q.is_empty() {
-                            (0..v.len()).collect()
-                        } else {
-                            (0..v.len())
-                                .filter(|&i| {
-                                    let t = &v[i];
-                                    matches_q(&t.title) || matches_q(&t.artists_line()) || t.albums.first().is_some_and(|a| matches_q(&a.title))
-                                })
-                                .collect()
-                        };
+                        *shown = pick(v.len(), &|i| kit::track_fields(&v[i]));
                         sort.sort_indices(v, &mut shown);
                         *cached_key = key;
                     }
@@ -216,17 +195,17 @@ pub(super) fn library(s: &State, w: f32) -> El {
         },
         LibTab::Playlists => match &s.library.playlists {
             Load::Ready(v) if v.is_empty() => nothing(Ill::Shelf),
-            Load::Ready(v) => grid(v.iter().filter(|x| q.is_empty() || matches_q(&x.title)).map(|x| playlist_card(s, x, card)).collect()),
+            Load::Ready(v) => grid(pick(v.len(), &|i| vec![v[i].title.clone()]).into_iter().map(|i| playlist_card(s, &v[i], card)).collect()),
             other => kit::list_state(other, s).unwrap_or_else(el),
         },
         LibTab::Albums => match &s.library.albums {
             Load::Ready(v) if v.is_empty() => nothing(Ill::Shelf),
-            Load::Ready(v) => grid(v.iter().filter(|x| q.is_empty() || matches_q(&x.title) || matches_q(&x.artists_line())).map(|x| album_card(s, x, card)).collect()),
+            Load::Ready(v) => grid(pick(v.len(), &|i| vec![v[i].title.clone(), v[i].artists_line()]).into_iter().map(|i| album_card(s, &v[i], card)).collect()),
             other => kit::list_state(other, s).unwrap_or_else(el),
         },
         LibTab::Artists => match &s.library.artists {
             Load::Ready(v) if v.is_empty() => nothing(Ill::Shelf),
-            Load::Ready(v) => grid(v.iter().filter(|x| q.is_empty() || matches_q(&x.name)).map(|x| artist_card(s, x, card)).collect()),
+            Load::Ready(v) => grid(pick(v.len(), &|i| vec![v[i].name.clone()]).into_iter().map(|i| artist_card(s, &v[i], card)).collect()),
             other => kit::list_state(other, s).unwrap_or_else(el),
         },
     };

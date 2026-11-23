@@ -50,7 +50,15 @@ pub const SCENES: &[(&str, Scene)] = &[
     ("settings", settings),
     ("settings-lyrics", settings_lyrics),
     ("settings-ru", settings_ru),
+    ("settings-ru-sound", |s| settings_ru_on(s, crate::ui::settings::SetTab::Sound)),
+    ("settings-ru-player", |s| settings_ru_on(s, crate::ui::settings::SetTab::Player)),
+    ("settings-ru-mini", |s| settings_ru_on(s, crate::ui::settings::SetTab::Mini)),
+    ("settings-ru-startup", |s| settings_ru_on(s, crate::ui::settings::SetTab::Startup)),
+    ("settings-ru-storage", |s| settings_ru_on(s, crate::ui::settings::SetTab::Storage)),
+    ("settings-ru-about", |s| settings_ru_on(s, crate::ui::settings::SetTab::About)),
     ("settings-update", settings_update),
+    ("settings-find", settings_find),
+    ("library-find", library_find),
     ("settings-playback", settings_playback),
     ("nowplaying-backdrop", nowplaying_backdrop),
     ("nowplaying-backdrop-dither", nowplaying_backdrop_dither),
@@ -518,10 +526,10 @@ fn update_popover(s: &mut State) {
     home_ru(s);
     s.update_method = glint_update::Method::WindowsInstaller;
     s.update = crate::update::Ui::Available(glint_update::Release {
-        version: "0.9.3".into(),
-        page_url: "https://github.com/orphytype/glint/releases/tag/v0.9.3".into(),
+        version: "0.9.4".into(),
+        page_url: "https://github.com/orphytype/glint/releases/tag/v0.9.4".into(),
         notes: "Audio quality gets a pill in the mini player and a picker for batch downloads.\n• The quality menu shows each tier with its bitrate.\n• Covers load at the size each view needs, with the large Now Playing cover showing the cached one first.".into(),
-        asset: Some(glint_update::Asset { name: "Glint-0.9.3-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
+        asset: Some(glint_update::Asset { name: "Glint-0.9.4-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
     });
     s.open_popover(crate::app::Popover::Update { anchor: "update-pill".into() });
     s.pop.t = 1.0;
@@ -629,19 +637,19 @@ fn artist_all(s: &mut State) {
 /// The lyrics group of Settings with word lyrics switched on.
 fn settings_lyrics(s: &mut State) {
     settings(s);
-    s.settings_tab = crate::ui::settings::SetTab::Lyrics;
+    s.settings_tab = crate::ui::settings::SetTab::Player;
     s.settings.word_lyrics = true;
 }
 
 /// Settings with a newer version found, for the Updates group (scroll to the end of the page).
 fn settings_playback(s: &mut State) {
     settings(s);
-    s.settings_tab = crate::ui::settings::SetTab::Playback;
+    s.settings_tab = crate::ui::settings::SetTab::Sound;
 }
 
 fn settings_desktop(s: &mut State) {
     settings(s);
-    s.settings_tab = crate::ui::settings::SetTab::Desktop;
+    s.settings_tab = crate::ui::settings::SetTab::Mini;
 }
 
 fn settings_about(s: &mut State) {
@@ -665,7 +673,7 @@ fn settings_keys_rebind(s: &mut State) {
 /// What is saved on the disk, with the one button that deletes it.
 fn settings_storage(s: &mut State) {
     settings(s);
-    s.settings_tab = crate::ui::settings::SetTab::Cache;
+    s.settings_tab = crate::ui::settings::SetTab::Storage;
     s.disk_usage.set((14_300_000, 212_000_000, 48_000, s.now));
 }
 
@@ -673,16 +681,36 @@ fn settings_update(s: &mut State) {
     settings(s);
     s.update_method = glint_update::Method::WindowsInstaller;
     s.update = crate::update::Ui::Available(glint_update::Release {
-        version: "0.9.3".into(),
-        page_url: "https://github.com/orphytype/glint/releases/tag/v0.9.3".into(),
+        version: "0.9.4".into(),
+        page_url: "https://github.com/orphytype/glint/releases/tag/v0.9.4".into(),
         notes: "Audio quality gets a pill in the mini player and a picker for batch downloads.\n• The quality menu shows each tier with its bitrate.".into(),
-        asset: Some(glint_update::Asset { name: "Glint-0.9.3-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
+        asset: Some(glint_update::Asset { name: "Glint-0.9.4-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
     });
 }
 
 fn settings_ru(s: &mut State) {
     settings(s);
     s.lang = Lang::Ru;
+}
+
+/// The Settings search, typed in Latin letters with a typo, and the row a result opened.
+fn settings_find(s: &mut State) {
+    settings_ru_on(s, crate::ui::settings::SetTab::Startup);
+    s.settings_find = TextEdit::new("trei");
+    s.settings_found = Some((crate::ui::settings::item_key(S::CloseToTray.get(Lang::Ru)), s.now + 600.0));
+}
+
+/// The liked tracks filtered by a query in Cyrillic with a letter wrong.
+fn library_find(s: &mut State) {
+    library(s);
+    s.library.filter = TextEdit::new("пульс машин");
+}
+
+/// One page of Settings in Russian.
+fn settings_ru_on(s: &mut State, tab: crate::ui::settings::SetTab) {
+    settings_ru(s);
+    s.settings_tab = tab;
+    s.disk_usage.set((14_300_000, 212_000_000, 48_000, s.now));
 }
 
 fn light(s: &mut State) {

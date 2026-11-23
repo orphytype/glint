@@ -142,6 +142,7 @@ impl Gfx {
             self.art_change = 0.0;
         }
         self.art_change = if reduced { 99.0 } else { self.art_change + dt };
+        let art_fading = gpu.step_art(queue, dt, reduced);
         let cover_mix = (self.art_change / 1.1).clamp(0.0, 1.0);
         let fps_on = off_mask() & OFF_FPS != 0;
         if fps_on && device.features().contains(wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS) {
@@ -187,7 +188,7 @@ impl Gfx {
             }
         }
         let audio_live = quality != Effects::Off && !reduced && summary.audio_reactive && (self.smooth.level > 0.002 || self.smooth.beat > 0.01 || self.smooth.stirring());
-        let want_tick = summary.moving || audio_live;
+        let want_tick = summary.moving || audio_live || art_fading;
         let armed = TICK_ARMED.swap(false, Ordering::Relaxed);
         WANTS_TICK.store(want_tick, Ordering::Relaxed);
         let need_kick = want_tick && !armed;

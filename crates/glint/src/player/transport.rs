@@ -339,8 +339,6 @@ impl State {
         self.player.queue.clear();
         self.player.original.clear();
         self.player.index = None;
-        self.player.pending_index = None;
-        self.player.pending_token = None;
         self.player.playing = false;
         self.player.loading = false;
         self.player.pos_ms = 0;

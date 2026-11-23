@@ -120,6 +120,10 @@ fn fs_stage(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let look = st_look(0);
     let look2 = st_look(1);
     let beat = clamp(look2.x, 0.0, 1.0);
+    // The beat, eased in over a few frames and out over a quarter second, then given a soft
+    // shoulder: what the lively look breathes with.
+    let throb_raw = clamp(look2.y, 0.0, 1.0);
+    let throb = throb_raw * throb_raw * (3.0 - 2.0 * throb_raw);
     let moving = look2.z;
     let snare = clamp(look2.w, 0.0, 1.0);
 
@@ -148,7 +152,7 @@ fn fs_stage(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let d = st_rbox(rel, cover, corner);
     let rays_on = fx_on;
     let react = select(0.28, 1.0, lively);
-    let ray_gain = select(0.42, 0.75, lively);
+    let ray_gain = select(0.42, 0.60, lively);
     let clock = u.p1.x;
     let dist = max(d, 0.0);
     let parts = st_look(2);
@@ -162,21 +166,33 @@ fn fs_stage(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     if (rays_on && from_under > 0.0) {
         let th = atan2(rel.y, rel.x) + 3.14159265;
         let turn = clock * 0.012 * moving;
-        for (var i = 0; i < 3; i = i + 1) {
+        // Lively keeps two rings: the long rays that swell together on the beat and a ring of
+        // short ones that follow the spectrum. Calm adds a third ring of thin, faint rays.
+        let rings = select(3, 2, lively);
+        for (var i = 0; i < rings; i = i + 1) {
             let fi = f32(i);
-            let n = select(select(30.0, 18.0, i == 1), 10.0, i == 0);
+            let n = select(select(30.0, 18.0, i == 1), 12.0, i == 0);
             let dir = select(1.0, -1.0, i == 1);
             let shift = turn * dir * (1.0 + 0.5 * fi) + fi * 1.7 + seed;
             let cell = (th + shift) * n / 6.2831853;
             let j = floor(cell);
             let off = (fract(cell) - 0.5) * 6.2831853 / n * max(r, 1.0);
             let jit = sh_h(j + fi * 31.0, 77.0);
-            let wide = select(select(0.7, 1.0 + 0.5 * react * voice, i == 1), 1.6 + 0.9 * react * kick, i == 0);
+            var wide = select(select(0.7, 1.0 + 0.5 * react * voice, i == 1), 1.6 + 0.9 * react * kick, i == 0);
+            if (lively) { wide = select(0.9, 1.4 + 0.5 * throb, i == 0); }
             let z = off / (k * (0.6 + 0.5 * jit) * wide + 0.005 * dist);
             if (abs(z) < 3.5) {
                 var len = 0.0;
                 var lit = 0.0;
-                if (i == 0) {
+                if (lively && i == 0) {
+                    len = cover * (0.14 + 0.22 * throb + 0.05 * bass) * (0.85 + 0.30 * jit);
+                    lit = 0.30 + 0.40 * throb;
+                } else if (lively) {
+                    let phi = (j + 0.5) * 6.2831853 / n - shift - 3.14159265;
+                    let lb = clamp(st_live(st_band_of(phi)), 0.0, 1.0);
+                    len = cover * (0.08 + 0.14 * lb) * (0.75 + 0.50 * jit);
+                    lit = 0.22 + 0.26 * lb;
+                } else if (i == 0) {
                     len = cover * (0.18 + react * (0.30 * bass + 0.60 * kick) * (0.6 + 0.8 * jit));
                     lit = 0.30 + react * (0.30 * bass + 0.40 * kick);
                 } else {
@@ -196,15 +212,20 @@ fn fs_stage(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         }
         let g = 0.7853982 + 0.12 * sin(clock * 0.04 + seed);
         let hit = max(kick, snare);
-        let gl = cover * (0.45 + react * (0.35 * kick + 0.30 * snare + 0.35 * bass) + 0.3 * react * loud_now);
+        var gl = cover * (0.45 + react * (0.35 * kick + 0.30 * snare + 0.35 * bass) + 0.3 * react * loud_now);
+        if (lively) { gl = cover * (0.28 + 0.14 * throb); }
         let fall = exp(-dist / gl);
         let sg = sin(g);
         let cg = cos(g);
         let perp0 = abs(rel.x * sg - rel.y * cg);
         let perp1 = abs(rel.x * cg + rel.y * sg);
-        let gw = k * (0.8 + 0.5 * react * hit) + 0.004 * dist;
-        let cross_base = select(0.35, 0.50, lively);
-        rays = rays + (exp(-perp0 / gw) + exp(-perp1 / gw)) * fall * (cross_base + react * (0.18 * kick + 0.18 * snare));
+        var gw = k * (0.8 + 0.5 * react * hit) + 0.004 * dist;
+        var cross = 0.35 + react * (0.18 * kick + 0.18 * snare);
+        if (lively) {
+            gw = k * (0.8 + 0.3 * throb) + 0.003 * dist;
+            cross = 0.30 + 0.14 * throb;
+        }
+        rays = rays + (exp(-perp0 / gw) + exp(-perp1 / gw)) * fall * cross;
         rays = rays * ray_gain * from_under;
         if (rays > 0.0005) {
             let edge_dir = rel / max(max(abs(rel.x), abs(rel.y)), 1.0);
@@ -215,15 +236,16 @@ fn fs_stage(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         }
     }
 
-    let flash_strength = select(select(0.0, 0.48, fx_on), 1.0, lively);
+    let flash_strength = select(select(0.0, 0.48, fx_on), 0.85, lively);
     var halo = 0.0;
     var halo_col = mid;
     if (flash_strength > 0.0) {
         let key_ang = atan2(u.p3.y, u.p3.x);
         let tonal = clamp(u.p3.z, 0.0, 1.0);
         halo_col = mix(mid, sh_hsl(key_ang * 57.29578 + 360.0, 0.55, 0.58), 0.30 + 0.3 * tonal);
-        let pulse = select(0.07 * loud_now + 0.02 * beat + 0.25 * (0.04 * kick + 0.03 * snare + 0.05 * voice), 0.12 * loud_now + 0.04 * beat + 0.09 * kick + 0.05 * snare + 0.08 * voice, lively);
-        halo = flash_strength * exp(-dist / ((130.0 + react * (60.0 * bass + 50.0 * voice)) * k)) * (0.08 + pulse);
+        let pulse = select(0.07 * loud_now + 0.02 * beat + 0.25 * (0.04 * kick + 0.03 * snare + 0.05 * voice), 0.05 * loud_now + 0.10 * throb, lively);
+        let spread = select(130.0 + react * (60.0 * bass + 50.0 * voice), 110.0 + 30.0 * throb, lively);
+        halo = flash_strength * exp(-dist / (spread * k)) * (0.07 + pulse);
     }
 
     var col: vec3<f32>;
@@ -237,8 +259,8 @@ fn fs_stage(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         col = mix(col, mix(halo_col, paper, 0.4), halo * 0.8);
         col = mix(col, mix(ray_col, deep, 0.40), clamp(rays * 0.45, 0.0, 0.55));
     } else {
-        let g_pulse = select(0.0, select(0.45, 1.0, lively), fx_on);
-        col = ground * (0.30 + (0.10 + g_pulse * 0.08 * voice) * near + g_pulse * 0.04 * loud_now);
+        let g_pulse = select(0.0, 0.45, fx_on);
+        col = ground * (0.30 + (0.10 + g_pulse * 0.08 * voice) * near + g_pulse * 0.04 * loud_now + select(0.0, 0.04 * throb * near, lively));
         col = mix(u.ink.rgb, col, 0.94);
         col = col + halo_col * halo;
         col = col + ray_col * rays * 0.55;

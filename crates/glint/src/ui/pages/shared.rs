@@ -331,11 +331,9 @@ impl State {
                 }
             }
             ListSrc::Detail => {
-                let q = self.detail.filter.text.trim().to_lowercase();
-                if q.is_empty() || !matches!(self.page, Page::Playlist(..)) {
-                    self.detail.tracks.get(i)
-                } else {
-                    self.detail.tracks.iter().filter(|t| self.detail_track_matches(t, &q)).nth(i)
+                match self.detail_shown() {
+                    None => self.detail.tracks.get(i),
+                    Some(shown) => shown.get(i).and_then(|&j| self.detail.tracks.get(j)),
                 }
             }
             ListSrc::Search => self.search_view().and_then(|r| r.tracks.results.get(i)),
@@ -355,7 +353,9 @@ impl State {
     }
 }
 
-pub(super) fn play_button(s: &State, key: &str, page: Option<Page>, small: bool, start: fn(&mut State)) -> El {
+/// Plays what the page lists, or pauses and resumes it once it is what plays. `part` makes it a
+/// part of a `kit::button_group` instead of the white button.
+pub(super) fn play_button(s: &State, key: &str, page: Option<Page>, part: bool, start: fn(&mut State)) -> El {
     let own = page.as_ref().is_some_and(|p| s.queue_from(p));
     let (name, ic) = match (own, s.player.playing) {
         (true, true) => (S::Pause, &icons::PAUSE),
@@ -363,7 +363,7 @@ pub(super) fn play_button(s: &State, key: &str, page: Option<Page>, small: bool,
         (false, _) => (S::Play, &icons::PLAY),
     };
     let name = name.get(s.lang);
-    let b = if small { kit::btn_small(key, name, Some(ic)) } else { kit::btn_primary(key, name, Some(ic)) };
+    let b = if part { kit::seg_button(key, name, Some(ic)) } else { kit::btn_primary(key, name, Some(ic)) };
     b.on_press(move |s: &mut State| {
         if page.as_ref().is_some_and(|p| s.queue_from(p)) {
             s.toggle_pause();
@@ -375,7 +375,7 @@ pub(super) fn play_button(s: &State, key: &str, page: Option<Page>, small: bool,
 
 pub(super) fn track_list(key: &'static str, n: usize, src: ListSrc) -> El {
     let under = kit::under();
-    col().key(key).w_full().growth(GrowthSpec::default()).virtual_rows(
+    kit::bleed(col().key(key).growth(GrowthSpec::default()).virtual_rows(
         n,
         ROW_H,
         move |s: &State, i: usize| Cow::Owned(s.list_id(src, i)),
@@ -383,7 +383,7 @@ pub(super) fn track_list(key: &'static str, n: usize, src: ListSrc) -> El {
             Some(t) => kit::built_under(under, || kit::track_row(s, t, i + 1, src)),
             None => el().h(ROW_H),
         },
-    )
+    ))
 }
 
 pub fn wave_title(id: &str) -> S {

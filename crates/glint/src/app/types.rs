@@ -197,6 +197,9 @@ pub struct SearchUi {
     pub edit: TextEdit,
     /// The text the current results are for.
     pub query: String,
+    /// The query as if typed on the other keyboard layout, when the query as typed found nothing
+    /// and this found something. The results are for this text then.
+    pub relaid: Option<String>,
     /// The text last seen in the box, and when it changed (for the debounce).
     pub seen: String,
     pub changed_at: f64,
@@ -256,6 +259,9 @@ pub struct Detail {
     pub unsorted: Option<Vec<Track>>,
     /// Playlist search filter text.
     pub filter: TextEdit,
+    /// What the filter finds (indices into `tracks`), and the query, sort and list it is for.
+    pub shown: std::cell::RefCell<Vec<usize>>,
+    pub shown_key: std::cell::RefCell<(String, TrackSort, usize, usize)>,
     /// Artist discography sort order and release-type filter.
     pub disc_sort: DiscSort,
     pub disc_kind: DiscKind,

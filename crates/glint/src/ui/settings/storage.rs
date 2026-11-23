@@ -1,8 +1,9 @@
-//! Storage usage, updates, and about tabs inside Settings.
+//! The Storage page (disk use and history) and the About page (version, updates, diagnostics,
+//! links).
 
 use rune::{Align, Cursor, El, Icon, Tx, col, el, row};
 
-use super::{GROUP_R, ROW_PAD, app_mark, danger_btn, figure, group, item, toggle};
+use super::{GROUP_R, ROW_PAD, app_mark, danger_btn, figure, found_mark, group, item, toggle};
 use crate::app::State;
 use crate::i18n::{Lang, S};
 use crate::theme::{self as th, veil};
@@ -44,7 +45,7 @@ fn delete_content(s: &mut State) {
     s.disk_usage_busy.set(false);
 }
 
-pub(super) fn cache(s: &State) -> Vec<El> {
+pub(super) fn storage(s: &State) -> Vec<El> {
     let lang = s.lang;
     let (images, audio, metadata) = {
         let (images, audio, metadata, at) = s.disk_usage.get();
@@ -115,10 +116,10 @@ pub(super) fn cache(s: &State) -> Vec<El> {
     } else {
         figure(S::HistoryEmpty.get(lang).to_owned())
     };
-    vec![used, group("set-store", None, vec![item(S::StorageContent.get(lang), Some(S::StorageContentNote.get(lang)), delete)], None)]
+    vec![used, group("set-store", None, vec![item(S::StorageContent.get(lang), Some(S::StorageContentNote.get(lang)), delete)], None), super::general::history(s)]
 }
 
-pub(super) fn updates(s: &State, k: &rune_kit::Kit) -> Vec<El> {
+fn updates(s: &State, k: &rune_kit::Kit) -> El {
     use crate::update::Ui;
     let lang = s.lang;
     let check = || kit::btn_small("update-check", S::CheckNow.get(lang), None).on_press(|s: &mut State| s.check_updates(true));
@@ -147,21 +148,16 @@ pub(super) fn updates(s: &State, k: &rune_kit::Kit) -> Vec<El> {
         }
         Ui::Installing => (S::UpdateInstalling.get(lang).to_owned(), None, el()),
     };
-    let mut says = col()
-        .grow(1.0)
-        .min_w(0.0)
-        .gap(3.0)
-        .child(label(format!("Glint {}", env!("CARGO_PKG_VERSION")), th::H2, th::text()))
-        .child(label(status, th::SMALL, th::text2()).wrap().align(Align::Start));
+    let mut says = col().grow(1.0).min_w(0.0).gap(3.0).child(label(status, th::BODY_M, th::text()).wrap().align(Align::Start));
     if let Some(n) = note {
-        says = says.child(label(n.to_owned(), th::SMALL, th::text3()).wrap().align(Align::Start));
+        says = says.child(label(n.to_owned(), th::SMALL, th::text2()).wrap().align(Align::Start));
     }
-    let now = row().key("set-version").w_full().px(ROW_PAD).py(16.0).gap(16.0).items_center().child(app_mark(44.0)).child(says).child(control);
+    let now = row().key("set-version").w_full().min_h(54.0).px(ROW_PAD).py(12.0).gap(24.0).items_center().children(found_mark("set-version")).child(says).child(control);
     let auto = toggle(k, s.settings.auto_update, S::AutoUpdate.get(lang), |s| {
         s.settings.auto_update = !s.settings.auto_update;
         s.mark_settings_dirty();
     });
-    vec![group("set-update", None, vec![now], None), group("set-update-auto", None, vec![item(S::AutoUpdate.get(lang), None, auto)], None)]
+    group("set-update", Some(S::Updates.get(lang)), vec![now, item(S::AutoUpdate.get(lang), None, auto)], None)
 }
 
 fn link_row(key: &str, ic: &'static Icon, name: &str, url: &'static str) -> El {
@@ -181,6 +177,7 @@ fn link_row(key: &str, ic: &'static Icon, name: &str, url: &'static str) -> El {
         .on_press_tx(move |_s: &mut State, tx: &mut Tx| {
             let _ = tx.open_url(url);
         })
+        .children(found_mark(key))
         .child(rune::icon(ic, 16.0).color(th::text2()))
         .child(label(name.to_owned(), th::BODY_M, th::text()).grow(1.0).min_w(0.0))
         .child(rune::icon(&icons::EXTERNAL, 14.0).color(th::text3()).gcol(th::text2()))
@@ -236,5 +233,5 @@ pub(super) fn about(s: &State, k: &rune_kit::Kit) -> Vec<El> {
         ],
         Some(S::Credits.get(lang)),
     );
-    vec![hero, diagnostics, links]
+    vec![hero, updates(s, k), diagnostics, links]
 }

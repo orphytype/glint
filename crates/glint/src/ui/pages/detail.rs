@@ -13,12 +13,12 @@ use crate::ui::{
     kit::{self, Hover as _, ListSrc, PAGE_MAX, RAIL_W, label},
 };
 
-pub(super) const HEAD_SIDE: f32 = 176.0;
+pub(super) const HEAD_SIDE: f32 = 160.0;
 pub(super) const HEAD_SIDE_S: f32 = 140.0;
 pub(crate) const HEAD_COVER_R: f32 = 18.0;
 pub(super) const HEAD_STEP_BY: f32 = 6.0;
 pub(super) const HEAD_STEP_BUTTONS: f32 = 14.0;
-pub(super) const HEAD_GAP: f32 = 28.0;
+pub(super) const HEAD_GAP: f32 = 24.0;
 
 fn head_picture(s: &State, side: f32) -> El {
     let lang = s.lang;
@@ -124,31 +124,32 @@ fn head_buttons(s: &State) -> El {
     let lang = s.lang;
     let d = &s.detail;
     let mut bar = row().key("d-buttons").w_full().gap(8.0).items_center().flex_wrap();
+    let mut parts = Vec::new();
     if !d.tracks.is_empty() {
-        bar = bar
-            .child(play_button(s, "d-play", d.page.clone(), false, |s| {
-                let list = s.detail.tracks.clone();
-                s.play_all(list, false);
-            }))
-            .child(kit::round("d-shuffle", kit::Weight::Soft, &icons::SHUFFLE, kit::BTN_H, 18.0, S::Shuffle.get(lang)).on_press(|s: &mut State| {
-                let list = s.detail.tracks.clone();
-                s.play_all(list, true);
-            }));
+        bar = bar.child(play_button(s, "d-play", d.page.clone(), false, |s| {
+            let list = s.detail.tracks.clone();
+            s.play_all(list, false);
+        }));
+        parts.push(kit::seg_icon("d-shuffle", &icons::SHUFFLE, S::Shuffle.get(lang)).on_press(|s: &mut State| {
+            let list = s.detail.tracks.clone();
+            s.play_all(list, true);
+        }));
     }
-    let wave = match &d.page {
-        Some(Page::Artist(id)) => Some(kit::wave_button(s, "d-wave", S::WaveByArtist.get(lang), &d.title, Station::Artist(id.clone()), kit::BTN_H)),
-        Some(Page::Album(id)) => Some(kit::wave_button(s, "d-wave", S::WaveByRelease.get(lang), &d.title, Station::Album(id.clone()), kit::BTN_H)),
-        _ => None,
-    };
-    if let Some(w) = wave {
-        bar = bar.child(w);
+    match &d.page {
+        Some(Page::Artist(id)) => parts.push(kit::seg_wave(s, "d-wave", S::WaveByArtist.get(lang), &d.title, Station::Artist(id.clone()))),
+        Some(Page::Album(id)) => parts.push(kit::seg_wave(s, "d-wave", S::WaveByRelease.get(lang), &d.title, Station::Album(id.clone()))),
+        _ => {}
+    }
+    if matches!(d.page, Some(Page::Album(_))) && d.tracks.len() > 2 {
+        parts.push(track_sort_part(s));
     }
     let on = s.popover_open && matches!(s.popover, Some(Popover::Actions { .. }));
-    bar = bar.child(
-        kit::pill_icon("d-more", kit::Weight::Soft, &icons::MORE, kit::BTN_H, 20.0, S::More.get(lang))
-            .checked(on)
-            .on_press(|s: &mut State| s.open_popover(Popover::Actions { anchor: "d-more".into() })),
-    );
+    let mut more = kit::seg_icon("d-more", &icons::MORE, S::More.get(lang)).checked(on).on_press(|s: &mut State| s.open_popover(Popover::Actions { anchor: "d-more".into() }));
+    if on {
+        more = more.fill(th::veil(0.09));
+    }
+    parts.push(more);
+    bar = bar.child(kit::button_group("d-group", parts));
     if let Some(Page::Playlist(uid, kind)) = d.page {
         let upload = kit::btn_soft("d-upload", S::UploadTrack.get(lang), Some(&icons::UPLOAD)).on_press_tx(move |_s: &mut State, tx: &mut Tx| {
             let opts = FileDialogOptions { title: S::UploadTrack.get(lang).to_owned(), ..Default::default() }
@@ -172,12 +173,10 @@ fn head_button_bones(s: &State) -> El {
         .gap(8.0)
         .items_center()
         .flex_wrap()
-        .child(kit::button_bone("d-play-bone", kit::button_width(S::Play.get(s.lang), true)))
-        .child(kit::button_bone("d-shuffle-bone", kit::BTN_H));
-    if matches!(d.page, Some(Page::Artist(_) | Page::Album(_))) {
-        bar = bar.child(kit::button_bone("d-wave-bone", kit::BTN_H));
-    }
-    bar.child(kit::button_bone("d-more-bone", kit::BTN_H))
+        .child(kit::button_bone("d-play-bone", kit::button_width(S::Play.get(s.lang), true)));
+    let parts = if matches!(d.page, Some(Page::Artist(_) | Page::Album(_))) { 3.0 } else { 2.0 };
+    bar = bar.child(kit::button_bone("d-group-bone", parts * kit::BTN_H + parts - 1.0));
+    bar
 }
 
 pub(super) fn detail(s: &State, w: f32) -> El {
@@ -191,7 +190,7 @@ pub(super) fn detail(s: &State, w: f32) -> El {
         _ => S::Artist,
     };
     let all_mode = d.is_artist && d.showing_all;
-    let mut body = col().gap(40.0);
+    let mut body = col().gap(32.0);
 
     let failed = matches!(d.state, Load::Failed(_));
     let coming = !failed && !matches!(d.state, Load::Ready(_));
@@ -261,12 +260,7 @@ pub(super) fn detail(s: &State, w: f32) -> El {
             let card = card.min(196.0);
             let is_playlist = matches!(d.page, Some(Page::Playlist(..)));
             if !d.tracks.is_empty() {
-                let q = d.filter.text.trim().to_lowercase();
-                let shown_count = if is_playlist && !q.is_empty() {
-                    d.tracks.iter().filter(|t| s.detail_track_matches(t, &q)).count()
-                } else {
-                    d.tracks.len()
-                };
+                let shown_count = s.detail_shown().map_or(d.tracks.len(), |v| v.len());
                 let list = if shown_count == 0 {
                     kit::empty(&p, Ill::Lens, S::NoResults.get(lang))
                 } else {
@@ -286,16 +280,21 @@ pub(super) fn detail(s: &State, w: f32) -> El {
                         .child(label(S::AllTracks.get(lang), th::SECTION, th::text()))
                         .child(label(count, th::BODY, th::text3()).truncate().min_w(0.0))
                         .child(el().grow(1.0))
-                        .child(track_sort_button(s))
-                        .child(play_button(s, "d-all-play", d.page.clone(), true, |s| {
-                            let list = s.detail.tracks.clone();
-                            s.play_all(list, false);
-                        }))
-                        .child(kit::round("d-all-shuffle", kit::Weight::Soft, &icons::SHUFFLE, 32.0, 16.0, S::Shuffle.get(lang)).on_press(|s: &mut State| {
-                            let list = s.detail.tracks.clone();
-                            s.play_all(list, true);
-                        }));
-                    col().key("d-tracks").mt(16.0).gap(10.0).child(heading).child(list)
+                        .child(kit::button_group(
+                            "d-all-group",
+                            vec![
+                                track_sort_part(s),
+                                play_button(s, "d-all-play", d.page.clone(), true, |s| {
+                                    let list = s.detail.tracks.clone();
+                                    s.play_all(list, false);
+                                }),
+                                kit::seg_icon("d-all-shuffle", &icons::SHUFFLE, S::Shuffle.get(lang)).on_press(|s: &mut State| {
+                                    let list = s.detail.tracks.clone();
+                                    s.play_all(list, true);
+                                }),
+                            ],
+                        ));
+                    col().key("d-tracks").mt(16.0).gap(14.0).child(heading).child(list)
                 } else if is_playlist {
                     let input = text_input(&d.filter, th::BODY)
                         .key("pl-search")
@@ -306,30 +305,18 @@ pub(super) fn detail(s: &State, w: f32) -> El {
                         .placeholder(S::SearchTrack.get(lang), th::text3())
                         .caret(p.accent, p.accent.alpha(0.30))
                         .on_edit(|s: &mut State| &mut s.detail.filter);
-                    let mut field = kit::field_surface(row())
-                        .key("pl-search-field")
-                        .grow(1.0)
-                        .min_w(0.0)
-                        .h(38.0)
-                        .pl(12.0)
-                        .pr(6.0)
-                        .gap(8.0)
-                        .radius(19.0)
-                        .items_center()
-                        .child(icon(&icons::SEARCH, 16.0).color(th::text3()))
-                        .child(input);
-                    if !q.is_empty() {
-                        field = field.child(
-                            kit::ibtn("pl-search-clear", &icons::CLOSE, 14.0, 28.0, th::text2(), S::ClearSearch.get(lang)).on_press(|s: &mut State| s.detail.filter.clear()),
-                        );
-                    }
-                    let mut search_row = row().key("pl-search-row").w_full().gap(10.0).items_center().child(field);
+                    let clear = (!d.filter.text.trim().is_empty()).then(|| kit::search_clear("pl-search-clear", lang).on_press(|s: &mut State| s.detail.filter.clear()));
+                    let field = kit::search_field("pl-search-field", kit::BTN_H, input, clear).grow(1.0).min_w(0.0);
+                    let mut search_row = row().key("pl-search-row").w_full().gap(8.0).items_center().child(field);
                     if d.tracks.len() > 2 {
                         search_row = search_row.child(track_sort_button(s));
                     }
                     col().key("d-tracks").gap(14.0).child(search_row).child(list)
+                } else if !d.is_artist {
+                    // An album's list goes without a heading: the page is the album. Its sort
+                    // is with the buttons at the top.
+                    col().key("d-tracks").child(list)
                 } else {
-                    let title = if d.is_artist { S::PopularTracks } else { S::Tracks };
                     let all = d.is_artist.then(|| {
                         let mut m = kit::more_link("d-all", S::All.get(lang)).on_press_tx(|s: &mut State, tx: &mut Tx| {
                             s.show_all_artist_tracks(true);
@@ -340,9 +327,8 @@ pub(super) fn detail(s: &State, w: f32) -> El {
                         }
                         m
                     });
-                    let sort = (d.tracks.len() > 2 && !d.is_artist).then(|| track_sort_button(s));
-                    let more = heading_side(sort, all);
-                    col().key("d-tracks").gap(10.0).child(kit::list_heading("d-tracks-h", title.get(lang), more)).child(list)
+                    let more = heading_side(None, all);
+                    col().key("d-tracks").gap(10.0).child(kit::list_heading("d-tracks-h", S::PopularTracks.get(lang), more)).child(list)
                 };
                 body = body.child(kit::rise(section, 2));
             }
@@ -408,6 +394,14 @@ fn track_sort_button(s: &State) -> El {
     let open = s.popover_open && matches!(s.popover, Some(Popover::TrackSort { .. }));
     let now = (d.sort != TrackSort::Original).then(|| d.sort.name().get(s.lang));
     kit::sort_button("d-sort", s, now, open).on_press(|s: &mut State| s.open_popover(Popover::TrackSort { anchor: "d-sort".into() }))
+}
+
+/// The track sort as a part of a button group.
+fn track_sort_part(s: &State) -> El {
+    let d = &s.detail;
+    let open = s.popover_open && matches!(s.popover, Some(Popover::TrackSort { .. }));
+    let now = (d.sort != TrackSort::Original).then(|| d.sort.name().get(s.lang));
+    kit::seg_sort("d-sort", s, now, open).on_press(|s: &mut State| s.open_popover(Popover::TrackSort { anchor: "d-sort".into() }))
 }
 
 fn format_listeners(n: u64, lang: Lang) -> String {

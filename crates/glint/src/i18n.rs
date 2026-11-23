@@ -175,10 +175,11 @@ strings! {
     Search => "Search", "Поиск";
     Liked => "Liked", "Мне нравится";
     Settings => "Settings", "Настройки";
+    FindSetting => "Search", "Поиск";
     Account => "Account", "Аккаунт";
     AboutApp => "About", "О приложении";
     Queue => "Queue", "Очередь";
-    UpNext => "Up next", "Далее в очереди";
+    UpNext => "Up next", "Далее";
     Lyrics => "Lyrics", "Текст";
     Back => "Back", "Назад";
     Close => "Close", "Закрыть";
@@ -225,6 +226,7 @@ strings! {
     Artists => "Artists", "Исполнители";
     Playlists => "Playlists", "Плейлисты";
     NoResults => "No results", "Ничего не найдено";
+    ShowingFor => "Showing results for “{}”", "Результаты по запросу «{}»";
     TopResult => "Top result", "Лучший результат";
     ShowAll => "Show all", "Показать все";
     Browse => "Browse by mood", "Музыка под настроение";
@@ -250,9 +252,9 @@ strings! {
     DownloadQuality => "Download quality", "Качество скачивания";
     DeleteDownload => "Delete download", "Удалить скачанное";
     DeleteDownloadConfirm => "Delete downloaded track?", "Удалить скачанный трек?";
-    DeleteDownloadNote => "The track will be removed from this computer.", "Трек будет удалён с компьютера.";
+    DeleteDownloadNote => "The file goes from this computer.", "Файл удалится с этого компьютера.";
     DeleteDownloadsConfirm => "Delete downloaded tracks?", "Удалить скачанные треки?";
-    DeleteDownloadsNote => "The downloaded tracks will be removed from this computer.", "Скачанные треки будут удалены с компьютера.";
+    DeleteDownloadsNote => "The files go from this computer.", "Файлы удалятся с этого компьютера.";
     DownloadDeleted => "Download removed", "Скачанное удалено";
     DownloadDeleteFailed => "Couldn't remove the download", "Не удалось удалить скачанное";
     DownloadInProgress => "Downloading", "Скачивается";
@@ -288,7 +290,7 @@ strings! {
     StageCalm => "Calm", "Спокойно";
     StageLively => "Lively", "Живо";
     StageReset => "Reset", "Сбросить";
-    StageResetNote => "Restores the default player look and removes your picture.", "Возвращает стандартный вид плеера и убирает свою картинку.";
+    StageResetNote => "Also removes your picture.", "Своя картинка тоже уберётся.";
     StageBack => "Background", "Фон";
     Listen => "Listen", "Слушать";
     Pin => "Pin", "Закрепить";
@@ -300,7 +302,7 @@ strings! {
     OpenDownloads => "Open downloads folder", "Открыть папку загрузок";
     ClearDownloadHistory => "Clear download history", "Очистить историю загрузок";
     DownloadHistoryCleared => "Download history cleared", "История загрузок очищена";
-    DownloadAllLiked => "Download liked songs", "Скачать понравившиеся треки";
+    DownloadAllLiked => "Download Liked", "Скачать «Мне нравится»";
     LyricAlign => "Alignment", "Выравнивание";
     AlignLeft => "Left", "Слева";
     AlignCenter => "Centre", "По центру";
@@ -321,22 +323,25 @@ strings! {
     OpenInYandexMusic => "Open in Yandex Music", "Открыть в Яндекс Музыке";
     Explicit => "Explicit", "Ненормативная лексика";
     ExplicitHint => "Explicit: contains strong language", "Содержит ненормативную лексику";
-    CleanLoaded => "Uncensored version loaded (FckCensor)", "Загружена версия без цензуры (FckCensor)";
+    CleanLoaded => "Uncensored version", "Версия без цензуры";
     PlayAllNext => "Play next", "Играть следующими";
     // library
     PopularTracks => "Popular tracks", "Популярные треки";
     AllTracks => "All tracks", "Все треки";
     All => "All", "Все";
     SetLook => "Look", "Внешний вид";
-    SetPlayback => "Playback", "Воспроизведение";
-    SetDesktop => "On the desktop", "На рабочем столе";
+    SetStartup => "Startup and tray", "Запуск и трей";
+    SetLaunch => "Startup", "Запуск";
+    SetTray => "Tray", "Трей";
+    SetBackdrop => "Background", "Фон";
+    SetLyrics => "Lyrics", "Текст песни";
     Year => "Year", "Год";
     Genre => "Genre", "Жанр";
     Genres => "Genres", "Жанры";
     Duration => "Duration", "Длительность";
     ReleaseDate => "Release date", "Дата релиза";
     Description => "Description", "Описание";
-    NoLyricsShort => "No lyrics for this track", "У этого трека нет текста";
+    NoLyricsShort => "No lyrics", "Нет текста";
     GoodMorning => "Good morning", "Доброе утро";
     GoodAfternoon => "Good afternoon", "Добрый день";
     GoodEvening => "Good evening", "Добрый вечер";
@@ -381,7 +386,7 @@ strings! {
     RerollShapes => "New shapes", "Другие формы";
     // now playing
     NowPlaying => "Now playing", "Сейчас играет";
-    NoLyrics => "No lyrics for this track", "Для этого трека нет текста";
+    NoLyrics => "This track has no lyrics", "У этого трека нет текста";
     Instrumental => "Instrumental", "Инструментал";
     PlayNext => "Play next", "Играть следующим";
     AddToQueue => "Add to queue", "Добавить в очередь";
@@ -396,6 +401,7 @@ strings! {
     LoginStep1 => "Sign in to your Yandex account in the browser", "Войдите в аккаунт Яндекса в браузере";
     LoginStep2 => "Paste the address you land on, or just the token", "Вставьте адрес, на который попадёте, или сам токен";
     OpenYandex => "Open Yandex sign-in", "Открыть вход Яндекса";
+    CopyLoginLink => "Copy the sign-in link", "Скопировать ссылку для входа";
     Paste => "Paste", "Вставить";
     TokenHint => "Paste the redirect URL or token", "Вставьте адрес или токен";
     ShowToken => "Show what is pasted", "Показать вставленное";
@@ -404,8 +410,8 @@ strings! {
     SigningIn => "Signing in…", "Входим…";
     BadToken => "That doesn't look like a token. Copy the whole address after signing in.", "Это не похоже на токен. Скопируйте весь адрес после входа.";
     TokenRejected => "Yandex rejected that token.", "Яндекс отклонил этот токен.";
-    PrivacyNote => "Your token is stored encrypted for this Windows user and is only ever sent to Yandex.", "Токен хранится в зашифрованном виде для вашего пользователя Windows и отправляется только Яндексу.";
-    PrivacyNoteFile => "Your token is kept in a file only your user can read, and is only ever sent to Yandex.", "Токен хранится в файле, доступном только вашему пользователю, и отправляется только Яндексу.";
+    PrivacyNote => "The token is stored encrypted on this computer and is sent only to Yandex.", "Токен хранится зашифрованным на этом компьютере и уходит только в Яндекс.";
+    PrivacyNoteFile => "The token is stored in a file only you can read and is sent only to Yandex.", "Токен хранится в файле, который можете прочитать только вы, и уходит только в Яндекс.";
     SignOut => "Sign out", "Выйти";
     // settings
     Theme => "Theme", "Тема";
@@ -448,11 +454,11 @@ strings! {
     TrayNext => "Next track", "Следующий трек";
     TrayLike => "Add to Liked", "Добавить в «Мне нравится»";
     TrayUnlike => "Remove from Liked", "Убрать из «Мне нравится»";
-    TrayShuffleOn => "Shuffle: on", "Перемешивание: вкл";
-    TrayShuffleOff => "Shuffle: off", "Перемешивание: выкл";
-    TrayRepeatOff => "Repeat: off", "Повтор: выкл";
+    TrayShuffleOn => "Shuffle: on", "Вперемешку: вкл.";
+    TrayShuffleOff => "Shuffle: off", "Вперемешку: выкл.";
+    TrayRepeatOff => "Repeat: off", "Повтор: выкл.";
     TrayRepeatAll => "Repeat: all", "Повтор: весь список";
-    TrayRepeatOne => "Repeat: this track", "Повтор: один трек";
+    TrayRepeatOne => "Repeat: this track", "Повтор: этот трек";
     TrayMute => "Mute", "Выключить звук";
     TrayUnmute => "Unmute", "Включить звук";
     TrayNothing => "Nothing is playing", "Ничего не играет";
@@ -464,7 +470,7 @@ strings! {
     Offline => "Can't reach Yandex Music", "Нет связи с Яндекс Музыкой";
     NotAvailable => "This track isn't available in your region", "Трек недоступен в вашем регионе";
     PlaybackFailed => "Couldn't play this track", "Не удалось воспроизвести трек";
-    NoAudioDevice => "No audio output device, playing silently", "Нет устройства вывода звука, играем без звука";
+    NoAudioDevice => "No audio output device", "Нет устройства вывода звука";
     SignedOut => "Signed out", "Вы вышли";
     QueuedToast => "Added to the queue", "Добавлено в очередь";
     PlayNextToast => "Playing next", "Сыграет следующим";
@@ -499,7 +505,7 @@ strings! {
     ClearSearch => "Clear", "Очистить";
     Credits => "Written in Rust with the RUNE UI framework.", "Написано на Rust с UI-фреймворком RUNE.";
     Updates => "Updates", "Обновления";
-    AutoUpdate => "Check for updates", "Проверять обновления";
+    AutoUpdate => "Check when Glint starts", "Проверять при запуске";
     CheckNow => "Check now", "Проверить";
     UpdateChecking => "Checking…", "Проверяю…";
     UpToDate => "You have the latest version", "У вас последняя версия";
@@ -512,7 +518,7 @@ strings! {
     UpdateShort => "Update", "Обновление";
     UpdateFailed => "Could not update. Try again, or download the new version from GitHub.", "Не удалось обновить. Попробуйте ещё раз или скачайте новую версию с GitHub.";
     UpdateManual => "Download the new version from the release page.", "Скачайте новую версию на странице релиза.";
-    UpdateToast => "A new version of Glint is available (Settings)", "Доступна новая версия Glint (в настройках)";
+    UpdateToast => "A new version is available", "Доступна новая версия";
     SourceCode => "Source code", "Исходный код";
     EqPreset => "Preset", "Пресет";
     License => "GPL-3.0 licence", "Лицензия GPL-3.0";
@@ -528,16 +534,15 @@ strings! {
     HistoryCleared => "History cleared", "История очищена";
     IdHidden => "Hidden. Point at it to read it.", "Скрыто. Наведите, чтобы увидеть.";
     SignedInAs => "Signed in with Yandex ID", "Вход через Яндекс ID";
-    ReduceMotionNote => "Turns off smooth transitions and background motion.", "Отключает плавные переходы и движение фона.";
     QualityNote => "Best plays FLAC when the track has it.", "«Лучшее» включает FLAC, если он есть у трека.";
     SetSound => "Sound", "Звук";
     SetPlayerScreen => "Now playing screen", "Экран плеера";
-    LyricsFont => "Lyrics font", "Шрифт текста";
+    LyricsFont => "Font", "Шрифт";
     LyricsFontSample => "Sphinx of black quartz, judge my vow", "Съешь ещё этих мягких французских булок";
     Autostart => "Open at login", "Запускать вместе с системой";
     AutostartHidden => "Start in the tray", "Запускать в трее";
     Butterflies => "Butterflies", "Бабочки";
-    Backdrop => "Picture behind the player", "Своя картинка на фоне";
+    Backdrop => "Your picture", "Своя картинка";
     BdPick => "Choose a picture", "Выбрать картинку";
     BdChange => "Replace", "Заменить";
     BdRemove => "Remove", "Убрать";
@@ -554,7 +559,6 @@ strings! {
     BdPixels => "Pixels", "Пиксели";
     BdHalftone => "Halftone", "Растр";
     BdLines => "Scanlines", "Строки";
-    EqBands => "Bands", "Полосы";
     Storage => "Storage", "Хранилище";
     StorageContent => "Downloaded content", "Скачанное";
     StorageContentNote => "Downloaded tracks and cached covers.", "Скачанные треки и кэш обложек.";
@@ -562,7 +566,7 @@ strings! {
     ContentDeleted => "Downloaded content deleted", "Скачанное удалено";
     StorageUsed => "Used on this computer", "Занято на этом компьютере";
     Version => "Version", "Версия";
-    UpdateIdleNote => "Not checked yet", "Ещё не проверялось";
+    UpdateIdleNote => "Not checked for updates yet", "Обновления ещё не проверялись";
     SetKeys => "Shortcuts", "Горячие клавиши";
     ScPlay => "Play or pause", "Пауза и воспроизведение";
     ScSeekBack => "Back 5 seconds", "Назад на 5 секунд";
@@ -587,7 +591,7 @@ strings! {
     ReportIssue => "Report a problem", "Сообщить о проблеме";
     Diagnostics => "Diagnostics", "Диагностика";
     DiagLogs => "Diagnostic logs", "Запись логов";
-    DiagLogsNote => "Local error log on this computer (up to 1 MB).", "Локальный журнал ошибок (до 1 МБ).";
+    DiagLogsNote => "An error log on this computer, up to 1 MB.", "Журнал ошибок на этом компьютере, до 1 МБ.";
     DiagLogFiles => "Log files", "Файлы логов";
     OpenLogs => "Open folder", "Открыть папку";
     LogsCleared => "Logs cleared", "Логи очищены";
@@ -604,7 +608,9 @@ strings! {
     MiniCover => "Cover", "Обложка";
     MiniAlwaysOnTop => "Always on top", "Поверх всех окон";
     MiniOpacity => "Window opacity", "Прозрачность окна";
-    MiniOnClose => "Show mini player when closing to the tray", "Открывать мини-плеер при закрытии в трей";
+    MiniOnClose => "Open when the main window closes", "Открывать при закрытии главного окна";
+    MiniOnCloseNeedsTray => "Turn on Close to the tray first.", "Сначала включите «Закрывать в трей».";
+    MiniShow => "Show mini player", "Показать мини-плеер";
     MiniExpand => "Back to main window", "Вернуться в главное окно";
     QualitySaverDesc => "AAC · 64 kbps", "AAC · 64 кбит/с";
     QualityBalancedDesc => "AAC or MP3 · 192 kbps", "AAC или MP3 · 192 кбит/с";

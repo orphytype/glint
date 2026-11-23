@@ -32,8 +32,8 @@ impl Gfx {
             t.copy_from_slice(&song.spec[j * 4..j * 4 + 4]);
         }
         live[8] = [look.effects as f32, 0.0, 0.0, 0.0];
-        // `stage.wgsl` reads `.x`, `.z`, `.w` only; keeping `.y` zero prevents needless texture uploads.
-        live[9] = [self.smooth.beat, 0.0, if ctx.reduced { 0.0 } else { 1.0 }, song.snare];
+        song.follow_beat(ctx.dt, if ctx.st.player.playing { self.smooth.beat } else { 0.0 });
+        live[9] = [self.smooth.beat, song.throb, if ctx.reduced { 0.0 } else { 1.0 }, song.snare];
         live[10] = [song.bass, song.voice, song.treble, song.kick];
         gpu.set_live(ctx.device, ctx.queue, &live);
         let cover_pt = (d[1] / 100.0).floor();

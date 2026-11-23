@@ -46,7 +46,7 @@ pub(super) fn queue_view(s: &State, p: &Pal, x: f32, w: f32, h: f32) -> El {
     if n == 0 {
         return notice(p, x, w, h, Ill::Tape, S::QueueEmpty.get(lang));
     }
-    let cur = s.player.pending_index.or(s.player.index).unwrap_or(0).min(n - 1);
+    let cur = s.player.index.unwrap_or(0).min(n - 1);
     let after = n - cur - 1;
     let total = cur + 2 + if after > 0 { 1 + after } else { 0 };
     let under = kit::under();
@@ -82,15 +82,25 @@ pub(super) fn queue_view(s: &State, p: &Pal, x: f32, w: f32, h: f32) -> El {
         .motion(rune::Spring::NONE)
         .scroll(ScrollSpec { stick_bottom: false })
         .scroll_edge_fade(44.0)
-        .child(col().w_full().pt(QUEUE_TOP).pb((h * 0.48).max(72.0)).child(rows))
+        // The panel lands its changes at once, but its rows move on a spring: when the next track
+        // starts, the one that played slides up past "Now playing" and the new one takes its place.
+        .child(col().w_full().pt(QUEUE_TOP).pb((h * 0.48).max(72.0)).animated_changes().motion(th::SLIDE).child(rows))
+}
+
+/// Right of a heading, its text ends where the durations of the rows below end.
+const HEAD_END: f32 = kit::ROW_TIME_INSET;
+
+/// A heading holds still while the tracks slide past it to their new places; it fades out for
+/// that moment so a passing title never runs over its text.
+fn passing(s: &State, head: El) -> El {
+    head.opacity(if s.queue_passing.is_some() { 0.0 } else { 1.0 }).opacity_motion(rune::Spring::new(0.14, 0.0))
 }
 
 fn now_heading(s: &State) -> El {
-    col().key("q-now-h").w_full().h(ROW_H).px(kit::ROW_PAD).justify_end().pb(6.0).child(row().w_full().h(26.0).items_center().child(label(
-        S::NowPlaying.get(s.lang),
-        th::H3,
-        th::text2(),
-    )))
+    col().key("q-now-h").w_full().h(ROW_H).px(kit::ROW_PAD).justify_end().pb(6.0).child(passing(
+        s,
+        row().w_full().h(26.0).pr(HEAD_END).items_center().child(label(S::NowPlaying.get(s.lang), th::H3, th::text2())),
+    ))
 }
 
 fn next_heading(s: &State, after: usize) -> El {
@@ -128,5 +138,8 @@ fn next_heading(s: &State, after: usize) -> El {
         .px(kit::ROW_PAD)
         .justify_end()
         .pb(6.0)
-        .child(row().w_full().h(26.0).gap(8.0).items_center().child(label(S::UpNext.get(lang), th::H3, th::text2())).child(el().grow(1.0)).child(morph_clear))
+        .child(passing(
+            s,
+            row().w_full().h(26.0).pr(HEAD_END).gap(8.0).items_center().child(label(S::UpNext.get(lang), th::H3, th::text2())).child(el().grow(1.0)).child(morph_clear),
+        ))
 }

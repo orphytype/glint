@@ -93,6 +93,13 @@ pub struct Gpu {
     dummy: wgpu::TextureView,
     /// The current playing cover (40x40), for `Pipe::Stage`.
     art: Option<wgpu::TextureView>,
+    /// The cover's texture, and its texels as last written: a new cover fades in over the old
+    /// one (`step_art`), from `art_from` to `art_to`, `art_t` of the way (1 once done).
+    art_tex: Option<(wgpu::Texture, u32, u32)>,
+    art_now: Vec<u8>,
+    art_from: Vec<u8>,
+    art_to: Vec<u8>,
+    art_t: f32,
     /// The live readings of the stage (for `fs_stage`): one row of texels, plus the last uploaded
     /// half-float payload so unchanged frames skip `write_texture`.
     live: Option<(wgpu::Texture, wgpu::TextureView)>,
@@ -207,6 +214,11 @@ impl Gpu {
             sampler,
             dummy,
             art: None,
+            art_tex: None,
+            art_now: Vec::new(),
+            art_from: Vec::new(),
+            art_to: Vec::new(),
+            art_t: 1.0,
             live: None,
             live_data: [0; 44],
             live_valid: false,

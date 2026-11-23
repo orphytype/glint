@@ -253,22 +253,61 @@ impl Gpu {
     }
 
     /// Hands over the playing cover (`id` says which thumbnail it is: the same one is not uploaded
-    /// twice). The previous sharp cover is kept for My Wave's crossfade. Returns whether it was new.
+    /// twice). The previous sharp cover is kept for My Wave's crossfade, and the blurred one fades
+    /// from the old cover (`step_art`). Returns whether it was new.
     pub fn set_art(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, id: usize, thumb: &crate::art::Thumb) -> bool {
         if id == self.art_id && self.art.is_some() {
             return false;
         }
-        let view = Self::art_texture(device, queue, thumb.width, thumb.height, &thumb.rgba);
-        let sharp = if thumb.sharp_side > 0 && !thumb.sharp.is_empty() { Self::art_texture(device, queue, thumb.sharp_side, thumb.sharp_side, &thumb.sharp) } else { view.clone() };
         let first = self.art.is_none();
-        self.art = Some(view);
+        let same_size = self.art_tex.as_ref().is_some_and(|&(_, w, h)| w == thumb.width && h == thumb.height) && self.art_now.len() == thumb.rgba.len();
+        if !first && same_size {
+            self.art_from = std::mem::take(&mut self.art_now);
+            self.art_now = self.art_from.clone();
+            self.art_to = thumb.rgba.clone();
+            self.art_t = 0.0;
+        } else {
+            let (tex, view) = Self::art_texture(device, queue, thumb.width, thumb.height, &thumb.rgba);
+            self.art_tex = Some((tex, thumb.width, thumb.height));
+            self.art_now = thumb.rgba.clone();
+            self.art_t = 1.0;
+            self.art = Some(view);
+        }
+        let sharp = if thumb.sharp_side > 0 && !thumb.sharp.is_empty() {
+            Self::art_texture(device, queue, thumb.sharp_side, thumb.sharp_side, &thumb.sharp).1
+        } else {
+            self.art.clone().unwrap_or_else(|| self.dummy.clone())
+        };
         self.sharp[1] = if first { Some(sharp.clone()) } else { self.sharp[0].take() };
         self.sharp[0] = Some(sharp);
         self.art_id = id;
         !first
     }
 
-    fn art_texture(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, rgba: &[u8]) -> wgpu::TextureView {
+    /// Moves the blurred cover on towards the new one, over `ART_FADE` seconds, as the cover
+    /// itself crossfades. True while it is still fading.
+    pub fn step_art(&mut self, queue: &wgpu::Queue, dt: f32, reduced: bool) -> bool {
+        /// How long the picture behind the player takes to become the new cover.
+        const ART_FADE: f32 = 0.8;
+        if self.art_t >= 1.0 {
+            return false;
+        }
+        let Some((tex, w, h)) = &self.art_tex else { return false };
+        self.art_t = if reduced { 1.0 } else { (self.art_t + dt / ART_FADE).min(1.0) };
+        let m = self.art_t * self.art_t * (3.0 - 2.0 * self.art_t);
+        for ((now, &from), &to) in self.art_now.iter_mut().zip(&self.art_from).zip(&self.art_to) {
+            *now = (f32::from(from) + (f32::from(to) - f32::from(from)) * m).round() as u8;
+        }
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            &self.art_now,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(*h) },
+            wgpu::Extent3d { width: *w, height: *h, depth_or_array_layers: 1 },
+        );
+        self.art_t < 1.0
+    }
+
+    fn art_texture(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, rgba: &[u8]) -> (wgpu::Texture, wgpu::TextureView) {
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("cover"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -285,7 +324,8 @@ impl Gpu {
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
-        tex.create_view(&wgpu::TextureViewDescriptor::default())
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        (tex, view)
     }
 }
 

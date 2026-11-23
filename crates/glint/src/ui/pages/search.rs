@@ -17,7 +17,7 @@ use crate::ui::{
 };
 
 const FIELD: TextStyle = TextStyle::new(15.0, 400.0).family(th::SANS).lh(20.0);
-const SEARCH_H: f32 = 44.0;
+const SEARCH_H: f32 = 40.0;
 const TOP_ROWS: usize = 4;
 const SEARCH_TABS: [SearchTab; 5] = [SearchTab::All, SearchTab::Tracks, SearchTab::Artists, SearchTab::Albums, SearchTab::Playlists];
 
@@ -51,24 +51,14 @@ pub(super) fn search(s: &State, w: f32) -> El {
             s.run_search(t);
             s.remember_search();
         });
-    let mut field = kit::field_surface(row())
-        .key("search-field")
-        .w_full()
-        .h(SEARCH_H)
-        .pl(14.0)
-        .pr(6.0)
-        .gap(10.0)
-        .radius(kit::ctl_radius(SEARCH_H))
-        .items_center()
-        .child(icon(&icons::SEARCH, 18.0).color(th::text3()))
-        .child(input);
-    if has_text {
-        field = field.child(kit::ibtn("search-clear", &icons::CLOSE, 15.0, 32.0, th::text2(), S::ClearSearch.get(lang)).on_press(|s: &mut State| {
+    let clear = has_text.then(|| {
+        kit::search_clear("search-clear", lang).on_press(|s: &mut State| {
             s.search.edit.clear();
             s.run_search(String::new());
             s.focus_search = true;
-        }));
-    }
+        })
+    });
+    let field = kit::search_field("search-field", SEARCH_H, input, clear).w_full();
     let head = col().w_full().gap(8.0).child(kit::rise(kit::page_title(S::Search.get(lang), "").mt(8.0), 0)).child(kit::rise(field, 1));
     let mut body = col().gap(20.0).child(head);
     if !has_text {
@@ -122,6 +112,12 @@ pub(super) fn search(s: &State, w: f32) -> El {
                 search_skeleton(w)
             } else if empty {
                 kit::empty(&p, Ill::Lens, S::NoResults.get(lang))
+            } else if let Some(other) = &s.search.relaid {
+                col()
+                    .w_full()
+                    .gap(20.0)
+                    .child(label(S::ShowingFor.get(lang).replace("{}", other), th::BODY, th::text2()).key("sr-relaid").truncate())
+                    .child(results(s, r, tab, w, card))
             } else {
                 results(s, r, tab, w, card)
             }
@@ -135,7 +131,7 @@ pub(super) fn search(s: &State, w: f32) -> El {
 fn results(s: &State, r: &SearchResult, tab: SearchTab, w: f32, card: f32) -> El {
     let lang = s.lang;
     let to = |tab: SearchTab| move |s: &mut State| s.set_search_tab(tab);
-    let mut tb = col().w_full().gap(44.0);
+    let mut tb = col().w_full().gap(32.0);
     match tab {
         SearchTab::All => {
             if let Some(top) = top_row(s, r, w) {
@@ -327,33 +323,33 @@ fn suggestions(s: &State, w: f32) -> El {
     out
 }
 
-fn top_row(s: &State, r: &SearchResult, w: f32) -> Option<El> {
+/// The best match as a wide card, then the first tracks under it: both span the column, so a
+/// short list never leaves a tall empty card beside it.
+fn top_row(s: &State, r: &SearchResult, _w: f32) -> Option<El> {
     let lang = s.lang;
     let tracks = &r.tracks.results;
     let best = top_card(s, r);
     if best.is_none() && tracks.is_empty() {
         return None;
     }
-    let mut list = col().key("sr-top-tracks").grow(1.0).min_w(0.0).gap(10.0);
+    let mut out = col().key("sr-top").w_full().gap(28.0);
+    if let Some(b) = best {
+        out = out.child(col().w_full().gap(14.0).child(kit::heading("sr-best-h", S::TopResult.get(lang), None)).child(b));
+    }
     if !tracks.is_empty() {
         let more = (tracks.len() > TOP_ROWS).then(|| kit::more_link("sr-tracks-more", S::ShowAll.get(lang)).on_press(|s: &mut State| s.search.tab = SearchTab::Tracks));
         let rows = tracks.iter().take(TOP_ROWS).enumerate().map(|(i, t)| kit::track_row(s, t, i + 1, ListSrc::Search)).collect::<Vec<_>>();
-        list = list.child(kit::list_heading("sr-tracks-h", S::Tracks.get(lang), more)).child(col().w_full().gap(2.0).children(rows));
+        out = out.child(col().key("sr-top-tracks").w_full().gap(10.0).child(kit::list_heading("sr-tracks-h", S::Tracks.get(lang), more)).child(kit::bleed(col().gap(2.0).children(rows))));
     }
-    let cw = column(w);
-    let wide = cw >= 820.0;
-    let mut r = if wide { row().items_start().gap(28.0) } else { col().gap(28.0) };
-    r = r.key("sr-top").w_full();
-    if let Some(b) = best {
-        let card_w = if wide { (cw * 0.38).clamp(300.0, 420.0) } else { cw };
-        r = r.child(col().w(card_w).gap(10.0).child(kit::heading("sr-best-h", S::TopResult.get(lang), None)).child(b.w_full()));
-    }
-    Some(r.child(list))
+    Some(out)
 }
 
-fn search_skeleton(w: f32) -> El {
-    let cw = column(w);
-    let wide = cw >= 820.0;
+const BEST_COVER: f32 = 112.0;
+const BEST_PAD: f32 = 16.0;
+const BEST_R: f32 = 20.0;
+const BEST_PLAY: f32 = 48.0;
+
+fn search_skeleton(_w: f32) -> El {
     let rows = (0..4)
         .map(|i| {
             row()
@@ -361,7 +357,7 @@ fn search_skeleton(w: f32) -> El {
                 .w_full()
                 .h(ROW_H)
                 .px(kit::ROW_PAD)
-                .gap(14.0)
+                .gap(12.0)
                 .items_center()
                 .child(el().w(kit::ROW_COVER).h(kit::ROW_COVER).radius(kit::ROW_COVER_R).fill(kit::bone_fill()))
                 .child(col().grow(1.0).gap(6.0).child(kit::text_bone(format!("sr-bone-t-{i}"), 16.0, 12.0, 220.0 - 20.0 * (i % 3) as f32)).child(kit::text_bone(
@@ -372,97 +368,88 @@ fn search_skeleton(w: f32) -> El {
                 )))
         })
         .collect::<Vec<_>>();
-    let card = col()
+    let card = row()
         .key("sr-bone-card")
-        .w(if wide { (cw * 0.38).clamp(300.0, 420.0) } else { cw })
-        .h(244.0)
-        .padding(24.0)
-        .gap(16.0)
-        .justify_between()
-        .radius(24.0)
+        .w_full()
+        .padding(BEST_PAD)
+        .gap(20.0)
+        .items_center()
+        .radius(BEST_R)
         .fill(th::veil(0.04))
-        .child(el().w(104.0).h(104.0).radius(16.0).fill(kit::bone_fill()))
-        .child(col().gap(10.0).child(kit::text_bone("sr-bone-h", 26.0, 20.0, 200.0)).child(kit::text_bone("sr-bone-s", 16.0, 12.0, 120.0)));
-    let tracks = col().grow(1.0).min_w(0.0).gap(4.0).children(rows);
-    let inner = if wide { row().w_full().gap(28.0).items_start().child(card).child(tracks) } else { col().w_full().gap(24.0).child(card).child(tracks) };
-    el().key("sr-loading").w_full().child(inner)
+        .child(el().w(BEST_COVER).h(BEST_COVER).radius(14.0).fill(kit::bone_fill()))
+        .child(col().gap(10.0).child(kit::text_bone("sr-bone-s", 14.0, 10.0, 80.0)).child(kit::text_bone("sr-bone-h", 24.0, 18.0, 240.0)).child(kit::text_bone("sr-bone-a", 14.0, 10.0, 140.0)));
+    let tracks = kit::bleed(col().gap(2.0).children(rows));
+    el().key("sr-loading").w_full().child(col().w_full().gap(28.0).child(card).child(tracks))
 }
 
+/// The top result: an artist whose name matches the query, or else the first track. Cover on the
+/// left, what it is and its name beside it, and for a track a play button on the right.
 fn top_card(s: &State, r: &SearchResult) -> Option<El> {
     let lang = s.lang;
-    let q = s.search.query.to_lowercase();
-    let artist = r.artists.results.first().filter(|a| !q.is_empty() && a.name.to_lowercase().contains(&q));
-    let rows = r.tracks.results.len().min(TOP_ROWS) as f32;
-    let h = (rows * (ROW_H + 2.0) - 2.0).max(244.0);
+    let q = crate::find::Query::new(s.search.relaid.as_deref().unwrap_or(&s.search.query));
+    let artist = r.artists.results.first().filter(|a| q.as_ref().is_some_and(|q| q.matches(&[&a.name])));
     let base = |key: String, name: &str| {
-        col()
+        row()
             .key(key)
             .role("button")
             .label(name)
-            .h(h)
-            .padding(24.0)
-            .gap(16.0)
-            .justify_between()
-            .radius(24.0)
+            .w_full()
+            .padding(BEST_PAD)
+            .gap(20.0)
+            .items_center()
+            .radius(BEST_R)
             .cursor(Cursor::Pointer)
-            .fill(th::veil(0.05))
-            .border_gradient(1.0, th::veil(0.10), th::veil(0.02))
-            .hov(th::veil(0.035))
+            .fill(th::veil(0.045))
+            .border(1.0, th::veil(0.08))
+            .hov(th::veil(0.03))
             .press(th::veil(0.07))
             .hov_group()
     };
-    let kind_line = |kind: &str, sub: &str| {
-        let mut r = row().gap(10.0).items_center().min_w(0.0).child(row().h(24.0).px(10.0).radius(12.0).items_center().fill(th::veil(0.09)).child(label(
-            kind.to_owned(),
-            th::SMALL,
-            th::text(),
-        )));
+    let says = |kind: &str, title: String, sub: String| {
+        let mut c = col().grow(1.0).min_w(0.0).gap(4.0).child(label(kind.to_owned(), th::LABEL, th::text3())).child(label(title, th::H1, th::text()).truncate().min_w(0.0));
         if !sub.is_empty() {
-            r = r.child(label(sub.to_owned(), th::BODY, th::text2()).truncate().min_w(0.0));
+            c = c.child(label(sub, th::BODY, th::text2()).truncate().min_w(0.0));
         }
-        r
-    };
-    let play = |key: &str| {
-        let r = kit::ctl_radius(52.0);
-        row()
-            .key(key.to_owned())
-            .role("button")
-            .label(S::Play.get(lang))
-            .help(S::Play.get(lang))
-            .absolute(0.0, 0.0)
-            .w(52.0)
-            .h(52.0)
-            .radius(r)
-            .center()
-            .cursor(Cursor::Pointer)
-            .press_scale(th::PRESS)
-            .child(el().absolute(0.0, 0.0).w_full().h_full().radius(r).fill(th::solid()).gop(0.0, 1.0))
-            .child(icon(&icons::PLAY, 22.0).color(th::on_solid()).gop(0.0, 1.0))
+        c
     };
     if let Some(a) = artist {
         let id = a.id.clone();
         let card = base(format!("sr-best-ar-{}", a.id), &a.name)
             .on_press(move |s: &mut State| s.go(Page::Artist(id.clone())))
-            .child(kit::cover(s, a.cover_template(), 104.0, 52.0))
-            .child(col().gap(10.0).min_w(0.0).child(label(a.name.clone(), th::H0, th::text()).truncate().min_w(0.0)).child(kind_line(S::Artist.get(lang), "")));
+            .child(kit::cover(s, a.cover_template(), BEST_COVER, BEST_COVER * 0.5))
+            .child(says(S::Artist.get(lang), a.name.clone(), String::new()))
+            .child(icon(&icons::CHEVRON_RIGHT, 20.0).color(th::text3()).gcol(th::text()).mr(8.0));
         return Some(card);
     }
     let t = r.tracks.results.first()?;
     let (id, id2) = (t.id.clone(), t.id.clone());
     let title = t.full_title();
-    let corner = el().absolute(0.0, 0.0).w_full().h_full().child(
-        el().absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
-            .child(row().pin(None, None, Some(0.0), Some(0.0)).w(52.0).h(52.0).child(play("sr-best-play").on_press(move |s: &mut State| s.play_from_list(ListSrc::Search, &id2)))),
-    );
+    let playing = s.current().is_some_and(|c| c.id == t.id) && s.player.playing;
+    let play = row()
+        .key("sr-best-play")
+        .role("button")
+        .label(S::Play.get(lang))
+        .help(S::Play.get(lang))
+        .w(BEST_PLAY)
+        .h(BEST_PLAY)
+        .radius(BEST_PLAY * 0.5)
+        .center()
+        .mr(8.0)
+        .cursor(Cursor::Pointer)
+        .press_scale(th::PRESS)
+        .fill(th::solid())
+        .on_press(move |s: &mut State| {
+            if s.current().is_some_and(|c| c.id == id2) {
+                s.toggle_pause();
+            } else {
+                s.play_from_list(ListSrc::Search, &id2);
+            }
+        })
+        .child(icon(if playing { &icons::PAUSE } else { &icons::PLAY }, 20.0).color(th::on_solid()).ml(if playing { 0.0 } else { 2.0 }));
     let card = base(format!("sr-best-tr-{}", t.id), &title)
         .on_press(move |s: &mut State| s.play_from_list(ListSrc::Search, &id))
-        .child(kit::cover(s, t.cover_template(), 104.0, 16.0))
-        .child(
-            el().w_full()
-                .child(corner)
-                .child(col().gap(10.0).min_w(0.0).pr(64.0).child(label(title, th::H0, th::text()).truncate().min_w(0.0)).child(kind_line(S::Track.get(lang), &t.artists_line()))),
-        );
+        .child(kit::cover(s, t.cover_template(), BEST_COVER, 14.0))
+        .child(says(S::Track.get(lang), title.clone(), t.artists_line()))
+        .child(play);
     Some(card)
 }

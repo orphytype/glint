@@ -127,6 +127,45 @@ pub fn field_surface(base: El) -> El {
     base.radius(FIELD_R).fill(veil(0.04)).border(1.0, veil(0.09)).hov(veil(0.02))
 }
 
+/// A search box: the same surface and corners as the buttons beside it, a magnifier, the input,
+/// and a clear button once there is text. Pages differ only in height.
+pub fn search_field(key: impl Into<String>, h: f32, input: El, clear: Option<El>) -> El {
+    let big = h > BTN_H;
+    field_surface(row())
+        .key(key)
+        .h(h)
+        .pl(if big { 14.0 } else { 11.0 })
+        .pr(4.0)
+        .gap(if big { 10.0 } else { 8.0 })
+        .radius(ctl_radius(h))
+        .items_center()
+        .child(icon(&icons::SEARCH, if big { 18.0 } else { 16.0 }).color(th::text3()))
+        .child(input)
+        .children(clear)
+}
+
+/// The clear button inside a `search_field`.
+pub fn search_clear(key: impl Into<String>, lang: Lang) -> El {
+    ibtn(key, &icons::CLOSE, 14.0, 28.0, th::text2(), S::ClearSearch.get(lang))
+}
+
+/// A square button on the same surface as a search field, for the controls next to one.
+pub fn field_icon_btn(key: impl Into<String>, ic: &'static Icon, name: &str) -> El {
+    field_surface(row())
+        .key(key)
+        .role("button")
+        .label(name)
+        .help(name)
+        .w(BTN_H)
+        .h(BTN_H)
+        .radius(ctl_radius(BTN_H))
+        .center()
+        .cursor(Cursor::Pointer)
+        .press_scale(th::PRESS)
+        .press(veil(0.10))
+        .child(icon(ic, 18.0).color(th::text()))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Weight {
     Solid,
@@ -187,6 +226,11 @@ pub fn btn_soft(key: impl Into<String>, name: &str, ic: Option<&'static Icon>) -
     button(key, Weight::Soft, name, ic)
 }
 
+/// A square soft button with only an icon, as tall as the other buttons.
+pub fn btn_soft_icon(key: impl Into<String>, ic: &'static Icon, name: &str) -> El {
+    surface_pill(row().key(key).role("button").label(name).help(name).center(), Weight::Soft, BTN_H, BTN_H).child(icon(ic, 16.0).color(th::text()))
+}
+
 pub fn btn_small(key: impl Into<String>, name: &str, ic: Option<&'static Icon>) -> El {
     let tw = text::measure(name, &[], th::BODY_M, None).0.ceil();
     let w = if ic.is_some() { 10.0 + 15.0 + 7.0 + tw + 12.0 } else { 12.0 + tw + 12.0 };
@@ -218,62 +262,95 @@ pub fn btn_select(key: impl Into<String>, current: &str, w: f32, open: bool) -> 
         .child(icon(&icons::CHEVRON_DOWN, 15.0).color(th::text3()).gcol(th::text2()).rotate(if open { std::f32::consts::PI } else { 0.0 }).motion(th::FLIGHT))
 }
 
-pub fn round(key: impl Into<String>, weight: Weight, ic: &'static Icon, size: f32, glyph: f32, name: &str) -> El {
-    surface_pill(row().key(key).role("button").label(name).help(name).center(), weight, size, size).child(icon(ic, glyph).color(ink_on(weight)))
+/// Buttons that belong together, joined into one: a shared surface, as tall as a button, with a
+/// thin line between each two. Each part is one of the `seg_*` buttons below.
+pub fn button_group(key: impl Into<String>, parts: Vec<El>) -> El {
+    let r = ctl_radius(BTN_H);
+    let n = parts.len();
+    let mut g = row().key(key).h(BTN_H).radius(r).fill(veil(0.05)).border(1.0, veil(0.08)).items_center();
+    for (i, part) in parts.into_iter().enumerate() {
+        if i > 0 {
+            g = g.child(el().w(1.0).h(BTN_H * 0.5).fill(veil(0.10)));
+        }
+        let (first, last) = (i == 0, i + 1 == n);
+        // The parts light up on hover; at the group's ends they follow its rounded corners.
+        let corners = [if first { r } else { 0.0 }, if last { r } else { 0.0 }, if last { r } else { 0.0 }, if first { r } else { 0.0 }];
+        g = g.child(part.corners(corners));
+    }
+    g
 }
 
-pub fn pill_icon(key: impl Into<String>, weight: Weight, ic: &'static Icon, width: f32, glyph: f32, name: &str) -> El {
-    let radius = ctl_radius(BTN_H);
-    let (fill, edge, ink) = match weight {
-        Weight::Solid => (th::solid(), None, th::on_solid()),
-        Weight::Soft => (veil(0.05), Some(veil(0.08)), th::text()),
-    };
-    let mut b = row()
-        .key(key)
-        .role("button")
-        .label(name)
-        .help(name)
-        .w(width)
-        .h(BTN_H)
-        .radius(radius)
-        .center()
-        .cursor(Cursor::Pointer)
-        .press_scale(th::PRESS)
-        .fill(fill)
-        .hov(veil(if weight == Weight::Solid { 0.08 } else { 0.05 }))
-        .press(veil(if weight == Weight::Solid { 0.14 } else { 0.09 }))
-        .child(icon(ic, glyph.min(18.0)).color(ink));
-    if let Some(edge) = edge {
-        b = b.border(1.0, edge);
+/// A part of a `button_group` with only an icon.
+pub fn seg_icon(key: impl Into<String>, ic: &'static Icon, name: &str) -> El {
+    seg(row().key(key).role("button").label(name).help(name).w(BTN_H).center()).child(icon(ic, 18.0).color(th::text()))
+}
+
+/// A part of a `button_group` with words, and an icon before them.
+pub fn seg_button(key: impl Into<String>, name: &str, ic: Option<&'static Icon>) -> El {
+    let mut b = seg(row().key(key).role("button").label(name).gap(8.0).items_center());
+    b = if ic.is_some() { b.pl(12.0).pr(14.0) } else { b.px(14.0) };
+    if let Some(i) = ic {
+        b = b.child(icon(i, 15.0).color(th::text()));
+    }
+    b.child(text(name.to_owned()).font(th::BTN).color(th::text()))
+}
+
+/// What every part of a group shares: its height, the pointer, and a light on hover and press.
+fn seg(base: El) -> El {
+    base.h(BTN_H).cursor(Cursor::Pointer).hov(veil(0.05)).press(veil(0.09)).hov_group()
+}
+
+/// The sort button as a part of a `button_group`: the icon, and the order once it isn't the
+/// original one.
+pub fn seg_sort(key: &str, s: &State, now: Option<&str>, open: bool) -> El {
+    let name = S::SortBy.get(s.lang);
+    let mut b = seg(row().key(key.to_owned()).role("button").label(name).help(name).checked(open).w(sort_button_w(now)).gap(SORT_GAP).center())
+        .child(icon(&icons::SORT, SORT_GLYPH).color(if now.is_some() || open { th::text() } else { th::text2() }).gcol(th::text()));
+    if open {
+        b = b.fill(veil(0.09));
+    }
+    if let Some(n) = now {
+        b = b.child(label(n.to_owned(), th::BODY_M, th::text2()).gcol(th::text()));
     }
     b
 }
 
 pub fn sort_button(key: &str, s: &State, now: Option<&str>, open: bool) -> El {
     let name = S::SortBy.get(s.lang);
-    let mut b = row()
+    let mut b = field_surface(row())
         .key(key.to_owned())
         .role("button")
         .label(name)
         .help(name)
         .checked(open)
-        .h(30.0)
-        .px(if now.is_some() { 10.0 } else { 7.0 })
-        .gap(6.0)
-        .radius(8.0)
-        .items_center()
+        .w(sort_button_w(now))
+        .h(BTN_H)
+        .gap(SORT_GAP)
+        .radius(ctl_radius(BTN_H))
+        .center()
         .cursor(Cursor::Pointer)
-        .hov(veil(0.06))
         .press(veil(0.10))
         .hov_group()
-        .child(icon(&icons::SORT, 17.0).color(if now.is_some() || open { th::text() } else { th::text3() }).gcol(th::text()));
-    if open || now.is_some() {
-        b = b.fill(veil(0.06));
+        .child(icon(&icons::SORT, SORT_GLYPH).color(if now.is_some() || open { th::text() } else { th::text2() }).gcol(th::text()));
+    if open {
+        b = b.fill(veil(0.09));
     }
     if let Some(n) = now {
         b = b.child(label(n.to_owned(), th::BODY_M, th::text2()).gcol(th::text()));
     }
     b
+}
+
+const SORT_GLYPH: f32 = 17.0;
+const SORT_GAP: f32 = 6.0;
+const SORT_PAD: f32 = 12.0;
+
+/// How wide `sort_button` is: a square with only the icon, wider once it names the order.
+pub fn sort_button_w(now: Option<&str>) -> f32 {
+    match now {
+        None => BTN_H,
+        Some(n) => SORT_PAD * 2.0 + SORT_GLYPH + SORT_GAP + text::measure(n, &[], th::BODY_M, None).0.ceil(),
+    }
 }
 
 pub fn more_link(key: impl Into<String>, name: &str) -> El {

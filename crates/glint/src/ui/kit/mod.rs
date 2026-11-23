@@ -18,16 +18,16 @@ use crate::i18n::S;
 use crate::theme::{self as th, Pal};
 
 pub use controls::{
-    BTN_H, FIELD_R, MENU_ROW, Weight, bar_play_btn, bone_fill, btn_primary, btn_select, btn_small, btn_small_disabled, btn_soft, button_bone, button_width, ctl_radius,
-    field_surface, ibtn, menu_row, more_link, np_play_btn, pill_icon, plus_badge, quiet_btn, quiet_off, quiet_toggle, round, skip_btn, sort_button, tab_body, tab_pill_w,
+    BTN_H, FIELD_R, MENU_ROW, bar_play_btn, button_group, seg_button, seg_icon, seg_sort, bone_fill, btn_primary, btn_select, btn_small, btn_small_disabled, btn_soft, btn_soft_icon, button_bone, button_width, ctl_radius,
+    field_icon_btn, field_surface, ibtn, menu_row, more_link, np_play_btn, plus_badge, quiet_btn, quiet_off, quiet_toggle, search_clear, search_field, skip_btn, sort_button, sort_button_w, tab_body, tab_pill_w,
     tab_pill_with_w, tab_track, text_bone,
 };
 pub use marquee::{marquee, marquee_hover, marquee_on};
 pub use media::{
-    artist_line_width, artists_row_in_width, cover, cover_border, cover_sm, cover_tile, picture_url, playing_cover, playing_cover_lg, roll, track_title, wave_button, wave_card,
+    artist_line_width, artists_row_in_width, cover, cover_border, cover_sm, cover_tile, picture_url, playing_cover, playing_cover_lg, roll, seg_wave, track_title, wave_card,
     wave_glyph,
 };
-pub use rows::{ListSrc, ROW_COVER, ROW_COVER_R, ROW_H, ROW_PAD, explicit_badge, np_like_button, queue_row, track_row};
+pub use rows::{ListSrc, ROW_COVER, ROW_COVER_R, ROW_H, ROW_PAD, ROW_TIME_INSET, bleed, explicit_badge, np_like_button, track_fields, queue_row, track_row};
 
 pub const TITLE_H: f32 = 60.0;
 pub const CAPTION_H: f32 = if cfg!(target_os = "windows") { 44.0 } else { TITLE_H };
@@ -37,7 +37,7 @@ pub const CHROME_INSET: f32 = (TITLE_H - CHROME) * 0.5;
 pub const BAR_H: f32 = 72.0;
 pub const BAR_GAP: f32 = 14.0;
 pub const DOCK_ZONE: f32 = BAR_H + BAR_GAP + 48.0;
-pub const PAGE_PAD: f32 = 36.0;
+pub const PAGE_PAD: f32 = 32.0;
 pub const PAGE_MAX: f32 = 960.0;
 pub const BTN: f32 = 40.0;
 pub const GLYPH: f32 = 22.0;
@@ -212,7 +212,7 @@ pub fn page_title(title: &str, lead: &str) -> El {
 }
 
 pub fn heading(key: impl Into<String>, title: &str, more: Option<El>) -> El {
-    let mut r = row().key(key).w_full().h(32.0).items_center().gap(12.0).child(label(title.to_owned(), th::SECTION, th::text()).truncate().min_w(0.0)).child(el().grow(1.0));
+    let mut r = row().key(key).w_full().h(36.0).items_center().gap(12.0).child(label(title.to_owned(), th::SECTION, th::text()).truncate().min_w(0.0)).child(el().grow(1.0));
     if let Some(m) = more {
         r = r.child(m);
     }
@@ -252,7 +252,7 @@ fn page_shell(key: impl Into<String>, body: El) -> El {
         })
         .on_scroll_offset(move |p: rune::ScrollPos| crate::app::report_scroll(&watch_key, p))
         .transition(Transition::none())
-        .child(row().w_full().justify_center().transition(Transition::none()).child(body.w_full().max_w(PAGE_MAX).px(PAGE_PAD).pt(TITLE_H + 8.0).pb(foot_room()).gap(44.0)))
+        .child(row().w_full().justify_center().transition(Transition::none()).child(body.w_full().max_w(PAGE_MAX).px(PAGE_PAD).pt(TITLE_H + 8.0).pb(foot_room()).gap(32.0)))
 }
 
 const SCROLLBAR_HIT_W: f32 = 14.0;

@@ -24,7 +24,11 @@ impl State {
         self.desktop = Some(Desktop::start(self.lang, self.settings.show_tray, move |command| match command {
             Command::Show => app.open(),
             Command::Quit => app.quit(),
-            other => app.update(move |s, _| s.on_desktop(other)),
+            other => app.update(move |s, tx| {
+                let was = s.track_mark();
+                s.on_desktop(other);
+                s.animate_if_moved(tx, &was);
+            }),
         }));
     }
 

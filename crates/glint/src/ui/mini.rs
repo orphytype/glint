@@ -10,7 +10,6 @@ use rune::{
     WheelEvent, col, el, icon, row,
 };
 
-use super::icons;
 use super::kit::{Hover as _, label};
 use super::np_icons as ni;
 use crate::app::State;
@@ -384,7 +383,7 @@ fn mini_cover(m: &MiniState, side: f32, radius: f32) -> El {
                 .w_full()
                 .h_full()
                 .center()
-                .child(icon(&icons::NOTE, (side * 0.42).clamp(16.0, 42.0)).color(ink3(m))),
+                .child(icon(&ni::NOTE, (side * 0.42).clamp(16.0, 42.0)).color(ink3(m))),
         );
     }
     box_el
@@ -468,9 +467,9 @@ fn mini_volume_slider(m: &MiniState, w: f32) -> El {
 
 fn chrome_buttons(m: &MiniState) -> El {
     let lang = m.lang;
-    let pin_ic = if m.always_on_top { &icons::PIN } else { &icons::PIN_OFF };
+    let pin_ic = if m.always_on_top { &ni::PIN } else { &ni::PIN_OFF };
     let pin_col = if m.always_on_top { m.accent } else { ink3(m) };
-    let pin = mini_ibtn(m, "mini-pin", pin_ic, 13.0, 24.0, pin_col, S::MiniAlwaysOnTop.get(lang)).on_press(|m: &mut MiniState| {
+    let pin = mini_ibtn(m, "mini-pin", pin_ic, 14.0, 24.0, pin_col, S::MiniAlwaysOnTop.get(lang)).on_press(|m: &mut MiniState| {
         let next = !m.always_on_top;
         m.always_on_top = next;
         if let Some(win) = &m.win {
@@ -481,14 +480,14 @@ fn chrome_buttons(m: &MiniState) -> El {
             s.mark_settings_dirty();
         });
     });
-    let style_btn = mini_ibtn(m, "mini-style", &icons::WINDOW, 13.0, 24.0, ink3(m), S::MiniStyle.get(lang)).on_press(|m: &mut MiniState| {
+    let style_btn = mini_ibtn(m, "mini-style", &ni::LAYOUT, 14.0, 24.0, ink3(m), S::MiniStyle.get(lang)).on_press(|m: &mut MiniState| {
         let next = m.style.next();
         m.style = next;
         m.send(move |s| s.set_mini_style(next));
     });
-    let expand = mini_ibtn(m, "mini-expand", &icons::EXPAND, 13.0, 24.0, ink3(m), S::MiniExpand.get(lang))
+    let expand = mini_ibtn(m, "mini-expand", &ni::EXPAND, 14.0, 24.0, ink3(m), S::MiniExpand.get(lang))
         .on_press(|m: &mut MiniState| m.send(State::expand_mini_player));
-    let close = mini_ibtn(m, "mini-close", &icons::CLOSE, 13.0, 24.0, ink3(m), S::Close.get(lang))
+    let close = mini_ibtn(m, "mini-close", &ni::CLOSE, 14.0, 24.0, ink3(m), S::Close.get(lang))
         .on_press(|m: &mut MiniState| m.send(|s| s.set_mini_player(false)));
     row().gap(1.0).items_center().child(pin).child(style_btn).child(expand).child(close)
 }
@@ -520,12 +519,12 @@ fn view_compact(m: &MiniState, w: f32, h: f32) -> El {
             }
         });
     });
-    let style_btn = mini_ibtn(m, "mini-style", &icons::WINDOW, 13.0, 24.0, ink3(m), S::MiniStyle.get(m.lang)).on_press(|m: &mut MiniState| {
+    let style_btn = mini_ibtn(m, "mini-style", &ni::LAYOUT, 14.0, 24.0, ink3(m), S::MiniStyle.get(m.lang)).on_press(|m: &mut MiniState| {
         let next = m.style.next();
         m.style = next;
         m.send(move |s| s.set_mini_style(next));
     });
-    let close = mini_ibtn(m, "mini-close", &icons::CLOSE, 13.0, 24.0, ink3(m), S::Close.get(m.lang))
+    let close = mini_ibtn(m, "mini-close", &ni::CLOSE, 14.0, 24.0, ink3(m), S::Close.get(m.lang))
         .on_press(|m: &mut MiniState| m.send(|s| s.set_mini_player(false)));
 
     el().w(w)

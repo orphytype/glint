@@ -41,15 +41,14 @@ pub fn page(s: &State) -> El {
         .min_w(0.0)
         .h(kit::BTN_H)
         .pl(14.0)
-        .pr(0.0)
-        .gap(4.0)
+        .pr(2.0)
         .items_center()
         .radius(kit::FIELD_R)
         .clip_rounded(kit::FIELD_R)
         .fill(veil(0.05))
         .border(1.0, veil(0.11))
-        .child(field)
-        .child(kit::ibtn("paste-token", &icons::COPY, 16.0, 34.0, th::text3(), S::Paste.get(lang)).on_press_tx(|_s: &mut State, tx: &mut Tx| {
+        .child(field.mr(4.0))
+        .child(kit::ibtn("paste-token", &icons::PASTE, 16.0, 32.0, th::text3(), S::Paste.get(lang)).on_press_tx(|_s: &mut State, tx: &mut Tx| {
             tx.read_clipboard(|s: &mut State, content, _| {
                 let pasted = content.text().trim();
                 if !pasted.is_empty() {
@@ -65,8 +64,8 @@ pub fn page(s: &State) -> El {
             kit::ibtn(
                 "reveal",
                 if s.login.reveal { &icons::EYE_OFF } else { &icons::EYE },
-                kit::GLYPH,
-                36.0,
+                16.0,
+                32.0,
                 if s.login.reveal { th::text() } else { th::text3() },
                 if s.login.reveal { S::HideToken.get(lang) } else { S::ShowToken.get(lang) },
             )
@@ -76,45 +75,54 @@ pub fn page(s: &State) -> El {
             }),
         );
 
-    let step = |n: &str, text: &str| {
-        row()
+    // A numbered step: what to do, then the controls for it.
+    let step = |n: &str, text: &str, controls: El| {
+        let head = row()
             .w_full()
-            .gap(12.0)
+            .gap(10.0)
             .items_center()
-            .child(row().w(24.0).h(24.0).radius(12.0).center().fill(veil(0.08)).child(label(n.to_owned(), th::LABEL, th::text2())))
-            .child(label(text.to_owned(), th::SMALL, th::text2()).wrap().grow(1.0).min_w(0.0))
+            .child(row().w(22.0).h(22.0).radius(11.0).center().fill(veil(0.08)).child(label(n.to_owned(), th::LABEL, th::text2())))
+            .child(label(text.to_owned(), th::SMALL, th::text2()).wrap().grow(1.0).min_w(0.0));
+        col().w_full().gap(12.0).child(head).child(controls)
     };
 
-    let mut card = col().key("login-card").w(420.0).padding(32.0).gap(16.0).transition(Transition::none()).child(kit::glass(Glass::Card, 28.0));
-    if !wide {
-        card = card.child(label(S::Welcome.get(lang), th::H1, th::text()).wrap().w_full()).child(label(S::LoginLead.get(lang), th::SMALL, th::text2()).wrap().w_full());
-    }
-    card = card
-        .child(step("1", S::LoginStep1.get(lang)))
-        .child(kit::btn_primary("open-yandex", S::OpenYandex.get(lang), Some(&icons::EXTERNAL)).w_full().on_press_tx(|_s: &mut State, tx: &mut Tx| {
+    let open = row()
+        .w_full()
+        .gap(8.0)
+        .items_center()
+        .child(kit::btn_primary("open-yandex", S::OpenYandex.get(lang), Some(&icons::EXTERNAL)).grow(1.0).min_w(0.0).on_press_tx(|_s: &mut State, tx: &mut Tx| {
             let _ = tx.open_url(&ym_api::auth::authorize_url());
         }))
-        .child(step("2", S::LoginStep2.get(lang)).mt(6.0))
-        .child(row().w_full().gap(8.0).items_center().child(input).child(
-            kit::btn_primary("sign-in", if busy { S::SigningIn.get(lang) } else { S::SignIn.get(lang) }, None).px(20.0).opacity(if busy { 0.6 } else { 1.0 }).on_press(
-                |s: &mut State| {
-                    if !s.login.busy {
-                        s.submit_token();
-                    }
-                },
-            ),
-        ));
-    if let Some(e) = s.login.error {
-        card = card.child(label(e.get(lang), th::SMALL, th::rgb(0xe5503f)).wrap().w_full());
+        .child(kit::btn_soft_icon("copy-yandex", &icons::COPY, S::CopyLoginLink.get(lang)).on_press_tx(|s: &mut State, tx: &mut Tx| {
+            tx.copy(ym_api::auth::authorize_url());
+            let text = s.tr(S::LinkCopied);
+            s.toast(text);
+        }));
+    let sign_in = row().w_full().gap(8.0).items_center().child(input).child(
+        kit::btn_primary("sign-in", if busy { S::SigningIn.get(lang) } else { S::SignIn.get(lang) }, None).px(20.0).opacity(if busy { 0.6 } else { 1.0 }).on_press(|s: &mut State| {
+            if !s.login.busy {
+                s.submit_token();
+            }
+        }),
+    );
+
+    let mut card = col().key("login-card").w(420.0).padding(28.0).transition(Transition::none()).child(kit::glass(Glass::Card, 28.0));
+    if !wide {
+        card = card
+            .child(label(S::Welcome.get(lang), th::H1, th::text()).wrap().w_full())
+            .child(label(S::LoginLead.get(lang), th::SMALL, th::text2()).wrap().w_full().mt(8.0).mb(24.0));
     }
-    card = card.child(el().w_full().h(1.0).my(8.0).fill(th::hairline())).child(
+    card = card.child(step("1", S::LoginStep1.get(lang), open)).child(step("2", S::LoginStep2.get(lang), sign_in).mt(24.0));
+    if let Some(e) = s.login.error {
+        card = card.child(label(e.get(lang), th::SMALL, th::rgb(0xe5503f)).wrap().w_full().mt(10.0));
+    }
+    card = card.child(el().w_full().h(1.0).mt(24.0).mb(18.0).fill(th::hairline())).child(
         row()
             .w_full()
             .gap(10.0)
             .items_start()
-            .mt(4.0)
-            .child(icon(&icons::LOCK, 16.0).color(th::text3()))
-            .child(label(if cfg!(windows) { S::PrivacyNote } else { S::PrivacyNoteFile }.get(lang), th::SMALL, th::text3()).wrap().grow(1.0)),
+            .child(icon(&icons::LOCK, 15.0).color(th::text3()).mt(1.0))
+            .child(label(if cfg!(windows) { S::PrivacyNote } else { S::PrivacyNoteFile }.get(lang), th::SMALL, th::text3()).wrap().grow(1.0).min_w(0.0)),
     );
 
     let welcome = col()

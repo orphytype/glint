@@ -1,8 +1,8 @@
-//! Account, appearance, keyboard shortcuts, and desktop integration settings tabs.
+//! Account, look, mini player, startup and tray, and shortcut pages of Settings.
 
 use rune::{Color, Cursor, El, Tx, col, el, row};
 
-use super::{GROUP_R, ROW_PAD, figure, group, item, item_enabled, level_w, segmented, toggle, toggle_enabled};
+use super::{GROUP_R, ROW_PAD, figure, found_mark, group, item, item_enabled, item_key, level_w, segmented, toggle, toggle_enabled};
 use crate::app::{Session, State};
 use crate::i18n::{Lang, S};
 use crate::keys::{self, Act};
@@ -51,10 +51,17 @@ pub(super) fn account(s: &State) -> Vec<El> {
         .radius(GROUP_R)
         .fill(veil(0.035))
         .border(1.0, veil(0.065))
+        .children(found_mark("set-account"))
         .child(dock::account_picture(s, 60.0, &first))
         .child(col().grow(1.0).min_w(0.0).gap(4.0).child(title).child(note))
         .child(kit::btn_small("set-signout", S::SignOut.get(lang), Some(&icons::SIGN_OUT)).on_press(|s: &mut State| s.sign_out()));
 
+    vec![who]
+}
+
+/// Search and listening history, on the Storage page.
+pub(super) fn history(s: &State) -> El {
+    let lang = s.lang;
     let clear = |key: &str, empty: bool, f: fn(&mut State)| -> El {
         if empty {
             return figure(S::HistoryEmpty.get(lang).to_owned());
@@ -65,7 +72,7 @@ pub(super) fn account(s: &State) -> Vec<El> {
             s.toast(text);
         })
     };
-    let history = group(
+    group(
         "set-history",
         Some(S::SetHistory.get(lang)),
         vec![
@@ -73,8 +80,7 @@ pub(super) fn account(s: &State) -> Vec<El> {
             item(S::ListeningHistory.get(lang), None, clear("set-clear-played", s.listening_history.is_empty(), State::clear_listening_history)),
         ],
         None,
-    );
-    vec![who, history]
+    )
 }
 
 fn swatch(s: &State, i: usize) -> El {
@@ -145,7 +151,7 @@ pub(super) fn appearance(s: &State, k: &rune_kit::Kit) -> Vec<El> {
             vec![
                 item(S::Effects.get(lang), Some(S::EffectsNote.get(lang)), fx),
                 item(S::Butterflies.get(lang), None, bugs),
-                item(S::ReduceMotion.get(lang), Some(S::ReduceMotionNote.get(lang)), motion),
+                item(S::ReduceMotion.get(lang), None, motion),
             ],
             None,
         ),
@@ -194,14 +200,34 @@ fn shortcut_row(s: &State, act: Act) -> El {
             s.rebind = if s.rebind == Some(act) { None } else { Some(act) };
         })
         .child(caps);
-    row().w_full().h(48.0).px(ROW_PAD).gap(12.0).items_center().child(label(name.to_owned(), th::BODY, th::text()).grow(1.0).min_w(0.0)).child(button)
+    let key = item_key(name);
+    row()
+        .key(key.clone())
+        .w_full()
+        .h(48.0)
+        .px(ROW_PAD)
+        .gap(12.0)
+        .items_center()
+        .children(found_mark(&key))
+        .child(label(name.to_owned(), th::BODY, th::text()).grow(1.0).min_w(0.0))
+        .child(button)
 }
 
 pub(super) fn shortcuts(s: &State) -> Vec<El> {
     let lang = s.lang;
     let mut rows: Vec<El> = Act::ALL.into_iter().map(|act| shortcut_row(s, act)).collect();
+    let back = item_key(S::ScBack.get(lang));
     rows.push(
-        row().w_full().h(48.0).px(ROW_PAD).gap(12.0).items_center().child(label(S::ScBack.get(lang).to_owned(), th::BODY, th::text()).grow(1.0).min_w(0.0)).child(key_cap("Esc")),
+        row()
+            .key(back.clone())
+            .w_full()
+            .h(48.0)
+            .px(ROW_PAD)
+            .gap(12.0)
+            .items_center()
+            .children(found_mark(&back))
+            .child(label(S::ScBack.get(lang).to_owned(), th::BODY, th::text()).grow(1.0).min_w(0.0))
+            .child(key_cap("Esc")),
     );
     let reset = if keys::changed(&s.settings) {
         kit::btn_small("keys-reset", S::StageReset.get(lang), None).on_press(|s: &mut State| s.reset_keys())
@@ -211,12 +237,9 @@ pub(super) fn shortcuts(s: &State) -> Vec<El> {
     vec![group("set-keys", None, rows, Some(S::KeyHint.get(lang))), group("set-keys-reset", None, vec![item(S::KeysDefault.get(lang), None, reset)], None)]
 }
 
-pub(super) fn desktop(s: &State, k: &rune_kit::Kit) -> Vec<El> {
+pub(super) fn mini(s: &State, k: &rune_kit::Kit) -> Vec<El> {
     let lang = s.lang;
-    let tray = s.settings.show_tray;
-    let close = s.settings.close_to_tray && tray;
-    let auto = s.settings.autostart;
-    let hidden = s.settings.autostart_hidden && tray;
+    let close = s.settings.close_to_tray && s.settings.show_tray;
     let mini_styles = [MiniStyle::Compact, MiniStyle::Standard, MiniStyle::Cover];
     let mini_style_idx = mini_styles.iter().position(|st| *st == s.settings.mini_style).unwrap_or(1);
     let mini_style_ctl = segmented(
@@ -234,42 +257,47 @@ pub(super) fn desktop(s: &State, k: &rune_kit::Kit) -> Vec<El> {
         .child(level_w("set-mini-opacity", op_frac, 110.0, |s, f| {
             s.set_mini_opacity(0.65 + f * 0.35);
         }));
+    let on_close = toggle_enabled(k, s.settings.mini_on_close && close, close, S::MiniOnClose.get(lang), |s| {
+        if s.settings.show_tray && s.settings.close_to_tray {
+            s.settings.mini_on_close = !s.settings.mini_on_close;
+            s.mark_settings_dirty();
+        }
+    });
     vec![
         group(
             "set-mini",
-            Some(S::MiniPlayer.get(lang)),
+            None,
             vec![
-                item(
-                    S::MiniPlayer.get(lang),
-                    None,
-                    toggle(k, s.mini_open, S::MiniPlayer.get(lang), State::toggle_mini_player),
-                ),
+                item(S::MiniShow.get(lang), None, toggle(k, s.mini_open, S::MiniShow.get(lang), State::toggle_mini_player)),
                 item(S::MiniStyle.get(lang), None, mini_style_ctl),
                 item(
                     S::MiniAlwaysOnTop.get(lang),
                     None,
-                    toggle(k, s.settings.mini_always_on_top, S::MiniAlwaysOnTop.get(lang), |s| {
-                        s.set_mini_always_on_top(!s.settings.mini_always_on_top)
-                    }),
+                    toggle(k, s.settings.mini_always_on_top, S::MiniAlwaysOnTop.get(lang), |s| s.set_mini_always_on_top(!s.settings.mini_always_on_top)),
                 ),
                 item(S::MiniOpacity.get(lang), None, op_ctl),
-                item_enabled(
-                    S::MiniOnClose.get(lang),
-                    None,
-                    toggle_enabled(k, s.settings.mini_on_close && close, close, S::MiniOnClose.get(lang), |s| {
-                        if s.settings.show_tray && s.settings.close_to_tray {
-                            s.settings.mini_on_close = !s.settings.mini_on_close;
-                            s.mark_settings_dirty();
-                        }
-                    }),
-                    close,
-                ),
             ],
             None,
         ),
         group(
-            "set-autostart",
+            "set-mini-close",
             None,
+            vec![item_enabled(S::MiniOnClose.get(lang), (!close).then(|| S::MiniOnCloseNeedsTray.get(lang)), on_close, close)],
+            None,
+        ),
+    ]
+}
+
+pub(super) fn startup(s: &State, k: &rune_kit::Kit) -> Vec<El> {
+    let lang = s.lang;
+    let tray = s.settings.show_tray;
+    let close = s.settings.close_to_tray && tray;
+    let auto = s.settings.autostart;
+    let hidden = s.settings.autostart_hidden && tray && auto;
+    vec![
+        group(
+            "set-autostart",
+            Some(S::SetLaunch.get(lang)),
             vec![
                 item(S::Autostart.get(lang), None, toggle(k, auto, S::Autostart.get(lang), |s| s.set_autostart(!s.settings.autostart))),
                 item_enabled(
@@ -287,8 +315,8 @@ pub(super) fn desktop(s: &State, k: &rune_kit::Kit) -> Vec<El> {
             None,
         ),
         group(
-            "set-desktop",
-            None,
+            "set-tray",
+            Some(S::SetTray.get(lang)),
             vec![
                 item(S::TrayIcon.get(lang), None, toggle(k, tray, S::TrayIcon.get(lang), |s| s.set_show_tray(!s.settings.show_tray))),
                 item_enabled(

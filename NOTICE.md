@@ -19,9 +19,9 @@ Licence files shipped with release builds live in the `licenses/` directory.
 | Component | Purpose | Licence |
 |---|---|---|
 | [RUNE](https://github.com/anomalyco/rune) (`rune`, `rune-fx`, `rune-motion`, `rune-kit`) | GPU UI framework, text layout, animation and SVG icon rendering | MIT (`licenses/RUNE-MIT.txt`) |
-| [Hugeicons](https://github.com/hugeicons/hugeicons) | Interface SVG icons | MIT (`licenses/HUGEICONS-MIT.txt`) |
+| [Phosphor Icons](https://github.com/phosphor-icons/core) | Interface SVG icons | MIT (`licenses/PHOSPHOR-MIT.txt`) |
 | [Commissioner](https://fonts.google.com/specimen/Commissioner) | Primary UI sans-serif font | OFL 1.1 (`licenses/Commissioner-OFL-1.1.txt`) |
-| [Cormorant](https://fonts.google.com/specimen/Cormorant) | Display serif font for titles and lyrics | OFL 1.1 (`licenses/Cormorant-OFL-1.1.txt`) |
+| [Cormorant](https://fonts.google.com/specimen/Cormorant) | Display serif font for lyrics and wave names | OFL 1.1 (`licenses/Cormorant-OFL-1.1.txt`) |
 | [IBM Plex Mono](https://github.com/IBM/plex) | Monospace font (bundled via RUNE) | OFL 1.1 (`licenses/IBMPlexMono-OFL-1.1.txt`) |
 | [Inter](https://github.com/rsms/inter) | Fallback sans-serif glyphs (bundled via RUNE) | OFL 1.1 (`licenses/Inter-OFL-1.1.txt`) |
 | [LRCLIB](https://lrclib.net) | Fallback line-synced lyrics (queried by artist, title and duration) | Public service (see site terms) |

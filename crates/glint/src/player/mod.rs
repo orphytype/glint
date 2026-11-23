@@ -62,7 +62,11 @@ impl State {
         let Some(app) = self.app.clone() else { return false };
         match Engine::new(move |ev| {
             let app = app.clone();
-            app.update(move |s, _| s.on_audio_event(ev));
+            app.update(move |s, tx| {
+                let was = s.track_mark();
+                s.on_audio_event(ev);
+                s.animate_if_moved(tx, &was);
+            });
         }) {
             Ok(engine) => {
                 engine.set_volume(taper(self.player.volume));
@@ -108,8 +112,6 @@ impl State {
         let start = start.min(tracks.len() - 1);
         self.playing_from = None;
         self.player.resume_ms = None;
-        self.player.pending_index = None;
-        self.player.pending_token = None;
         self.player.original = tracks.clone();
         self.player.source = source;
         if self.player.shuffle {
@@ -133,13 +135,9 @@ impl State {
         if self.player.index != Some(index) {
             self.player.resume_ms = None;
         }
-        let switching = self.player.engine.is_some() && self.player.index.is_some() && self.player.index != Some(index) && self.player.playing;
-        if switching {
-            self.player.pending_index = Some(index);
-        } else {
-            self.player.index = Some(index);
-            self.player.pending_index = None;
-        }
+        // The player shows the new track at once: its cover, title and artists don't wait for
+        // the audio, which follows as soon as it has loaded.
+        self.player.index = Some(index);
         self.load_current();
     }
 
@@ -149,24 +147,16 @@ impl State {
             return;
         }
         let playing = self.player.playing;
-        if self.player.pending_index.is_none() {
-            self.player.resume_ms = Some(self.player.pos_ms);
-        }
+        self.player.resume_ms = Some(self.player.pos_ms);
         self.load_current();
         self.player.playing = playing;
     }
 
     pub(super) fn load_current(&mut self) {
-        let target = self.player.pending_index.or(self.player.index);
-        let Some(track) = target.and_then(|i| self.player.queue.get(i)).cloned() else { return };
-        let waiting_for_switch = self.player.pending_index.is_some();
+        let Some(track) = self.current().cloned() else { return };
         self.player.token_seed += 1;
         let token = self.player.token_seed;
-        if waiting_for_switch {
-            self.player.pending_token = Some(token);
-        } else {
-            self.player.token = token;
-        }
+        self.player.token = token;
         self.player.next = None;
         self.player.next_audio = None;
         self.player.next_loading = None;
@@ -177,16 +167,12 @@ impl State {
         self.player.loading = true;
         self.player.playing = true;
         self.player.seek_hold = None;
-        let start = if waiting_for_switch { 0 } else { self.player.resume_ms.take().unwrap_or(0) };
-        if !waiting_for_switch {
-            self.player.pos_ms = start;
-            self.player.dur_ms = track.duration_ms.unwrap_or(0);
-            self.player.current_audio = None;
-        }
+        let start = self.player.resume_ms.take().unwrap_or(0);
+        self.player.pos_ms = start;
+        self.player.dur_ms = track.duration_ms.unwrap_or(0);
+        self.player.current_audio = None;
         self.player.sim_started = false;
-        if !waiting_for_switch {
-            self.on_track_changed(&track);
-        }
+        self.on_track_changed(&track);
         #[cfg(feature = "tooling")]
         if matches!(self.backend, net::Backend::Fixture(_)) {
             self.player.loading = false;
@@ -242,23 +228,12 @@ impl State {
     }
 
     pub fn on_audio(&mut self, token: u64, requested: ym_api::Quality, res: net::Result<Audio>, start_ms: u64) {
-        let expected = self.player.pending_token.unwrap_or(self.player.token);
-        if token != expected {
+        if token != self.player.token {
             return;
         }
         self.player.loading = false;
         match res {
             Ok(a) => {
-                if let Some(index) = self.player.pending_index.take() {
-                    self.player.index = Some(index);
-                    self.player.token = token;
-                    self.player.pending_token = None;
-                    self.player.pos_ms = 0;
-                    self.player.dur_ms = self.current().and_then(|t| t.duration_ms).unwrap_or(0);
-                    if let Some(track) = self.current().cloned() {
-                        self.on_track_changed(&track);
-                    }
-                }
                 self.player.current_audio = Some(a.quality);
                 if let Some(t) = self.current().cloned() {
                     if a.clean {
@@ -285,7 +260,6 @@ impl State {
             Err(e) => {
                 self.error_toast(&e);
                 if matches!(e, ym_api::Error::Network(_))
-                    && self.player.pending_index.is_none()
                     && let Some(i) = self.next_downloaded()
                 {
                     self.play_index(i);
@@ -319,12 +293,6 @@ impl State {
     }
 
     fn skip_failed(&mut self) {
-        if self.player.pending_index.take().is_some() {
-            self.player.pending_token = None;
-            self.player.loading = false;
-            self.load_current();
-            return;
-        }
         let cur = self.player.index.unwrap_or(0);
         if cur + 1 < self.player.queue.len() {
             self.play_index(cur + 1);

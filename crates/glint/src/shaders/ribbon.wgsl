@@ -56,7 +56,24 @@ fn fs_ribbon(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     if (light) {
         col = mix(ground, glow / max(a / quiet, 0.001) * 0.84, clamp(a * 0.72, 0.0, 0.76)) - vec3<f32>(sheen * 0.35);
     }
-    col = clamp(col + (ign(p) - 0.5) * (1.0 / 255.0), vec3<f32>(0.0), vec3<f32>(1.0));
+    // The caption and the station name sit on the left: shade the ribbons under them so the text
+    // stays readable (lighten instead in the light theme, where the text is dark).
+    let under_text = (1.0 - smoothstep(0.08, 0.70, uv.x)) * smoothstep(1.6, 2.4, aspect);
+    if (light) {
+        col = mix(col, ground, 0.45 * under_text);
+    } else {
+        col = col * (1.0 - 0.38 * under_text) * 0.92;
+    }
+    col = col + vec3<f32>(smoothstep(-1.4 * k, 0.0, d) * select(0.07, -0.05, light));
+    // Printed in ordered dither, coarser where the ribbons glow.
+    let cell = max(1.0, round(k * 1.5));
+    let cp = floor((p - u.rect.xy) / cell);
+    let grain = fract(sin(dot(cp, vec2<f32>(12.9898, 78.233)) + seed * 7.1) * 43758.5453) - 0.5;
+    col = clamp(col + grain * 0.02, vec3<f32>(0.0), vec3<f32>(1.0));
+    let steps = mix(20.0, 6.0, clamp(a * 1.4, 0.0, 1.0));
+    let thr = bayer8(cp);
+    let q = col * steps;
+    col = (floor(q) + step(vec3<f32>(thr), fract(q))) / steps;
     let clip = rect_clip(p);
     return vec4<f32>(work(col) * cov * clip, cov * clip);
 }

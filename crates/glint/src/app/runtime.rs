@@ -25,8 +25,26 @@ impl State {
         let Some(app) = self.app.clone() else { return };
         net::spawn(async move {
             let out = fut.await;
-            app.update(move |s, tx| apply(s, tx, out));
+            app.update(move |s, tx| {
+                let was = s.track_mark();
+                apply(s, tx, out);
+                s.animate_if_moved(tx, &was);
+            });
         });
+    }
+
+    /// Which track plays: its place in the queue and its id.
+    pub fn track_mark(&self) -> (Option<usize>, Option<String>) {
+        (self.player.index, self.current().map(|t| t.id.clone()))
+    }
+
+    /// When the playing track changed since `was`, asks for motion. A commit no press caused
+    /// (a load finishing, the audio reaching the end, a media key) lands at once otherwise, and
+    /// the queue and the backdrop would jump to the new track.
+    pub fn animate_if_moved(&self, tx: &mut Tx, was: &(Option<usize>, Option<String>)) {
+        if &self.track_mark() != was && !self.settings.reduce_motion {
+            tx.animated();
+        }
     }
 
     pub fn tr(&self, s: S) -> &'static str {

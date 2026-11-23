@@ -1,7 +1,7 @@
 //! Track rows, queue rows, like/download row controls, and list playback sources.
 
 use crate::fx::Slot as _;
-use rune::{Align, Color, Cursor, El, Icon, PopupAnchor, TextStyle, Transition, Tx, col, el, icon, row};
+use rune::{Color, Cursor, El, Icon, PopupAnchor, TextStyle, Transition, Tx, col, el, icon, row};
 use ym_api::Track;
 
 use super::controls::{ctl_radius, ibtn, ibtn_gop, quiet_halo, swap_glyph};
@@ -14,15 +14,27 @@ use crate::i18n::S;
 use crate::theme::{self as th, veil};
 use crate::ui::{icons, np_icons};
 
-pub const ROW_H: f32 = 56.0;
+pub const ROW_H: f32 = 52.0;
+/// Room between a row's hover plate and what it holds. A list hangs its rows this far out on
+/// both sides (`bleed`), so covers and numbers line up with the titles above the list.
 pub const ROW_PAD: f32 = 8.0;
-const ROW_GAP: f32 = 10.0;
-const ROW_BTN: f32 = 32.0;
+const ROW_GAP: f32 = 12.0;
+/// Every slot on the right of a row has the same square, so the icons are evenly spaced.
+const ROW_BTN: f32 = 36.0;
 const ROW_GLYPH: f32 = 16.0;
-const ROW_TIME: f32 = 48.0;
-const ROW_ACTIONS: f32 = ROW_BTN * 3.0 + 12.0 + ROW_TIME;
-pub const ROW_COVER: f32 = 44.0;
-pub const ROW_COVER_R: f32 = 7.0;
+/// The duration, and the More button that takes its place on hover.
+const ROW_TAIL: f32 = ROW_BTN;
+/// Right of the duration, the text ends this far in: the same as a heading's count above.
+pub const ROW_TIME_INSET: f32 = 2.0;
+/// The right of a row: a download's state, the heart, and the duration or More. Everything else
+/// a track can do is in its menu.
+const ROW_ACTIONS: f32 = ROW_BTN * 2.0 + ROW_TAIL;
+/// The number column of an album's rows, where other lists show a cover. The number sits in its
+/// middle, and the title follows closer than it would a cover.
+const ROW_NUM: f32 = 24.0;
+const ROW_NUM_GAP: f32 = 8.0;
+pub const ROW_COVER: f32 = 40.0;
+pub const ROW_COVER_R: f32 = 6.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListSrc {
@@ -33,13 +45,35 @@ pub enum ListSrc {
     History,
 }
 
+/// What a track filter looks through: the title, the artists and the album.
+pub fn track_fields(t: &Track) -> Vec<String> {
+    let mut f = vec![t.full_title(), t.artists_line()];
+    f.extend(t.albums.first().map(|a| a.title.clone()));
+    f
+}
+
 impl State {
-    pub fn detail_track_matches(&self, t: &Track, q: &str) -> bool {
-        if q.is_empty() {
-            return true;
+    /// Which of a playlist's tracks its search finds, in order; None when the search is empty or
+    /// the page isn't a playlist. Worked out once per query and kept.
+    pub fn detail_shown(&self) -> Option<std::cell::Ref<'_, Vec<usize>>> {
+        let q = self.detail.filter.text.trim();
+        if q.is_empty() || !matches!(self.page, Page::Playlist(..)) {
+            return None;
         }
-        let has = |s: &str| s.to_lowercase().contains(q);
-        has(&t.title) || has(&t.artists_line()) || t.albums.first().is_some_and(|a| has(&a.title))
+        let v = &self.detail.tracks;
+        let key = (q.to_owned(), self.detail.sort, v.as_ptr() as usize, v.len());
+        if *self.detail.shown_key.borrow() != key {
+            let query = crate::find::Query::new(q);
+            *self.detail.shown.borrow_mut() = match query {
+                None => (0..v.len()).collect(),
+                Some(qr) => crate::find::best(v.iter().map(|t| {
+                    let f = track_fields(t);
+                    qr.tier(&f.iter().map(String::as_str).collect::<Vec<_>>())
+                })),
+            };
+            *self.detail.shown_key.borrow_mut() = key;
+        }
+        Some(self.detail.shown.borrow())
     }
 
     pub fn list(&self, src: ListSrc) -> Vec<Track> {
@@ -53,11 +87,9 @@ impl State {
                 }
             }
             ListSrc::Detail => {
-                let q = self.detail.filter.text.trim().to_lowercase();
-                if q.is_empty() || !matches!(self.page, Page::Playlist(..)) {
-                    self.detail.tracks.clone()
-                } else {
-                    self.detail.tracks.iter().filter(|t| self.detail_track_matches(t, &q)).cloned().collect()
+                match self.detail_shown() {
+                    None => self.detail.tracks.clone(),
+                    Some(shown) => shown.iter().filter_map(|&i| self.detail.tracks.get(i).cloned()).collect(),
                 }
             }
             ListSrc::Search => self.search_view().map(|r| r.tracks.results.clone()).unwrap_or_default(),
@@ -69,7 +101,7 @@ impl State {
     pub fn play_from_list(&mut self, src: ListSrc, id: &str) {
         if src == ListSrc::Queue {
             if let Some(i) = self.player.queue.iter().position(|t| t.id == id) {
-                if self.player.index == Some(i) && self.player.pending_index.is_none() {
+                if self.player.index == Some(i) {
                     self.toggle_pause();
                 } else {
                     self.play_index(i);
@@ -77,7 +109,7 @@ impl State {
             }
             return;
         }
-        if self.player.pending_index.is_none() && self.current().is_some_and(|c| c.id == id) {
+        if self.current().is_some_and(|c| c.id == id) {
             self.toggle_pause();
             return;
         }
@@ -113,6 +145,17 @@ impl State {
 
 fn open_track_menu(s: &mut State, track: &Track, queue_index: Option<usize>, anchor: impl Into<PopupAnchor>) {
     s.open_track_menu(track.clone(), queue_index, anchor.into());
+}
+
+/// A square button on the right of a row, shown only while the row is hovered.
+fn row_btn(key: String, ic: &'static Icon, glyph: f32, name: &str) -> El {
+    ibtn_gop(key, ic, glyph, ROW_BTN, th::text2(), name)
+}
+
+/// Lets a list's rows hang `ROW_PAD` past both sides of the column, so what a row starts with
+/// lines up with the column's other content while its hover plate keeps its padding.
+pub fn bleed(list: El) -> El {
+    row().w_full().child(list.ml(-ROW_PAD).mr(-ROW_PAD).grow(1.0))
 }
 
 fn heart_glyph(size: f32) -> f32 {
@@ -258,13 +301,15 @@ fn row_cover(s: &State, t: &Track, playing: bool, hovered: bool, dim_past: bool)
     c
 }
 
-fn download_status_or_button(s: &State, t: &Track) -> El {
+/// A download in progress, done or failed, shown whether or not the row is hovered. A track that
+/// isn't downloaded shows nothing here: Download is in its menu.
+fn download_status(s: &State, t: &Track) -> Option<El> {
     let state = s.downloads.get(&t.id).copied();
     let (mut ic, color, help) = match state {
         Some(DownloadState::Downloading) => (&icons::SPINNER, th::text2(), S::DownloadInProgress),
         Some(DownloadState::Done) => (&icons::DOWNLOAD, th::rgb(0x4bd27e).alpha(0.85), S::DownloadDone),
         Some(DownloadState::Failed) => (&icons::DOWNLOAD, th::rgb(0xf18a8a), S::DownloadFailed),
-        None => (&icons::DOWNLOAD, th::text3(), S::Download),
+        None => (&icons::DOWNLOAD, th::text2(), S::Download),
     };
     let mut help_buf = None;
     if matches!(state, Some(DownloadState::Failed))
@@ -276,7 +321,7 @@ fn download_status_or_button(s: &State, t: &Track) -> El {
         help_buf = Some(format!("{}: {}", help.get(s.lang), fail.reason().get(s.lang)));
     }
     let help_text = help_buf.as_deref().unwrap_or_else(|| help.get(s.lang));
-    match state {
+    Some(match state {
         Some(DownloadState::Downloading) => row()
             .key(format!("download-{}", t.id))
             .role("status")
@@ -294,44 +339,24 @@ fn download_status_or_button(s: &State, t: &Track) -> El {
             .w(ROW_BTN)
             .h(ROW_BTN)
             .center()
-            .child(icon(ic, 14.0).color(color)),
+            .child(icon(ic, ROW_GLYPH).color(color)),
         Some(DownloadState::Failed) => {
             let track = t.clone();
             ibtn(format!("download-{}", t.id), ic, ROW_GLYPH, ROW_BTN, color, help_text).on_press(move |s: &mut State| s.ask_download(vec![track.clone()]))
         }
-        None => {
-            let track = t.clone();
-            ibtn_gop(format!("download-{}", t.id), ic, ROW_GLYPH, ROW_BTN, color, help_text).on_press(move |s: &mut State| s.ask_download(vec![track.clone()]))
-        }
-    }
-}
-
-fn delete_download_or_queue_button(s: &State, t: &Track, queue: bool, qi: Option<usize>) -> Option<El> {
-    if let Some(i) = qi.filter(|&i| queue && Some(i) > s.player.index) {
-        return Some(
-            ibtn_gop(format!("q-rem-{i}-{}", t.id), &icons::CLOSE, 14.0, ROW_BTN, th::text3(), S::RemoveFromQueue.get(s.lang))
-                .on_press(move |s: &mut State| s.remove_from_queue(i)),
-        );
-    }
-    if matches!(s.downloads.get(&t.id), Some(DownloadState::Done)) {
-        let track = t.clone();
-        return Some(
-            ibtn_gop(format!("dl-del-{}", t.id), &icons::TRASH, 15.0, ROW_BTN, th::text2(), S::DeleteDownload.get(s.lang))
-                .on_press(move |s: &mut State| s.ask_delete_download(track.clone())),
-        );
-    }
-    None
+        None => return None,
+    })
 }
 
 pub fn track_row(s: &State, t: &Track, n: usize, src: ListSrc) -> El {
     let qi = (src == ListSrc::Queue).then(|| s.player.queue.iter().position(|queued| queued.id == t.id).unwrap_or_else(|| n.saturating_sub(1)));
-    let num = (src == ListSrc::Detail && !s.detail.is_artist).then_some(n);
+    let num = (src == ListSrc::Detail && matches!(s.detail.page, Some(Page::Album(_)))).then_some(n);
     track_row_at(s, t, src, qi, num, false, n.saturating_sub(1))
 }
 
 pub fn queue_row(s: &State, t: &Track, qi: usize, dim_past: bool) -> El {
     track_row_at(s, t, ListSrc::Queue, Some(qi), None, dim_past, qi).on_press(move |s: &mut State| {
-        if s.player.index == Some(qi) && s.player.pending_index.is_none() {
+        if s.player.index == Some(qi) {
             s.toggle_pause();
         } else {
             s.play_index(qi);
@@ -372,37 +397,38 @@ fn track_row_at(s: &State, t: &Track, src: ListSrc, qi: Option<usize>, num: Opti
     let (id, t2, t3) = (t.id.clone(), t.clone(), t.clone());
     let more_key = format!("more-{}", t.id);
     let more_anchor = more_key.clone();
-    let heart = like_button(s, t, ROW_BTN, liked, !liked);
+    // In the queue the empty heart stays in sight, not only on hover.
+    let heart = like_button(s, t, ROW_BTN, liked, false);
 
     let time = row()
         .absolute(0.0, 0.0)
         .w_full()
         .h_full()
-        .center()
+        .items_center()
+        .justify_end()
+        .pr(ROW_TIME_INSET)
         .child(label(crate::player::fmt_time(t.duration_ms.unwrap_or(0)), th::TIME, th::text3()).gop(1.0, 0.0));
-    let more = row().absolute(0.0, 0.0).w_full().h_full().center().child(
-        ibtn_gop(more_key, &icons::MORE, ROW_GLYPH + 2.0, ROW_BTN, th::text2(), S::More.get(s.lang))
-            .on_press(move |s: &mut State| open_track_menu(s, &t3, qi, more_anchor.clone())),
+    let more = row().absolute(0.0, 0.0).w_full().h_full().items_center().justify_end().child(
+        row_btn(more_key, &icons::MORE, ROW_GLYPH + 2.0, S::More.get(s.lang)).on_press(move |s: &mut State| open_track_menu(s, &t3, qi, more_anchor.clone())),
     );
-    let tail = el().key(format!("row-tail-{}", t.id)).w(ROW_TIME).h(ROW_BTN).child(time).child(more);
-    let dl_slot = download_status_or_button(s, t);
-    let secondary_slot = delete_download_or_queue_button(s, t, queue, qi);
+    let tail = el().key(format!("row-tail-{}", t.id)).w(ROW_TAIL).h(ROW_BTN).child(time).child(more);
+    let actions = row()
+        .key(format!("row-actions-{}", t.id))
+        .w(ROW_ACTIONS)
+        .h(ROW_BTN)
+        .justify_end()
+        .items_center()
+        .children(download_status(s, t))
+        .child(heart)
+        .child(tail);
 
-    let mut actions = row().key(format!("row-actions-{}", t.id)).w(ROW_ACTIONS).h(ROW_BTN).gap(4.0).justify_end().items_center().child(dl_slot);
-    if let Some(sec) = secondary_slot {
-        actions = actions.child(sec);
-    }
-    actions = actions.child(heart).child(tail);
-
-    let has_left_slot = num.is_some() || reorderable;
     let mut r = row()
         .key(hot.clone())
         .role("button")
         .label(title.as_str())
         .w_full()
         .h(ROW_H)
-        .pl(if has_left_slot { 4.0 } else { ROW_PAD })
-        .pr(ROW_PAD)
+        .px(ROW_PAD)
         .gap(ROW_GAP)
         .items_center()
         .radius(10.0)
@@ -420,39 +446,42 @@ fn track_row_at(s: &State, t: &Track, src: ListSrc, qi: Option<usize>, num: Opti
         .on_secondary_press(move |s: &mut State, press, _tx: &mut Tx| open_track_menu(s, &t2, qi, press))
         .hov_group()
         .on_hover_change(marquee_hover(hot.clone()));
+    if reorderable {
+        r = r.on_drag(move |s: &mut State, d: &mut rune::Drag, tx: &mut Tx| s.drag_row(queue, row_idx, d, tx));
+    }
+    if is_dragging {
+        r = r.cursor(Cursor::Grabbing);
+    }
     if let Some(drag) = active_drag {
         let residual = drag.dy - (drag.cur as f32 - drag.start as f32) * ROW_H;
         r = r.offset(0.0, residual).raise().instant_changes();
     }
-    if has_left_slot {
-        let mut slot = el().key(format!("row-lead-{}", t.id)).w(20.0).h(ROW_BTN);
-        if let Some(n) = num {
-            let num_lbl = label(n.to_string(), th::TIME, if playing { s.pal().accent } else { th::text3() }).w(20.0).align(Align::Center);
-            let num_el = if reorderable {
-                num_lbl.gop(if is_dragging { 0.0 } else { 1.0 }, 0.0)
-            } else {
-                num_lbl
-            };
-            slot = slot.child(row().absolute(0.0, 0.0).w_full().h_full().center().child(num_el));
-        }
-        if reorderable {
-            let grip = row()
-                .key(format!("grip-{}", t.id))
-                .absolute(0.0, 0.0)
-                .w_full()
-                .h_full()
-                .center()
-                .cursor(Cursor::Grab)
-                .on_press(|_s: &mut State| {})
-                .on_drag(move |s: &mut State, d: &mut rune::Drag, tx: &mut Tx| {
-                    s.drag_row(queue, row_idx, d, tx);
-                })
-                .child(icon(&icons::GRIP, 15.0).color(if is_dragging { th::text() } else { th::text3() }).gcol(th::text2()).gop(if is_dragging { 1.0 } else { 0.0 }, 1.0));
-            slot = slot.child(grip);
-        }
-        r = r.child(slot);
-    }
-    r.child(row_cover(s, t, playing, moving, dim_past))
+    let lead = match num {
+        Some(n) => row_number(s, n, playing, moving),
+        None => row_cover(s, t, playing, moving, dim_past),
+    };
+    r = r
+        .child(lead)
         .child(measure_room(col().grow(1.0).min_w(0.0).h_full().justify_center().gap(2.0).child(title_line(s, t, title, ink, room_w, moving)).child(meta), hot))
-        .child(actions)
+        .child(actions);
+    r
+}
+
+/// An album's row starts with its track number where other lists show a cover: the covers would
+/// all be the album's own. The playing track shows the marker; a hovered one, play or pause.
+fn row_number(s: &State, n: usize, playing: bool, hovered: bool) -> El {
+    let mut c = el().key("rn").w(ROW_NUM).h(ROW_COVER).mr(ROW_NUM_GAP - ROW_GAP).transition(Transition::none());
+    if playing {
+        let inner = if hovered {
+            icon(if s.player.playing { &icons::PAUSE } else { &icons::PLAY }, 15.0).color(th::text())
+        } else {
+            marker(s)
+        };
+        c = c.child(row().absolute(0.0, 0.0).w_full().h_full().center().transition(Transition::none()).child(inner));
+    } else {
+        c = c
+            .child(row().absolute(0.0, 0.0).w_full().h_full().center().child(label(n.to_string(), th::TIME, th::text3()).gop(1.0, 0.0)))
+            .child(row().absolute(0.0, 0.0).w_full().h_full().center().child(icon(&icons::PLAY, 15.0).color(th::text()).gop(0.0, 1.0)));
+    }
+    c
 }

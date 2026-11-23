@@ -11,6 +11,7 @@ impl State {
         let text = text.trim().to_owned();
         self.search.generation += 1;
         let generation = self.search.generation;
+        self.search.relaid = None;
         if text.is_empty() {
             self.search.results = Load::Idle;
             self.search.query.clear();
@@ -18,17 +19,36 @@ impl State {
         }
         self.search.query = text.clone();
         self.search.results = Load::Loading;
+        self.fetch_search_all(text, generation, true);
+        self.fetch_search_kind();
+    }
+
+    /// Searches everything for `text`. When nothing turns up and `retry` is set, it searches
+    /// again as if the text had been typed on the other keyboard layout ("ytjy" for "неон").
+    fn fetch_search_all(&mut self, text: String, generation: u64, retry: bool) {
         let (b, fc, fc_on) = (self.backend.clone(), self.fkcensor.clone(), self.settings.fkcensor);
+        let asked = text.clone();
         self.job(async move { b.search(&text, ym_api::SearchKind::All, &fc, fc_on).await }, move |s, _, res| {
             if s.search.generation != generation {
                 return;
+            }
+            if retry
+                && res.as_ref().is_ok_and(SearchResult::is_empty)
+                && let Some(other) = crate::find::other_layout(&asked)
+            {
+                s.fetch_search_all(other, generation, false);
+                return;
+            }
+            if !retry && res.as_ref().is_ok_and(|r| !r.is_empty()) {
+                s.search.relaid = Some(asked);
+                s.search.more_for = None;
+                s.fetch_search_kind();
             }
             s.search.results = match res {
                 Ok(r) => Load::Ready(r),
                 Err(e) => Load::Failed(e.to_string()),
             };
         });
-        self.fetch_search_kind();
     }
 
     /// Picks a result filter chip; non-"All" kinds fetch a wider dedicated result set.
@@ -49,11 +69,11 @@ impl State {
         if self.search.query.is_empty() || self.search.more_for.as_ref().is_some_and(|(q, t)| *t == tab && q == &self.search.query) {
             return;
         }
-        let text = self.search.query.clone();
-        self.search.more_for = Some((text.clone(), tab));
+        let text = self.search.relaid.clone().unwrap_or_else(|| self.search.query.clone());
+        self.search.more_for = Some((self.search.query.clone(), tab));
         self.search.more = Load::Loading;
         let (b, fc, fc_on) = (self.backend.clone(), self.fkcensor.clone(), self.settings.fkcensor);
-        let want = (text.clone(), tab);
+        let want = (self.search.query.clone(), tab);
         self.job(async move { b.search(&text, kind, &fc, fc_on).await }, move |s, _, res| {
             if s.search.more_for.as_ref() != Some(&want) {
                 return;

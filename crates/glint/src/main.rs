@@ -14,6 +14,7 @@ mod bugs;
 mod desktop;
 mod diag_log;
 #[cfg(feature = "tooling")]
+mod find;
 mod fixtures;
 mod fkcensor;
 mod fx;
@@ -202,7 +203,27 @@ fn main() {
 
 /// Runs at the start of every frame: advances the player and turns what it found into requests.
 fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
+    let was = s.track_mark();
     let mut changed = s.tick(t);
+    s.animate_if_moved(tx, &was);
+    // The queue's headings come back once the tracks have passed them.
+    if let Some(until) = s.queue_passing {
+        if s.now >= until {
+            s.queue_passing = None;
+            changed = true;
+        } else {
+            tx.wake_after(Duration::from_secs_f64(until - s.now));
+        }
+    }
+    // A setting found from the Settings search stays lit for a moment.
+    if let Some((_, until)) = &s.settings_found {
+        if s.now >= *until {
+            s.settings_found = None;
+            changed = true;
+        } else {
+            tx.wake_after(Duration::from_secs_f64(until - s.now));
+        }
+    }
     startup_report(tx);
     // The compositor tiers came up: rebuild the view with glass or shape slots as each finishes.
     {
@@ -363,13 +384,18 @@ fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
     // The queue opens with the track before the playing one at its top, and follows as another
     // track starts (gliding there; at once as it opens).
     if s.np_open && s.np_panel() == NpTab::Queue && !s.player.queue.is_empty() {
-        let cur = s.player.pending_index.or(s.player.index).unwrap_or(0);
+        let cur = s.player.index.unwrap_or(0);
         if s.queue_placed != Some(cur) {
             let y = ui::np::queue_offset(cur);
             if s.queue_placed.is_none() {
                 tx.scroll_to_y("np-queue", y);
             } else {
-                tx.scroll_to("np-queue", 0.0, y);
+                // On the rows' spring, so the headings hold still while the tracks pass them.
+                if !s.settings.reduce_motion {
+                    tx.animated();
+                }
+                tx.scroll_to_with("np-queue", 0.0, y, theme::SLIDE);
+                s.queue_passing = Some(s.now + 0.26);
             }
             s.queue_placed = Some(cur);
             changed = true;

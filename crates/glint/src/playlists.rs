@@ -272,13 +272,22 @@ impl State {
         }
     }
 
-    /// Handles drag-to-reorder on a track row grip handle (`queue = false` for playlists, `true` for Queue).
+    /// Handles drag-to-reorder on a track row (`queue = false` for playlists, `true` for Queue).
+    /// The whole row is the handle: a press that stays put plays the track, and the row only
+    /// lifts once the pointer has moved `ROW_DRAG_SLOP` up or down.
     pub fn drag_row(&mut self, queue: bool, row_idx: usize, d: &mut rune::Drag, tx: &mut rune::Tx) {
+        const ROW_DRAG_SLOP: f32 = 4.0;
         match d.phase {
             rune::Phase::Down => {
-                self.row_drag = Some(crate::app::RowDrag { queue, start: row_idx, cur: row_idx, dy: 0.0 });
+                self.row_drag = None;
             }
             rune::Phase::Move | rune::Phase::Up => {
+                if self.row_drag.is_none() {
+                    if d.phase != rune::Phase::Move || d.dy.abs() < ROW_DRAG_SLOP {
+                        return;
+                    }
+                    self.row_drag = Some(crate::app::RowDrag { queue, start: row_idx, cur: row_idx, dy: 0.0 });
+                }
                 let Some(mut drag) = self.row_drag.clone() else { return };
                 if drag.queue != queue {
                     return;
@@ -305,7 +314,6 @@ impl State {
                                 }
                             };
                             self.player.index = self.player.index.map(remap);
-                            self.player.pending_index = self.player.pending_index.map(remap);
                             self.invalidate_next();
                             self.playback_dirty = true;
                         } else {

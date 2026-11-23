@@ -14,6 +14,9 @@ pub(super) struct Song {
     pub(super) kick: f32,
     pub(super) snare: f32,
     pub(super) loud: f32,
+    /// The beat as the lively stage shows it: follows `Smooth::beat` in over ~45 ms and out over
+    /// ~260 ms, so the rays swell on the hit and settle without twitching.
+    pub(super) throb: f32,
     chroma: [f32; 12],
     key: [f32; 2],
     pub(super) ground_t: f32,
@@ -33,6 +36,7 @@ impl Song {
             kick: 0.0,
             snare: 0.0,
             loud: 0.0,
+            throb: 0.0,
             chroma: [0.0; 12],
             key: [0.0, 0.0],
             ground_t: 0.0,
@@ -78,6 +82,11 @@ impl Song {
     pub(super) fn key_dir(&self) -> [f32; 2] {
         let l = (self.key[0] * self.key[0] + self.key[1] * self.key[1]).sqrt();
         if l < 1e-4 { [1.0, 0.0] } else { [self.key[0] / l, self.key[1] / l] }
+    }
+
+    pub(super) fn follow_beat(&mut self, dt: f32, beat: f32) {
+        let tau = if beat > self.throb { 0.045 } else { 0.26 };
+        self.throb += (beat.clamp(0.0, 1.0) - self.throb) * (1.0 - (-dt / tau).exp());
     }
 
     pub(super) fn advance(&mut self, dt: f32) {

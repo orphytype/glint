@@ -72,9 +72,6 @@ pub struct Player {
     pub queue: Vec<Track>,
     pub original: Vec<Track>,
     pub index: Option<usize>,
-    /// Queue index whose audio is loading before it becomes the visible current track.
-    pub pending_index: Option<usize>,
-    pub pending_token: Option<u64>,
     pub shuffle: bool,
     pub repeat: Repeat,
     pub volume: f32,

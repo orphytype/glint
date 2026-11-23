@@ -6,7 +6,6 @@ use crate::fx::Slot as _;
 use rune::{Color, Cursor, El, SurfaceFit, TextStyle, Transition, Tx, col, el, icon, row};
 use ym_api::{Artist, Track};
 
-use super::controls::ctl_radius;
 use super::marquee::marquee;
 use super::{Hover as _, label, under};
 use crate::app::{Page, Popover, Source, State, Station, WaveChoice};
@@ -52,6 +51,28 @@ fn picture(s: &State, key: &str, name: &str, corners: [f32; 4]) -> El {
     el().key(format!("{name}-{key}")).absolute(0.0, 0.0).w_full().h_full().corners(corners).pixels_fit(&px, SurfaceFit::Fill).transition(Transition::none())
 }
 
+/// The playing track's cover: it fades in once its picture has decoded, and the one it replaces
+/// fades out under it. Until then the cover shown before stays (`hold`), so a track change never
+/// shows an empty square.
+fn swap_picture(s: &State, key: &str, hold: Option<&str>, corners: [f32; 4]) -> Option<El> {
+    let shown = if s.art.ready(key) {
+        key
+    } else {
+        s.art.pixels(key);
+        hold.filter(|h| s.art.ready(h))?
+    };
+    let px = s.art.pixels(shown);
+    Some(
+        el().key(format!("swap-{shown}"))
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .corners(corners)
+            .pixels_fit(&px, SurfaceFit::Fill)
+            .transition(Transition::opacity().springs(th::SWAP)),
+    )
+}
+
 pub fn picture_url(s: &State, url: &str, radius: f32) -> El {
     picture(s, url, "pic", [radius; 4])
 }
@@ -63,14 +84,7 @@ pub fn playing_cover(s: &State, t: &Track, pt: f32, radius: f32, track_key: &str
     let Some(key) = State::cover_key(t.cover_template()) else {
         return base.center().child(icon(&icons::NOTE, pt * 0.42).color(th::text3())).child(edge);
     };
-    let mut c = base;
-    if !s.art.ready(&key)
-        && let Some(prev) = s.palette_key.as_deref()
-        && prev != key
-    {
-        c = c.child(picture(s, prev, "img-prev", [radius; 4]));
-    }
-    c.child(picture(s, &key, "img", [radius; 4]))
+    base.children(swap_picture(s, &key, s.palette_key.as_deref(), [radius; 4]))
         .child(edge)
         .child(el().key(track_key.to_owned()).absolute(0.0, 0.0).w_full().h_full().transition(Transition::none()).fx(fx::COVER_MARK))
 }
@@ -83,27 +97,23 @@ pub fn playing_cover_lg(s: &State, t: &Track, pt: f32, radius: f32, track_key: &
     let Some(key_lg) = State::cover_key_px(t.cover_template(), crate::art::COVER_LG) else {
         return base.center().child(icon(&icons::NOTE, pt * 0.42).color(th::text3())).child(edge);
     };
-    let mut c = base;
     let lg_ready = s.art.ready(&key_lg);
-    if !lg_ready || !settled {
-        if !lg_ready && settled {
-            s.art.watch(&key_lg);
-        }
-        if let Some(key_md) = State::cover_key(t.cover_template())
-            && s.art.ready(&key_md)
-        {
-            c = c.child(picture(s, &key_md, "img-md", [radius; 4]));
-        } else if let Some(prev) = s.palette_key.as_deref() {
-            c = c.child(picture(s, prev, "img-prev", [radius; 4]));
-        }
+    if !lg_ready && settled {
+        s.art.watch(&key_lg);
     }
-    c.child(picture(s, &key_lg, "img", [radius; 4]))
+    // Under the large picture, until it is ready: this track's 300 px cover, or the cover shown
+    // before. Both fade, so a track change crossfades whichever size is there first.
+    let under = (!lg_ready || !settled).then(|| State::cover_key(t.cover_template())).flatten().and_then(|md| swap_picture(s, &md, s.palette_key.as_deref(), [radius; 4]));
+    base.children(under)
+        .children(lg_ready.then(|| swap_picture(s, &key_lg, None, [radius; 4])).flatten())
         .child(edge)
         .child(el().key(track_key.to_owned()).absolute(0.0, 0.0).w_full().h_full().transition(Transition::none()).fx(fx::COVER_MARK))
 }
 
 pub fn roll(name: &str, id: &str, line: El) -> El {
-    el().key(format!("{name}-{id}")).w_full().min_w(0.0).transition(Transition::asymmetric(Transition::offset(0.0, 8.0), Transition::none()).springs(th::RISE)).child(line)
+    let enter = Transition::opacity().combined(Transition::offset(0.0, 6.0));
+    let exit = Transition::opacity().combined(Transition::offset(0.0, -6.0));
+    el().key(format!("{name}-{id}")).w_full().min_w(0.0).animated_changes().transition(Transition::asymmetric(enter, exit).springs(th::ROLL)).child(line)
 }
 
 pub fn track_title(s: &State, t: &Track, key: &'static str, style: TextStyle, width: f32) -> El {
@@ -194,7 +204,7 @@ pub fn wave_card(s: &State, key: &str, caption: &str, name: &str, station: Stati
                 .gap(6.0)
                 .items_center()
                 .min_w(0.0)
-                .child(icon(if on { &icons::PAUSE } else { &icons::PLAY }, 20.0).color(th::text()).ml(-2.0).mt(-1.0))
+                .child(icon(if on { &icons::PAUSE } else { &icons::PLAY }, 16.0).color(th::text()).ml(-3.0))
                 .child(label(name.to_owned(), th::H3, th::text()).truncate().min_w(0.0)),
         );
     let mut c = row()
@@ -211,6 +221,8 @@ pub fn wave_card(s: &State, key: &str, caption: &str, name: &str, station: Stati
             }
         })
         .child(blobs::ribbon(format!("{key}-ribbon"), seed, s.palette.wave, hovered, playing, 12.0))
+        // A shade over the moving picture, so the words and the menu arrow stay readable on it.
+        .child(el().absolute(0.0, 0.0).w_full().h_full().radius(12.0).fill(th::bg().alpha(0.32)))
         .child(go);
     if let Some(choices) = more {
         let anchor = format!("{key}-more");
@@ -271,27 +283,38 @@ pub fn wave_glyph(side: f32, color: Color) -> El {
         .transition(Transition::none())
 }
 
-pub fn wave_button(s: &State, key: &str, caption: &str, name: &str, station: Station, size: f32) -> El {
+/// The wave button as a part of a `button_group`: the same moving picture, as a tile inside the
+/// part, so it sits anywhere in the group.
+pub fn seg_wave(s: &State, key: &str, caption: &str, name: &str, station: Station) -> El {
+    const TILE: f32 = 26.0;
+    const TILE_R: f32 = 7.0;
     let playing = matches!(&s.player.source, Source::Wave { preset, .. } if station.is(preset)) && s.current().is_some();
     let on = playing && s.player.playing;
     let seed = (key.bytes().fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(u32::from(b))) % 997) as f32 + 0.37;
     let hovered = !under() && s.wave_hover.as_deref() == Some(key);
-    let r = ctl_radius(size);
     let owner = key.to_owned();
     let wave_name = name.to_owned();
     let tip = if on { format!("{caption} · {}", S::Pause.get(s.lang)) } else { format!("{caption}: {name}") };
-    let mut b = row()
+    let tile = row()
+        .w(TILE)
+        .h(TILE)
+        .radius(TILE_R)
+        .center()
+        .child(blobs::ribbon(format!("{key}-ribbon"), seed, s.palette.wave, hovered, playing, TILE_R))
+        .child(if on { icon(&icons::PAUSE, 11.0).color(th::text()) } else { wave_glyph(16.0, th::text()) })
+        .child(el().absolute(0.0, 0.0).w_full().h_full().radius(TILE_R).border(1.0, if playing { th::text().alpha(0.55) } else { veil(0.14) }));
+    row()
         .key(key.to_owned())
         .role("button")
         .label(caption)
         .help(tip)
         .checked(playing)
-        .w(size)
-        .h(size)
-        .radius(r)
+        .w(super::BTN_H)
+        .h(super::BTN_H)
         .center()
         .cursor(Cursor::Pointer)
-        .press_scale(th::PRESS)
+        .hov(veil(0.05))
+        .press(veil(0.09))
         .transition(Transition::none())
         .on_hover_change(move |s: &mut State, over: bool, _tx: &mut Tx| {
             if over {
@@ -307,10 +330,7 @@ pub fn wave_button(s: &State, key: &str, caption: &str, name: &str, station: Sta
                 s.start_station(&station, &wave_name);
             }
         })
-        .child(blobs::ribbon(format!("{key}-ribbon"), seed, s.palette.wave, hovered, playing, r));
-    b = b.child(if on { icon(&icons::PAUSE, (size * 0.38).round()).color(th::text()) } else { wave_glyph((size * 0.60).round(), th::text()) });
-    let edge = if playing { th::text().alpha(0.55) } else { veil(0.14) };
-    b.child(el().absolute(0.0, 0.0).w_full().h_full().radius(r).border(1.0, edge))
+        .child(tile)
 }
 
 fn avatar(s: &State, a: &Artist, size: f32) -> El {

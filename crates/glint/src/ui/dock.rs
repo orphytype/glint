@@ -11,7 +11,7 @@ use crate::fx::Slot as _;
 use rune::{Align, Cursor, Drag, El, Icon, Phase, Transition, Tx, col, el, icon, row};
 
 use super::icons;
-use super::kit::{self, BAR_GAP, BAR_H, BTN, GLYPH, RAIL_W, TITLE_H, label};
+use super::kit::{self, BAR_GAP, BAR_H, RAIL_W, TITLE_H, label};
 use super::np_icons as ni;
 use crate::app::{NpTab, Page, Popover, Source, State};
 use crate::fx::{self, Glass};
@@ -360,10 +360,11 @@ fn playing(s: &State, width: f32) -> El {
     let Some(t) = s.current() else { return el() };
     let lang = s.lang;
     // Three columns: the track on the left, the transport in the middle, the rest on the right.
-    // The middle keeps to the middle of the bar; the sides share what is left.
-    let mid_w = (width * 0.36).clamp(280.0, 460.0);
+    // The middle keeps to the middle of the bar; the sides share what is left. A narrow bar packs
+    // the transport closer, so all seven buttons stay.
+    let narrow = width < 900.0;
+    let mid_w = if narrow { (width * 0.34).clamp(250.0, 300.0) } else { (width * 0.36).clamp(280.0, 460.0) };
     let side_w = ((width - mid_w) * 0.5 - 14.0).max(120.0);
-    let compact = side_w < 230.0;
 
     let now = row()
         .key("bar-now")
@@ -398,16 +399,16 @@ fn playing(s: &State, width: f32) -> El {
     let transport = row()
         .key("bar-transport")
         .h(32.0)
-        .gap(6.0)
+        .gap(if narrow { 2.0 } else { 6.0 })
         .items_center()
         .justify_center()
-        .child(kit::np_like_button(s, t, 32.0, 17.0))
+        .child(kit::np_like_button(s, t, 32.0, 18.0))
         .child(shuffle_btn(s))
         .child(kit::skip_btn(s, false, "prev", &ni::PREV, 18.0, 32.0, th::text2()))
         .child(kit::bar_play_btn(s, 36.0, 22.0))
         .child(kit::skip_btn(s, true, "next", &ni::NEXT, 18.0, 32.0, th::text2()))
         .child(repeat_btn(s))
-        .child(kit::quiet_btn("dock-dislike", &ni::DISLIKE, 17.0, 32.0, th::text3(), S::Dislike.get(lang)).on_press(move |s: &mut State| s.dislike(&bad)));
+        .child(kit::quiet_btn("dock-dislike", &ni::DISLIKE, 18.0, 32.0, th::text3(), S::Dislike.get(lang)).on_press(move |s: &mut State| s.dislike(&bad)));
     let time_w = if s.player.dur_ms >= 3_600_000 { 58.0 } else { 40.0 };
     let seek = row()
         .key("bar-seek")
@@ -420,30 +421,55 @@ fn playing(s: &State, width: f32) -> El {
         .child(label("-0:00", th::MONO, th::text3()).live_text(&s.lives.remaining).w(time_w));
     let middle = col().key("bar-mid").w(mid_w).gap(2.0).items_center().child(transport).child(seek);
 
-    let mut right = row().key("bar-right").w(side_w).h(56.0).gap(2.0).justify_end().items_center();
-    let inline_vol = side_w >= 285.0;
-    let rbtn = if inline_vol { 32.0 } else { BTN };
-    if !compact {
-        let lyrics = if s.lyrics_missing() {
+    // The right side takes what fits, most needed first: More and the volume always, then the
+    // quality (its pill, or just its icon), the queue, the lyrics, the mini player, and last the
+    // volume slider beside the speaker. They stay in one order on screen.
+    let rbtn = RIGHT_BTN;
+    let pill_text = bar_quality_text(s);
+    let pill_w = rune::text::measure(&pill_text, &[], BADGE_STYLE, None).0.ceil() + 2.0 * 8.0 + 2.0 * 2.0 + 2.0;
+    let mut room = side_w - 2.0 * (rbtn + RIGHT_GAP);
+    let mut take = |w: f32| {
+        let fits = room >= w + RIGHT_GAP;
+        if fits {
+            room -= w + RIGHT_GAP;
+        }
+        fits
+    };
+    let pill = take(pill_w);
+    let quality_icon = !pill && take(rbtn);
+    let queue_on = take(rbtn);
+    let lyrics_on = queue_on && take(rbtn);
+    let mini_on = lyrics_on && take(rbtn);
+    let inline_vol = mini_on && take(VOL_SLIDER_W);
+
+    let mut right = row().key("bar-right").w(side_w).h(56.0).gap(RIGHT_GAP).justify_end().items_center();
+    if lyrics_on {
+        right = right.child(if s.lyrics_missing() {
             kit::quiet_off("bar-lyrics", &ni::LYRICS, 18.0, rbtn, S::NoLyricsShort.get(lang))
         } else {
             kit::quiet_btn("bar-lyrics", &ni::LYRICS, 18.0, rbtn, th::text2(), S::Lyrics.get(lang)).on_press(|s: &mut State| {
                 s.set_np_tab(NpTab::Lyrics);
                 s.set_np(true);
             })
-        };
-        right = right.child(lyrics).child(kit::quiet_btn("bar-queue", &ni::QUEUE, 18.0, rbtn, th::text2(), S::Queue.get(lang)).on_press(|s: &mut State| {
+        });
+    }
+    if queue_on {
+        right = right.child(kit::quiet_btn("bar-queue", &ni::QUEUE, 18.0, rbtn, th::text2(), S::Queue.get(lang)).on_press(|s: &mut State| {
             s.set_np_tab(NpTab::Queue);
             s.set_np(true);
         }));
     }
-    // The volume is right there in a wide bar (a slider beside the speaker, which mutes); in a
-    // narrow one the speaker opens the volume card on hover and mutes on click.
-    right = right.child(bar_quality_btn(s, rbtn, compact));
-    right = if inline_vol { right.child(volume_inline(s)) } else { right.child(volume_btn(s)) };
-    if !compact {
+    if pill {
+        right = right.child(quality_pill(s, "bar-quality", pill_text, 24.0).mx(2.0));
+    } else if quality_icon {
+        right = right.child(quality_btn_at(s, "bar-quality", rbtn, th::text2()));
+    }
+    // With room, a slider beside the speaker (which mutes); without, the speaker opens the volume
+    // card on hover and mutes on click.
+    right = if inline_vol { right.child(volume_inline(s)) } else { right.child(volume_btn(s, rbtn)) };
+    if mini_on {
         right = right.child(
-            kit::quiet_toggle("bar-mini", &icons::MINI_PLAYER, 17.0, rbtn, s.mini_open, S::MiniPlayer.get(lang)).on_press(|s: &mut State| s.toggle_mini_player()),
+            kit::quiet_toggle("bar-mini", &ni::MINI, 18.0, rbtn, s.mini_open, S::MiniPlayer.get(lang)).on_press(|s: &mut State| s.toggle_mini_player()),
         );
     }
     // What can be done with the track (as the right click on it, or the open player's "more").
@@ -509,12 +535,18 @@ fn volume_inline(s: &State) -> El {
     } else {
         &ni::VOLUME
     };
-    let speaker = kit::quiet_btn("vol-mute", ic, 18.0, 30.0, th::text2(), S::Volume.get(s.lang)).on_wheel(volume_wheel).on_press(State::toggle_mute);
+    let speaker = kit::quiet_btn("vol-mute", ic, 18.0, RIGHT_BTN, th::text2(), S::Volume.get(s.lang)).on_wheel(volume_wheel).on_press(State::toggle_mute);
     row().key("vol-inline-row").gap(2.0).pr(4.0).items_center().child(speaker).child(volume_slider(s, "vol-inline", 60.0))
 }
 
+/// The bar's buttons on the right, and the room between them.
+const RIGHT_BTN: f32 = 32.0;
+const RIGHT_GAP: f32 = 2.0;
+/// What the inline volume adds to the speaker: the slider and its padding.
+const VOL_SLIDER_W: f32 = 60.0 + 2.0 + 4.0;
+
 /// The speaker opens the volume card on hover, adjusts volume on wheel, and mutes on click.
-fn volume_btn(s: &State) -> El {
+fn volume_btn(s: &State, size: f32) -> El {
     let v = s.player.volume;
     let ic = if v < 0.01 {
         &ni::VOLUME_MUTE
@@ -524,7 +556,7 @@ fn volume_btn(s: &State) -> El {
         &ni::VOLUME
     };
     let on = s.vol_open;
-    let b = kit::ibtn("vol-btn", ic, GLYPH, BTN, th::text2(), S::Volume.get(s.lang)).checked(on);
+    let b = kit::ibtn("vol-btn", ic, 18.0, size, th::text2(), S::Volume.get(s.lang)).checked(on);
     (if on { b.fill(th::veil(0.10)) } else { b })
         .on_wheel(volume_wheel)
         .on_hover_change(|s: &mut State, over: bool, _tx: &mut Tx| {
@@ -614,13 +646,6 @@ fn quality_pill(s: &State, key: &'static str, text: String, h: f32) -> El {
         .child(label(text, BADGE_STYLE, if open { th::text() } else { th::text2() }))
 }
 
-fn bar_quality_btn(s: &State, size: f32, compact: bool) -> El {
-    if !compact {
-        return quality_pill(s, "bar-quality", bar_quality_text(s), 24.0).mx(2.0);
-    }
-    quality_btn_at(s, "bar-quality", size, th::text2())
-}
-
 pub(super) fn quality_btn_at(s: &State, key: &'static str, size: f32, rest: rune::Color) -> El {
     let q = s.settings.quality;
     let tip = quality_tip(s);
@@ -639,12 +664,12 @@ pub fn wave_playing(s: &State) -> bool {
 // ---- shared with the player page ----------------------------------------------------------------------
 
 pub fn shuffle_btn(s: &State) -> El {
-    kit::quiet_toggle("shuffle", &ni::SHUFFLE, 17.0, 32.0, s.player.shuffle, S::Shuffle.get(s.lang)).on_press(|s: &mut State| s.toggle_shuffle())
+    kit::quiet_toggle("shuffle", &ni::SHUFFLE, 18.0, 32.0, s.player.shuffle, S::Shuffle.get(s.lang)).on_press(|s: &mut State| s.toggle_shuffle())
 }
 
 pub fn repeat_btn(s: &State) -> El {
     let ic = if s.player.repeat == Repeat::One { &ni::REPEAT_ONE } else { &ni::REPEAT };
-    kit::quiet_toggle("repeat", ic, 17.0, 32.0, s.player.repeat != Repeat::Off, S::Repeat.get(s.lang)).on_press(|s: &mut State| s.cycle_repeat())
+    kit::quiet_toggle("repeat", ic, 18.0, 32.0, s.player.repeat != Repeat::Off, S::Repeat.get(s.lang)).on_press(|s: &mut State| s.cycle_repeat())
 }
 
 /// The seek line, drawn as bars (`fx::BARS`): the played ones lit, the others dim, both in the text

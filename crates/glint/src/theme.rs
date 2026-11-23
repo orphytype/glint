@@ -3,10 +3,9 @@
 //! are authored as sRGB and converted once to RUNE's linear `Color`.
 //!
 //! Type: two bundled families, the same on every machine. Commissioner, a calm grotesque, sets
-//! everything that is read or pressed; Cormorant, a high-contrast display serif at weight 500,
-//! sets what is looked at: page and section titles, the name in a card, the lyrics. Cormorant's
-//! letters are small for their size, so its sizes run about a quarter above the sans they stand
-//! beside, with lines kept short and tracking near zero.
+//! the whole interface, titles included. Cormorant, a high-contrast display serif at weight 500,
+//! is kept for two things: the lyrics, and the names of the waves (My Wave on Home, the moods).
+//! Its letters are small for their size, so its sizes run about a quarter above the sans.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -270,15 +269,13 @@ pub const SHEET_TITLE: TextStyle = TextStyle::new(24.0, 700.0).family(SANS).trac
 /// Who made it, under that name.
 pub const BYLINE_M: TextStyle = TextStyle::new(17.0, 500.0).family(SANS).lh(24.0);
 /// A page's title (Home's greeting, a root page).
-pub const TITLE: TextStyle = display(40.0, 44.0);
-/// The name at the head of an album, a playlist or an artist.
-pub const TITLE_D: TextStyle = display(46.0, 50.0);
-/// The name inside a card or a dialog (the best match, a settings page).
-pub const H0: TextStyle = display(30.0, 34.0);
+pub const TITLE: TextStyle = TextStyle::new(28.0, 700.0).family(SANS).tracking(-0.6).lh(34.0);
+/// The name inside a card or a dialog (the best match, the About page).
+pub const H0: TextStyle = TextStyle::new(22.0, 700.0).family(SANS).tracking(-0.4).lh(28.0);
 /// A pane's or a dialog's title.
-pub const H1: TextStyle = display(24.0, 28.0);
+pub const H1: TextStyle = TextStyle::new(18.0, 650.0).family(SANS).tracking(-0.2).lh(24.0);
 /// A section's name over its row of cards or list.
-pub const SECTION: TextStyle = display(25.0, 30.0);
+pub const SECTION: TextStyle = TextStyle::new(18.0, 700.0).family(SANS).tracking(-0.25).lh(24.0);
 /// A track's name where it stands alone (the player).
 pub const H2: TextStyle = TextStyle::new(16.0, 600.0).family(SANS).tracking(-0.1).lh(22.0);
 /// A track's name in the bar.
@@ -355,4 +352,10 @@ pub const SLIDE: rune::Spring = rune::Spring::new(0.38, 0.0);
 /// How a page (and each block of it) comes in: a calm rise that settles without a bounce, and a
 /// quick fade out of the way.
 pub const PAGE_IN: rune::SpringPair = rune::SpringPair::new(rune::Spring::new(0.38, 0.0), rune::Spring::new(0.16, 0.0));
+/// The playing track changing: the new cover and lines fade in quickly while the old ones fade
+/// out a little slower, so the swap never dips to an empty frame.
+pub const SWAP: rune::SpringPair = rune::SpringPair::new(rune::Spring::new(0.22, 0.0), rune::Spring::new(0.34, 0.0));
+/// A playing track's title and artists changing: the old line clears out of the way fast, so the
+/// two never read on top of each other, and the new one settles in.
+pub const ROLL: rune::SpringPair = rune::SpringPair::new(rune::Spring::new(0.28, 0.0), rune::Spring::new(0.10, 0.0));
 pub const RISE: rune::SpringPair = rune::SpringPair::new(rune::Spring::new(0.26, 0.0), rune::Spring::new(0.18, 0.0));
