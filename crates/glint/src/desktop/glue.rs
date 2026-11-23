@@ -144,6 +144,7 @@ impl State {
             Command::Shuffle => self.toggle_shuffle(),
             Command::Repeat => self.cycle_repeat(),
             Command::Mute => self.toggle_mute(),
+            Command::MiniPlayer => self.toggle_mini_player(),
             Command::Seek(ms) if loaded => {
                 let end = self.player.dur_ms.saturating_sub(1);
                 self.seek_ms(ms.min(end));

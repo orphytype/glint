@@ -192,3 +192,152 @@ fn png_size(image: &[u8]) -> Option<(u32, u32)> {
     (image.len() >= 24 && &image[..8] == b"\x89PNG\r\n\x1a\n")
         .then(|| (u32::from_be_bytes([image[16], image[17], image[18], image[19]]), u32::from_be_bytes([image[20], image[21], image[22], image[23]])))
 }
+
+/// Reads `(title, artist, album)` from an ID3v2 or FLAC header, falling back to `stem`
+/// (`"Artist - Title"` or `"Title"`).
+pub fn read_tags(audio: &[u8], stem: &str) -> (String, String, Option<String>) {
+    let (mut title, mut artist, mut album) = (String::new(), String::new(), None);
+    if audio.len() >= 10 && &audio[..3] == b"ID3" {
+        read_id3(audio, &mut title, &mut artist, &mut album);
+    } else if audio.len() >= 4 && &audio[..4] == b"fLaC" {
+        read_flac_vorbis(audio, &mut title, &mut artist, &mut album);
+    }
+    let clean_stem = stem.trim();
+    if title.trim().is_empty() {
+        if let Some((a, t)) = clean_stem
+            .split_once(" - ")
+            .or_else(|| clean_stem.split_once(" — "))
+            .or_else(|| clean_stem.split_once(" – "))
+        {
+            if artist.trim().is_empty() {
+                artist = a.trim().to_owned();
+            }
+            title = t.trim().to_owned();
+        } else {
+            title = clean_stem.to_owned();
+        }
+    }
+    if title.is_empty() {
+        title = "Track".to_owned();
+    }
+    (title, artist, album.filter(|s| !s.trim().is_empty()))
+}
+
+fn read_id3(audio: &[u8], title: &mut String, artist: &mut String, album: &mut Option<String>) {
+    let ver = audio[3];
+    if ver != 3 && ver != 4 {
+        return;
+    }
+    let size = (u32::from(audio[6] & 0x7f) << 21)
+        | (u32::from(audio[7] & 0x7f) << 14)
+        | (u32::from(audio[8] & 0x7f) << 7)
+        | u32::from(audio[9] & 0x7f);
+    let end = 10usize.saturating_add(size as usize).min(audio.len());
+    let mut at = 10usize;
+    while at + 10 <= end {
+        let id = &audio[at..at + 4];
+        if id == [0, 0, 0, 0] {
+            break;
+        }
+        let len = if ver == 4 {
+            ((u32::from(audio[at + 4] & 0x7f) << 21)
+                | (u32::from(audio[at + 5] & 0x7f) << 14)
+                | (u32::from(audio[at + 6] & 0x7f) << 7)
+                | u32::from(audio[at + 7] & 0x7f)) as usize
+        } else {
+            u32::from_be_bytes([audio[at + 4], audio[at + 5], audio[at + 6], audio[at + 7]]) as usize
+        };
+        at += 10;
+        if len == 0 || at + len > end {
+            break;
+        }
+        let payload = &audio[at..at + len];
+        at += len;
+        match id {
+            b"TIT2" => *title = decode_id3_text(payload),
+            b"TPE1" => *artist = decode_id3_text(payload),
+            b"TALB" => *album = Some(decode_id3_text(payload)),
+            _ => {}
+        }
+    }
+}
+
+fn decode_id3_text(payload: &[u8]) -> String {
+    let Some((&enc, rest)) = payload.split_first() else { return String::new() };
+    let s = match enc {
+        1 | 2 => {
+            let (le, bytes) = if rest.starts_with(&[0xff, 0xfe]) {
+                (true, &rest[2..])
+            } else if rest.starts_with(&[0xfe, 0xff]) {
+                (false, &rest[2..])
+            } else {
+                (enc == 1, rest)
+            };
+            let units: Vec<u16> = bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) })
+                .take_while(|&u| u != 0)
+                .collect();
+            String::from_utf16_lossy(&units)
+        }
+        _ => String::from_utf8_lossy(rest).into_owned(),
+    };
+    s.trim_matches('\0').trim().to_owned()
+}
+
+fn read_flac_vorbis(audio: &[u8], title: &mut String, artist: &mut String, album: &mut Option<String>) {
+    let mut at = 4usize;
+    while at + 4 <= audio.len() {
+        let header = u32::from_be_bytes([audio[at], audio[at + 1], audio[at + 2], audio[at + 3]]);
+        let last = header & 0x8000_0000 != 0;
+        let kind = (header >> 24) as u8 & 0x7f;
+        let len = (header & 0x00ff_ffff) as usize;
+        at += 4;
+        if at + len > audio.len() {
+            break;
+        }
+        if kind == 4 {
+            let block = &audio[at..at + len];
+            if block.len() >= 8 {
+                let vlen = u32::from_le_bytes([block[0], block[1], block[2], block[3]]) as usize;
+                let mut p = 4usize.saturating_add(vlen);
+                if p + 4 <= block.len() {
+                    let count = u32::from_le_bytes([block[p], block[p + 1], block[p + 2], block[p + 3]]) as usize;
+                    p += 4;
+                    for _ in 0..count {
+                        if p + 4 > block.len() {
+                            break;
+                        }
+                        let clen = u32::from_le_bytes([block[p], block[p + 1], block[p + 2], block[p + 3]]) as usize;
+                        p += 4;
+                        if p + clen > block.len() {
+                            break;
+                        }
+                        if let Ok(entry) = std::str::from_utf8(&block[p..p + clen])
+                            && let Some((k, v)) = entry.split_once('=')
+                        {
+                            let v = v.trim();
+                            if !v.is_empty() {
+                                if k.eq_ignore_ascii_case("TITLE") {
+                                    *title = v.to_owned();
+                                } else if k.eq_ignore_ascii_case("ARTIST") {
+                                    *artist = v.to_owned();
+                                } else if k.eq_ignore_ascii_case("ALBUM") {
+                                    *album = Some(v.to_owned());
+                                }
+                            }
+                        }
+                        p += clen;
+                    }
+                }
+            }
+            break;
+        }
+        at += len;
+        if last {
+            break;
+        }
+    }
+}

@@ -101,6 +101,33 @@ fn main() {
     if let Some(w) = saved {
         app = app.maximized(w.maximized);
     }
+    let mini_size = settings.mini_style.size();
+    let mini_spec = rune::AppSpec {
+        min_size: Some((0.0, 0.0)),
+        fonts: APP_FONTS,
+        families: ("Commissioner", "IBM Plex Mono"),
+        ..rune::AppSpec::new("Glint Mini", mini_size, ui::mini::MiniState::default, ui::mini::view)
+    };
+    let mini_sub = rune::App::new(mini_spec)
+        .windowless()
+        .release_gpu_when_closed()
+        .srgb_blend(true);
+    let (mini_handle, mini_win) = if !headless {
+        let mini_opts = rune::WindowOptions {
+            transparent: true,
+            borderless: true,
+            always_on_top: settings.mini_always_on_top,
+            visible: false,
+            resizable: false,
+            min_size: Some((0.0, 0.0)),
+            position: settings.mini_pos,
+            ..Default::default()
+        };
+        let (h, w) = app.window(rune::WindowSpec::from_app("mini", mini_sub).options(mini_opts));
+        (Some(h), Some(w))
+    } else {
+        (None, None)
+    };
     let app = app
         .titlebar(rune::Titlebar::new(ui::kit::CAPTION_H))
         .on_window(desktop::place::keep_window)
@@ -114,15 +141,37 @@ fn main() {
         .srgb_blend(true)
         // Closing the window only hides it; whether that ends the app is decided in `on_close`.
         .keep_running()
+        // A hidden window holds no GPU memory: the tray and the mini player don't pay for it.
+        .release_gpu_when_closed()
         .on_close(|s: &mut State, tx: &mut Tx| {
+            if let Some(win) = &s.mini_win
+                && let Some(p) = win.placement()
+            {
+                s.settings.mini_pos = Some(p.position);
+            }
             s.save_settings_now();
             desktop::place::save(&s.store);
+            if let Some(app) = &s.app {
+                s.remax = desktop::place::hold(app);
+            }
+            fx::release_gpu();
+            // With the mini player open the app goes on in it.
+            if s.mini_open {
+                return;
+            }
             if !s.keeps_running_when_closed() {
                 tx.quit();
+            } else if s.settings.mini_on_close && !s.mini_open {
+                s.set_mini_player(true);
             }
         })
         .on_quit(|s: &mut State, _tx: &mut Tx| {
             diag_log::event("app", "quit");
+            if let Some(win) = &s.mini_win
+                && let Some(p) = win.placement()
+            {
+                s.settings.mini_pos = Some(p.position);
+            }
             s.save_settings_now();
             desktop::place::save(&s.store);
             s.shutdown_desktop();
@@ -131,6 +180,8 @@ fn main() {
     let handle = app.handle();
     app.init(move || {
         let mut state = State::new(Some(handle), store, settings, headless);
+        state.mini_app = mini_handle;
+        state.mini_win = mini_win;
         if !headless {
             #[cfg(feature = "diag")]
             if let Ok(name) = std::env::var("GLINT_DIAG_SCENE")
@@ -176,6 +227,17 @@ fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
         }
     }
     let visible = s.app.as_ref().is_none_or(rune::AppHandle::is_visible);
+    if !visible {
+        fx::release_gpu();
+    } else if s.remax
+        && !s.headless
+        && let Some(maximized) = desktop::place::maximized()
+    {
+        s.remax = false;
+        if !maximized {
+            tx.toggle_maximized();
+        }
+    }
     // The launch screen moves every frame until it has faded out.
     let splash_moving = ui::splash::step(s);
     if splash_moving {
@@ -377,7 +439,7 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if let Some(act) = s.rebind {
         return s.record_key(act, ev, tx);
     }
-    let typing = matches!(tx.focused(), Some("search-input" | "token" | "lib-search"));
+    let typing = matches!(tx.focused(), Some("search-input" | "token" | "lib-search" | "pl-search"));
     if matches!(ev.key, Key::Escape) {
         // A menu opened from Settings closes before Settings does.
         if s.popover_open && s.settings_open {

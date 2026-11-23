@@ -184,7 +184,9 @@ impl State {
         let owner = p.owner.as_ref().map(|o| o.login.as_str()).filter(|l| !l.is_empty()).map_or_else(|| p.uid.to_string(), str::to_owned);
         self.detail.link = Some(format!("https://music.yandex.ru/users/{owner}/playlists/{}", p.kind));
         self.detail.cover = p.cover_template().map(str::to_owned);
-        self.detail.tracks = p.resolved_tracks().cloned().collect();
+        let mut tracks: Vec<Track> = p.resolved_tracks().cloned().collect();
+        self.apply_local_playlist(p.uid, p.kind, &mut tracks);
+        self.detail.tracks = tracks;
         let mut facts = self.length_facts();
         if let Some(d) = p.description.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
             facts.push((S::Description, d.to_owned()));
@@ -289,7 +291,8 @@ impl State {
         let (b, title, fc, fc_on) = (self.backend.clone(), title.to_owned(), self.fkcensor.clone(), self.settings.fkcensor);
         self.job(async move { b.playlist(uid, kind, &fc, fc_on).await }, move |s, _, res| match res {
             Ok(p) => {
-                let tracks: Vec<Track> = p.resolved_tracks().cloned().collect();
+                let mut tracks: Vec<Track> = p.resolved_tracks().cloned().collect();
+                s.apply_local_playlist(uid, kind, &mut tracks);
                 s.play_list_from(tracks, S::Playlist, title, Page::Playlist(uid, kind));
             }
             Err(e) => s.error_toast(&e),

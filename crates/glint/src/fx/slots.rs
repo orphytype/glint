@@ -50,8 +50,8 @@ const SPECS: [Spec; 4] = [
     Spec { refr: 12.0, edge: 18.0, chroma: 0.16, blur: 15.0, sat: 1.20, ambient: 0.03, spec: 0.10, spec_exp: 24.0, rim: 0.12, rim_w: 2.0, tint: 0.30 },
     // Card
     Spec { refr: 9.0, edge: 14.0, chroma: 0.14, blur: 12.0, sat: 1.16, ambient: 0.03, spec: 0.09, spec_exp: 24.0, rim: 0.11, rim_w: 2.0, tint: 0.26 },
-    // Chip: clean glass buttons and status pills with a quiet 2px edge.
-    Spec { refr: 6.0, edge: 10.0, chroma: 0.10, blur: 11.0, sat: 1.22, ambient: 0.035, spec: 0.11, spec_exp: 22.0, rim: 0.12, rim_w: 2.0, tint: 0.20 },
+    // Chip: clean glass buttons and status pills with a quiet 1px edge.
+    Spec { refr: 5.0, edge: 8.0, chroma: 0.08, blur: 11.0, sat: 1.18, ambient: 0.03, spec: 0.08, spec_exp: 24.0, rim: 0.08, rim_w: 1.0, tint: 0.22 },
     // Menu: frosted glass; the menu card itself draws the 2px outer border.
     Spec { refr: 2.0, edge: 8.0, chroma: 0.0, blur: 16.0, sat: 1.38, ambient: 0.0, spec: 0.0, spec_exp: 24.0, rim: 0.0, rim_w: 0.0, tint: 0.18 },
 ];

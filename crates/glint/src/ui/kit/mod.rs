@@ -161,7 +161,21 @@ pub fn empty(p: &Pal, art: Ill, msg: &str) -> El {
 }
 
 pub fn dialog(key: &str, w: f32, title: &str, body: Vec<El>, buttons: Vec<El>, dismiss: fn(&mut State)) -> El {
-    let width = 400.0_f32.min(w - 32.0);
+    dialog_head(key, w, title, None, body, buttons, dismiss)
+}
+
+pub fn dialog_head(key: &str, w: f32, title: &str, badge: Option<El>, body: Vec<El>, buttons: Vec<El>, dismiss: fn(&mut State)) -> El {
+    let width = 428.0_f32.min(w - 32.0);
+    let head = match badge {
+        Some(b) => row()
+            .w_full()
+            .gap(10.0)
+            .items_center()
+            .justify_between()
+            .child(label(title.to_owned(), th::H2, th::text()).shrink().min_w(0.0))
+            .child(b),
+        None => label(title.to_owned(), th::H2, th::text()).wrap(),
+    };
     let card = col()
         .key(format!("{key}-card"))
         .role("dialog")
@@ -175,7 +189,7 @@ pub fn dialog(key: &str, w: f32, title: &str, body: Vec<El>, buttons: Vec<El>, d
         .transition(pop_in(0.97, 6.0, th::RISE))
         .modal(true, dismiss)
         .on_press(|_s: &mut State| {})
-        .child(label(title.to_owned(), th::H2, th::text()).wrap())
+        .child(head)
         .children(body)
         .child(row().w_full().pt(6.0).gap(10.0).justify_end().children(buttons));
     el().key(key.to_owned())

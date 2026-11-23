@@ -2,11 +2,11 @@
 
 use rune::{Color, Cursor, El, Tx, col, el, row};
 
-use super::{GROUP_R, ROW_PAD, figure, group, item, item_enabled, segmented, toggle, toggle_enabled};
+use super::{GROUP_R, ROW_PAD, figure, group, item, item_enabled, level_w, segmented, toggle, toggle_enabled};
 use crate::app::{Session, State};
 use crate::i18n::{Lang, S};
 use crate::keys::{self, Act};
-use crate::store::{Effects, ThemeMode};
+use crate::store::{Effects, MiniStyle, ThemeMode};
 use crate::theme::{self as th, ACCENTS, veil};
 use crate::ui::{
     dock, icons,
@@ -69,8 +69,8 @@ pub(super) fn account(s: &State) -> Vec<El> {
         "set-history",
         Some(S::SetHistory.get(lang)),
         vec![
-            item(S::SearchHistory.get(lang), Some(S::SearchHistoryNote.get(lang)), clear("set-clear-searches", s.settings.search_history.is_empty(), State::clear_search_history)),
-            item(S::ListeningHistory.get(lang), Some(S::ListeningHistoryNote.get(lang)), clear("set-clear-played", s.listening_history.is_empty(), State::clear_listening_history)),
+            item(S::SearchHistory.get(lang), None, clear("set-clear-searches", s.settings.search_history.is_empty(), State::clear_search_history)),
+            item(S::ListeningHistory.get(lang), None, clear("set-clear-played", s.listening_history.is_empty(), State::clear_listening_history)),
         ],
         None,
     );
@@ -138,13 +138,13 @@ pub(super) fn appearance(s: &State, k: &rune_kit::Kit) -> Vec<El> {
         s.mark_settings_dirty();
     });
     vec![
-        group("set-colour", None, vec![item(S::Theme.get(lang), None, theme), item(S::Accent.get(lang), Some(S::AccentNote.get(lang)), swatches)], None),
+        group("set-colour", None, vec![item(S::Theme.get(lang), None, theme), item(S::Accent.get(lang), None, swatches)], None),
         group(
             "set-motion",
             None,
             vec![
                 item(S::Effects.get(lang), Some(S::EffectsNote.get(lang)), fx),
-                item(S::Butterflies.get(lang), Some(S::ButterfliesNote.get(lang)), bugs),
+                item(S::Butterflies.get(lang), None, bugs),
                 item(S::ReduceMotion.get(lang), Some(S::ReduceMotionNote.get(lang)), motion),
             ],
             None,
@@ -217,7 +217,56 @@ pub(super) fn desktop(s: &State, k: &rune_kit::Kit) -> Vec<El> {
     let close = s.settings.close_to_tray && tray;
     let auto = s.settings.autostart;
     let hidden = s.settings.autostart_hidden && tray;
+    let mini_styles = [MiniStyle::Compact, MiniStyle::Standard, MiniStyle::Cover];
+    let mini_style_idx = mini_styles.iter().position(|st| *st == s.settings.mini_style).unwrap_or(1);
+    let mini_style_ctl = segmented(
+        k,
+        &[S::MiniCompact.get(lang), S::MiniStandard.get(lang), S::MiniCover.get(lang)],
+        mini_style_idx,
+        move |s, i| s.set_mini_style(mini_styles[i]),
+    );
+    let op_frac = ((s.settings.mini_opacity.clamp(0.65, 1.0) - 0.65) / 0.35).clamp(0.0, 1.0);
+    let op_pct = format!("{}%", (s.settings.mini_opacity.clamp(0.65, 1.0) * 100.0).round() as i32);
+    let op_ctl = row()
+        .gap(10.0)
+        .items_center()
+        .child(figure(op_pct))
+        .child(level_w("set-mini-opacity", op_frac, 110.0, |s, f| {
+            s.set_mini_opacity(0.65 + f * 0.35);
+        }));
     vec![
+        group(
+            "set-mini",
+            Some(S::MiniPlayer.get(lang)),
+            vec![
+                item(
+                    S::MiniPlayer.get(lang),
+                    None,
+                    toggle(k, s.mini_open, S::MiniPlayer.get(lang), State::toggle_mini_player),
+                ),
+                item(S::MiniStyle.get(lang), None, mini_style_ctl),
+                item(
+                    S::MiniAlwaysOnTop.get(lang),
+                    None,
+                    toggle(k, s.settings.mini_always_on_top, S::MiniAlwaysOnTop.get(lang), |s| {
+                        s.set_mini_always_on_top(!s.settings.mini_always_on_top)
+                    }),
+                ),
+                item(S::MiniOpacity.get(lang), None, op_ctl),
+                item_enabled(
+                    S::MiniOnClose.get(lang),
+                    None,
+                    toggle_enabled(k, s.settings.mini_on_close && close, close, S::MiniOnClose.get(lang), |s| {
+                        if s.settings.show_tray && s.settings.close_to_tray {
+                            s.settings.mini_on_close = !s.settings.mini_on_close;
+                            s.mark_settings_dirty();
+                        }
+                    }),
+                    close,
+                ),
+            ],
+            None,
+        ),
         group(
             "set-autostart",
             None,
@@ -225,7 +274,7 @@ pub(super) fn desktop(s: &State, k: &rune_kit::Kit) -> Vec<El> {
                 item(S::Autostart.get(lang), None, toggle(k, auto, S::Autostart.get(lang), |s| s.set_autostart(!s.settings.autostart))),
                 item_enabled(
                     S::AutostartHidden.get(lang),
-                    Some(S::AutostartHiddenNote.get(lang)),
+                    None,
                     toggle_enabled(k, hidden, tray && auto, S::AutostartHidden.get(lang), |s| {
                         if s.settings.show_tray && s.settings.autostart {
                             s.settings.autostart_hidden = !s.settings.autostart_hidden;
@@ -241,7 +290,7 @@ pub(super) fn desktop(s: &State, k: &rune_kit::Kit) -> Vec<El> {
             "set-desktop",
             None,
             vec![
-                item(S::TrayIcon.get(lang), Some(S::TrayIconNote.get(lang)), toggle(k, tray, S::TrayIcon.get(lang), |s| s.set_show_tray(!s.settings.show_tray))),
+                item(S::TrayIcon.get(lang), None, toggle(k, tray, S::TrayIcon.get(lang), |s| s.set_show_tray(!s.settings.show_tray))),
                 item_enabled(
                     S::CloseToTray.get(lang),
                     Some(S::CloseToTrayNote.get(lang)),

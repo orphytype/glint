@@ -54,7 +54,11 @@ pub(super) fn queue_view(s: &State, p: &Pal, x: f32, w: f32, h: f32) -> El {
         total,
         ROW_H,
         move |s: &State, i: usize| match queue_item(cur, i) {
-            QueueItem::Track(q) => Cow::Owned(format!("q{q}-{}", s.player.queue.get(q).map_or("", |t| t.id.as_str()))),
+            QueueItem::Track(q) => {
+                let id = s.player.queue.get(q).map_or("", |t| t.id.as_str());
+                let occ = s.player.queue.iter().take(q).filter(|t| t.id == id).count();
+                Cow::Owned(format!("q-{id}-{occ}"))
+            }
             QueueItem::Now => Cow::Borrowed("q-now"),
             QueueItem::Next => Cow::Borrowed("q-next"),
         },

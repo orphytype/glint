@@ -1,6 +1,6 @@
 //! Confirmation and text-input dialogs (batch downloads, download deletion, playlist naming/deletion).
 
-use rune::{Cursor, El, icon, row};
+use rune::{Cursor, El, col, el, icon, row};
 
 use crate::app::State;
 use crate::i18n::S;
@@ -12,13 +12,43 @@ use crate::ui::{
 };
 
 pub fn download_confirm(s: &State, w: f32, _h: f32) -> El {
-    let count = s.download_confirm.as_ref().map_or(0, Vec::len);
+    let tracks = s.download_confirm.as_deref().unwrap_or(&[]);
+    let count = tracks.len();
+    let total_secs: u64 = tracks.iter().map(|t| t.duration_ms.unwrap_or(195_000) / 1000).sum();
     let lang = s.lang;
-    kit::dialog(
+    let accent = s.pal().accent;
+
+    let summary_text = if total_secs > 0 {
+        format!("{} · {}", lang.tracks(count), lang.duration(total_secs))
+    } else {
+        lang.tracks(count)
+    };
+    let summary_badge = row()
+        .key("download-summary-pill")
+        .h(26.0)
+        .px(10.0)
+        .gap(6.0)
+        .radius(13.0)
+        .items_center()
+        .fill(accent.alpha(0.14))
+        .border(1.0, accent.alpha(0.28))
+        .child(icon(&icons::DOWNLOAD, 13.0).color(accent))
+        .child(label(summary_text, th::SMALL, th::text()));
+
+    let quality_section = col()
+        .key("download-quality-section")
+        .w_full()
+        .mt(2.0)
+        .gap(8.0)
+        .child(label(S::DownloadQuality.get(lang), th::SMALL, th::text2()))
+        .child(download_quality_choice(s, total_secs));
+
+    kit::dialog_head(
         "download-confirm",
         w,
         S::DownloadConfirm.get(lang),
-        vec![label(lang.download_confirm_note(count), th::BODY, th::text2()).wrap(), label(S::DownloadQuality.get(lang), th::BODY_M, th::text2()), download_quality_choice(s)],
+        Some(summary_badge),
+        vec![quality_section],
         vec![
             kit::btn_soft("download-cancel", S::Cancel.get(lang), None).on_press(|s: &mut State| s.cancel_download()),
             kit::btn_primary("download-accept", S::DownloadAll.get(lang), Some(&icons::DOWNLOAD)).on_press(|s: &mut State| s.confirm_download()),
@@ -28,33 +58,81 @@ pub fn download_confirm(s: &State, w: f32, _h: f32) -> El {
 }
 
 /// Quality for this batch only. Playback quality stays as the listener set it.
-fn download_quality_choice(s: &State) -> El {
+fn download_quality_choice(s: &State, total_secs: u64) -> El {
     let lang = s.lang;
-    let mut choice = row().key("download-quality").padding(3.0).gap(2.0).radius(9.0).fill(th::veil(0.05)).border(1.0, th::veil(0.08)).items_center();
-    for quality in [QualityPref::Saver, QualityPref::Balanced, QualityPref::Best] {
+    let accent = s.pal().accent;
+    let check_fg = if th::light() { th::rgb(0xffffff) } else { th::rgb(0x111113) };
+    let mut choice = col().key("download-quality").w_full().gap(8.0);
+    for (quality, desc, kbps) in [
+        (QualityPref::Saver, S::QualitySaverDesc, 64_u64),
+        (QualityPref::Balanced, S::QualityBalancedDesc, 192_u64),
+        (QualityPref::Best, S::QualityBestDesc, 680_u64),
+    ] {
         let on = s.download_quality == quality;
-        let text = np_icons::quality_label(quality).get(lang);
-        let ink = if on { th::text() } else { th::text2() };
-        let mut cell = row()
+        let title = np_icons::quality_label(quality).get(lang);
+        let approx_bytes = total_secs.saturating_mul(kbps * 1000 / 8);
+        let size_badge = (total_secs > 0).then(|| {
+            row()
+                .h(22.0)
+                .px(8.0)
+                .radius(6.0)
+                .items_center()
+                .fill(if on { accent.alpha(0.18) } else { th::veil(0.06) })
+                .child(label(lang.approx_size(approx_bytes), th::MONO, if on { th::text() } else { th::text2() }))
+        });
+        let badge = row()
+            .w(36.0)
+            .h(36.0)
+            .radius(10.0)
+            .center()
+            .fill(if on { accent.alpha(0.20) } else { th::veil(0.06) })
+            .child(icon(np_icons::quality_icon(quality), 18.0).color(if on { accent } else { th::text2() }));
+        let radio = if on {
+            row()
+                .w(20.0)
+                .h(20.0)
+                .radius(10.0)
+                .center()
+                .fill(accent)
+                .child(icon(&icons::CHECK, 12.0).color(check_fg))
+        } else {
+            el().w(20.0).h(20.0).radius(10.0).border(1.5, th::veil(0.20))
+        };
+        let title_row = row()
+            .w_full()
+            .gap(8.0)
+            .items_center()
+            .child(label(title, th::BODY_M, th::text()).grow(1.0).min_w(0.0).truncate())
+            .children(size_badge);
+        let text_col = col()
+            .grow(1.0)
+            .min_w(0.0)
+            .gap(2.0)
+            .child(title_row)
+            .child(label(desc.get(lang), th::SMALL, if on { th::text2() } else { th::text3() }).truncate());
+
+        let mut card = row()
             .key(format!("download-q-{quality:?}"))
             .role("radio")
-            .label(text)
+            .label(title)
             .checked(on)
-            .h(30.0)
-            .px(10.0)
-            .gap(6.0)
-            .radius(7.0)
+            .w_full()
+            .px(12.0)
+            .py(10.0)
+            .gap(12.0)
+            .radius(12.0)
             .items_center()
             .cursor(Cursor::Pointer)
-            .hov(th::veil(if on { 0.0 } else { 0.05 }))
-            .press(th::veil(0.10))
             .on_press(move |s: &mut State| s.download_quality = quality)
-            .child(icon(np_icons::quality_icon(quality), 16.0).color(ink))
-            .child(label(text, th::BODY_M, ink));
-        if on {
-            cell = cell.fill(if th::light() { th::pop() } else { th::veil(0.14) });
-        }
-        choice = choice.child(cell);
+            .child(badge)
+            .child(text_col)
+            .child(radio);
+        card = if on {
+            card.fill(accent.alpha(if th::light() { 0.11 } else { 0.13 })).border(1.5, accent.alpha(0.60))
+        } else {
+            card.fill(th::veil(0.035)).border(1.0, th::veil(0.075)).hov(th::veil(0.065)).press(th::veil(0.10))
+        };
+        choice = choice.child(card);
     }
     choice
 }

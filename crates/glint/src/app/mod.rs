@@ -27,7 +27,7 @@ use crate::net::Backend;
 use crate::palette::Palette;
 use crate::store::{DownloadStore, QualityPref, Settings, Store};
 
-pub use model::{DownloadActivity, FromName, Library, Lives, LyricsUi, Player, PlayingFrom, Popover, Sheet, Source, Station, Toast, TrackMenu, WaveChoice};
+pub use model::{DownloadActivity, FromName, Library, Lives, LyricsUi, Player, PlayingFrom, Popover, RowDrag, Sheet, Source, Station, Toast, TrackMenu, WaveChoice};
 pub use motion::{LYRIC_LEAD_MS, PAGE_KEY, Pop, WheelGlide, clear_scroll, page_scroll, report_scroll, scroll_thumb};
 pub use types::{
     Detail, DiscKind, DiscSort, DownloadFail, DownloadState, LibTab, Load, LoginUi, NpTab, Page, PinnedItem, SearchTab, SearchUi, Session, TrackSort, release_kind_name,
@@ -130,10 +130,10 @@ pub struct State {
     // navigation
     pub page: Page,
     pub pinned_items: Vec<PinnedItem>,
-    pub history: Vec<Page>,
+    pub history: Vec<(Page, bool)>,
     pub listening_history: Vec<Track>,
     pub listen: Option<crate::player::Listen>,
-    pub forward: Vec<Page>,
+    pub forward: Vec<(Page, bool)>,
     pub playing_from: Option<PlayingFrom>,
     pub wave_label: Option<(crate::i18n::S, FromName, Option<Page>)>,
     // content
@@ -197,6 +197,8 @@ pub struct State {
     pub scroll_restore: Option<(String, f32, f64)>,
     pub np: Pop,
     pub restore_kick_at: f64,
+    /// The main window was maximized when it hid: maximize it again once it is back.
+    pub remax: bool,
     pub art_landed: u64,
     pub ui_animating: bool,
     pub spectrum: [f32; 32],
@@ -243,6 +245,12 @@ pub struct State {
     pub deleted_downloads: HashSet<String>,
     pub art_trim_at: Option<f64>,
     pub art_trimmed_at: f64,
+    pub row_drag: Option<RowDrag>,
+    pub local_playlists: std::collections::BTreeMap<String, crate::store::LocalPlaylistData>,
+    pub mini_app: Option<AppHandle<crate::ui::mini::MiniState>>,
+    pub mini_win: Option<rune::WindowHandle>,
+    pub mini_open: bool,
+    pub mini_sync_key: u64,
 }
 
 impl State {
@@ -318,6 +326,7 @@ impl State {
                 shuffle: settings.shuffle,
                 repeat: settings.repeat,
                 volume: settings.volume,
+                unmuted_volume: if settings.volume > 0.01 { settings.volume } else { 0.8 },
                 playing: false,
                 loading: false,
                 pos_ms: 0,
@@ -385,6 +394,7 @@ impl State {
             wave_hover: None,
             np: Pop::default(),
             restore_kick_at: 0.0,
+            remax: false,
             art_landed: 0,
             ui_animating: false,
             spectrum: [0.0; 32],
@@ -433,6 +443,12 @@ impl State {
             deleted_downloads: HashSet::new(),
             art_trim_at: None,
             art_trimmed_at: 0.0,
+            row_drag: None,
+            local_playlists: if headless { std::collections::BTreeMap::new() } else { store.load_local_playlists() },
+            mini_app: None,
+            mini_win: None,
+            mini_open: false,
+            mini_sync_key: 0,
             settings,
             store,
         }

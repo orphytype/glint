@@ -60,13 +60,20 @@ impl Lang {
         }
     }
 
-    /// The confirmation copy for a batch download, including the correctly inflected file count.
-    pub fn download_confirm_note(self, n: usize) -> String {
-        match self {
-            Lang::En => format!("{n} {} will be kept separately from the playback cache.", if n == 1 { "file" } else { "files" }),
-            Lang::Ru => {
-                let verb = if n % 10 == 1 && n % 100 != 11 { "будет" } else { "будут" };
-                format!("{n} {} {verb} храниться отдельно от кэша воспроизведения.", plural_ru(n, "файл", "файла", "файлов"))
+    /// Formats an approximate byte count as `~12 MB` / `~1.4 GB` (`~12 МБ` / `~1.4 ГБ`).
+    pub fn approx_size(self, bytes: u64) -> String {
+        let mb = bytes as f64 / (1024.0 * 1024.0);
+        if mb >= 1024.0 {
+            let gb = mb / 1024.0;
+            match self {
+                Lang::En => format!("~{gb:.1} GB"),
+                Lang::Ru => format!("~{gb:.1} ГБ"),
+            }
+        } else {
+            let mb = mb.round().max(1.0) as u64;
+            match self {
+                Lang::En => format!("~{mb} MB"),
+                Lang::Ru => format!("~{mb} МБ"),
             }
         }
     }
@@ -243,9 +250,9 @@ strings! {
     DownloadQuality => "Download quality", "Качество скачивания";
     DeleteDownload => "Delete download", "Удалить скачанное";
     DeleteDownloadConfirm => "Delete downloaded track?", "Удалить скачанный трек?";
-    DeleteDownloadNote => "The downloaded file and its offline data will be removed.", "Скачанный файл и офлайн-данные будут удалены.";
+    DeleteDownloadNote => "The track will be removed from this computer.", "Трек будет удалён с компьютера.";
     DeleteDownloadsConfirm => "Delete downloaded tracks?", "Удалить скачанные треки?";
-    DeleteDownloadsNote => "The downloaded files and their offline data will be removed.", "Скачанные файлы и офлайн-данные будут удалены.";
+    DeleteDownloadsNote => "The downloaded tracks will be removed from this computer.", "Скачанные треки будут удалены с компьютера.";
     DownloadDeleted => "Download removed", "Скачанное удалено";
     DownloadDeleteFailed => "Couldn't remove the download", "Не удалось удалить скачанное";
     DownloadInProgress => "Downloading", "Скачивается";
@@ -281,16 +288,18 @@ strings! {
     StageCalm => "Calm", "Спокойно";
     StageLively => "Lively", "Живо";
     StageReset => "Reset", "Сбросить";
-    StageResetNote => "Puts the lyrics, the visual effects and the background back to how they were. Your own picture is removed.", "Возвращает исходный вид текста, визуальных эффектов и фона. Своя картинка убирается.";
+    StageResetNote => "Restores the default player look and removes your picture.", "Возвращает стандартный вид плеера и убирает свою картинку.";
     StageBack => "Background", "Фон";
     Listen => "Listen", "Слушать";
     Pin => "Pin", "Закрепить";
     Pinned => "Pinned", "Закреплено";
-    Unpinned => "Unpin", "Открепить";
+    Unpin => "Unpin", "Открепить";
+    Unpinned => "Unpinned", "Откреплено";
     Open => "Open", "Открыть";
     DownloadManager => "Downloads", "Загрузки";
     OpenDownloads => "Open downloads folder", "Открыть папку загрузок";
     ClearDownloadHistory => "Clear download history", "Очистить историю загрузок";
+    DownloadHistoryCleared => "Download history cleared", "История загрузок очищена";
     DownloadAllLiked => "Download liked songs", "Скачать понравившиеся треки";
     LyricAlign => "Alignment", "Выравнивание";
     AlignLeft => "Left", "Слева";
@@ -409,7 +418,7 @@ strings! {
     EffectsFull => "Full", "Полные";
     EffectsLight => "Light", "Лёгкие";
     EffectsOff => "Off", "Выкл.";
-    EffectsNote => "Glass, blur and the moving background. Light puts less load on the graphics card.", "Стекло, размытие и подвижный фон. «Лёгкие» меньше нагружают видеокарту.";
+    EffectsNote => "Light puts less load on the graphics card.", "«Лёгкие» меньше нагружают видеокарту.";
     ReduceMotion => "Reduce motion", "Меньше анимации";
     Language => "Language", "Язык";
     Quality => "Audio quality", "Качество звука";
@@ -429,9 +438,8 @@ strings! {
     EqEnabled => "Enable equaliser", "Включить эквалайзер";
     EqReset => "Reset", "Сбросить";
     TrayIcon => "Tray icon", "Значок в трее";
-    TrayIconNote => "Pause, skip, like and quit from the icon next to the clock.", "Значок рядом с часами: пауза, переключение треков, лайк и выход.";
     CloseToTray => "Close to the tray", "Закрывать в трей";
-    CloseToTrayNote => "The music keeps playing after you close the window. Quit from the icon's menu.", "Музыка играет и после закрытия окна. Выйти можно из меню значка.";
+    CloseToTrayNote => "Music keeps playing after you close the window.", "Музыка продолжает играть после закрытия окна.";
     TrayShow => "Open Glint", "Открыть Glint";
     TrayQuit => "Quit", "Выйти";
     TrayPlay => "Play", "Воспроизвести";
@@ -492,7 +500,6 @@ strings! {
     Credits => "Written in Rust with the RUNE UI framework.", "Написано на Rust с UI-фреймворком RUNE.";
     Updates => "Updates", "Обновления";
     AutoUpdate => "Check for updates", "Проверять обновления";
-    AutoUpdateNote => "Looks for a new release on GitHub when Glint starts. Nothing installs on its own.", "Ищет новый релиз на GitHub при запуске. Само ничего не устанавливается.";
     CheckNow => "Check now", "Проверить";
     UpdateChecking => "Checking…", "Проверяю…";
     UpToDate => "You have the latest version", "У вас последняя версия";
@@ -504,43 +511,33 @@ strings! {
     UpdateMenuSub => "New version available", "Доступна новая версия";
     UpdateShort => "Update", "Обновление";
     UpdateFailed => "Could not update. Try again, or download the new version from GitHub.", "Не удалось обновить. Попробуйте ещё раз или скачайте новую версию с GitHub.";
-    UpdateManual => "Installed from a package or built from source: download the new version from the release page.", "Установлено из пакета или собрано из исходников: скачайте новую версию на странице релиза.";
+    UpdateManual => "Download the new version from the release page.", "Скачайте новую версию на странице релиза.";
     UpdateToast => "A new version of Glint is available (Settings)", "Доступна новая версия Glint (в настройках)";
     SourceCode => "Source code", "Исходный код";
     EqPreset => "Preset", "Пресет";
     License => "GPL-3.0 licence", "Лицензия GPL-3.0";
     WordLyrics => "Word-by-word lyrics", "Текст по словам";
-    WordLyricsNote => "Lights up each word as it is sung.", "Подсвечивает каждое слово, когда его поют.";
     FckCensor => "FckCensor", "FckCensor";
     PlayOnLaunch => "Play on launch", "Включать музыку при запуске";
-    PlayOnLaunchNote => "Picks up the last track where it stopped. With none, starts My Wave.", "Продолжает последний трек с того же места. Если его нет, включает «Мою волну».";
-    FckCensorNote => "Plays the original of a track Yandex muted, when the FkCensorData list has it. Such tracks are marked.", "Если в базе FkCensorData есть оригинал заглушённого Яндексом трека, играет оригинал. Такие треки отмечены значком.";
+    FckCensorNote => "Replaces censored tracks with original versions.", "Заменяет треки с цензурой на оригинальные версии.";
     SetHistory => "History", "История";
     SearchHistory => "Search history", "История поиска";
-    SearchHistoryNote => "Recent searches under the search field. Kept only on this computer.", "Недавние запросы под строкой поиска. Хранятся только на этом компьютере.";
-    ListeningHistoryNote => "Tracks played since Glint started, shown on the search page.", "Треки, сыгранные с момента запуска. Показываются на странице поиска.";
     ClearShort => "Clear", "Очистить";
     ClearQueue => "Clear queue", "Очистить очередь";
     HistoryEmpty => "Empty", "Пусто";
     HistoryCleared => "History cleared", "История очищена";
     IdHidden => "Hidden. Point at it to read it.", "Скрыто. Наведите, чтобы увидеть.";
     SignedInAs => "Signed in with Yandex ID", "Вход через Яндекс ID";
-    AccentNote => "The first one takes its colour from the cover.", "Первый берёт цвет обложки.";
-    ReduceMotionNote => "Pages fade in instead of sliding. The lyrics, the background and the shapes on Home stay still.", "Страницы появляются без сдвигов и пружин. Текст, фон и фигуры на главной не двигаются.";
-    QualityNote => "Higher quality uses more traffic. Best plays FLAC when a track has it, otherwise the highest available bitrate.", "Чем выше качество, тем больше трафика. «Лучшее» включает FLAC, если он есть у трека, иначе максимальный доступный битрейт.";
-    PlayerLayoutNote => "Compact leaves more room for the lyrics and the queue. Large cover fills the window. Automatic switches to compact in a low window.", "В «Компактном» больше места тексту и очереди. «Крупная обложка» растягивает обложку на всё окно. «Автоматически» включает компактный вид в невысоком окне.";
+    ReduceMotionNote => "Turns off smooth transitions and background motion.", "Отключает плавные переходы и движение фона.";
+    QualityNote => "Best plays FLAC when the track has it.", "«Лучшее» включает FLAC, если он есть у трека.";
     SetSound => "Sound", "Звук";
     SetPlayerScreen => "Now playing screen", "Экран плеера";
     LyricsFont => "Lyrics font", "Шрифт текста";
-    LyricsFontNote => "For the lyrics on the now playing screen and in a track's card.", "Для текста на экране плеера и в карточке трека.";
     LyricsFontSample => "Sphinx of black quartz, judge my vow", "Съешь ещё этих мягких французских булок";
     Autostart => "Open at login", "Запускать вместе с системой";
     AutostartHidden => "Start in the tray", "Запускать в трее";
-    AutostartHiddenNote => "The window opens only from the tray icon.", "Окно откроется только из значка в трее.";
     Butterflies => "Butterflies", "Бабочки";
-    ButterfliesNote => "They fly over Home and settle on the shapes.", "Летают по главной и садятся на фигуры.";
     Backdrop => "Picture behind the player", "Своя картинка на фоне";
-    BackdropNote => "Shown instead of the cover's colours. The light from the cover stays on top.", "Показывается вместо цветов обложки. Свечение от обложки остаётся поверх.";
     BdPick => "Choose a picture", "Выбрать картинку";
     BdChange => "Replace", "Заменить";
     BdRemove => "Remove", "Убрать";
@@ -560,7 +557,7 @@ strings! {
     EqBands => "Bands", "Полосы";
     Storage => "Storage", "Хранилище";
     StorageContent => "Downloaded content", "Скачанное";
-    StorageContentNote => "Downloaded tracks with their lyrics, and cover images.", "Скачанные треки с текстами и обложки.";
+    StorageContentNote => "Downloaded tracks and cached covers.", "Скачанные треки и кэш обложек.";
     DeleteContent => "Delete downloaded content", "Удалить скачанное";
     ContentDeleted => "Downloaded content deleted", "Скачанное удалено";
     StorageUsed => "Used on this computer", "Занято на этом компьютере";
@@ -578,7 +575,7 @@ strings! {
     ScPageForward => "Next page", "Следующая страница";
     KeyNone => "None", "Нет";
     KeyPress => "Press a key", "Нажмите клавишу";
-    KeyHint => "Click a shortcut, then press the key you want. Backspace clears it.", "Нажмите на сочетание, затем на нужную клавишу. Backspace убирает сочетание.";
+    KeyHint => "Click a shortcut, then press a key. Backspace clears it.", "Нажмите на сочетание, затем на клавишу. Backspace убирает сочетание.";
     KeyTaken => "That key is already used for", "Эта клавиша уже занята:";
     KeysDefault => "Default shortcuts", "Сочетания по умолчанию";
     ScLike => "Like", "Нравится";
@@ -590,9 +587,26 @@ strings! {
     ReportIssue => "Report a problem", "Сообщить о проблеме";
     Diagnostics => "Diagnostics", "Диагностика";
     DiagLogs => "Diagnostic logs", "Запись логов";
-    DiagLogsNote => "Local log up to 1 MB and anonymized hardware info. No personal data is saved.", "Локальный журнал до 1 МБ и обезличенные данные о системе. Личные данные не записываются.";
+    DiagLogsNote => "Local error log on this computer (up to 1 MB).", "Локальный журнал ошибок (до 1 МБ).";
     DiagLogFiles => "Log files", "Файлы логов";
     OpenLogs => "Open folder", "Открыть папку";
     LogsCleared => "Logs cleared", "Логи очищены";
     LyricsBy => "Lyrics by lrc.red", "Текст: lrc.red";
+    SearchTrack => "Search track", "Поиск трека";
+    UploadTrack => "Upload track", "Загрузить трек";
+    AudioFiles => "Audio files", "Аудиофайлы";
+    TrackUploaded => "Track added to the playlist", "Трек добавлен в плейлист";
+    TrackUploadFailed => "Couldn't load this audio file", "Не удалось загрузить аудиофайл";
+    MiniPlayer => "Mini player", "Мини-плеер";
+    MiniStyle => "Mini player look", "Вид мини-плеера";
+    MiniCompact => "Bar", "Полоска";
+    MiniStandard => "Card", "Карточка";
+    MiniCover => "Cover", "Обложка";
+    MiniAlwaysOnTop => "Always on top", "Поверх всех окон";
+    MiniOpacity => "Window opacity", "Прозрачность окна";
+    MiniOnClose => "Show mini player when closing to the tray", "Открывать мини-плеер при закрытии в трей";
+    MiniExpand => "Back to main window", "Вернуться в главное окно";
+    QualitySaverDesc => "AAC · 64 kbps", "AAC · 64 кбит/с";
+    QualityBalancedDesc => "AAC or MP3 · 192 kbps", "AAC или MP3 · 192 кбит/с";
+    QualityBestDesc => "FLAC or 320 kbps", "FLAC или 320 кбит/с";
 }

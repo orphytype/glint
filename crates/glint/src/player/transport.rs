@@ -213,6 +213,9 @@ impl State {
 
     pub fn set_volume(&mut self, v: f32) {
         let v = v.clamp(0.0, 1.0);
+        if v > 0.01 {
+            self.player.unmuted_volume = v;
+        }
         self.player.volume = v;
         if let Some(e) = &self.player.engine {
             e.set_volume(taper(v));
@@ -222,8 +225,13 @@ impl State {
     }
 
     pub fn toggle_mute(&mut self) {
-        let v = if self.player.volume > 0.001 { 0.0 } else { 0.8 };
-        self.set_volume(v);
+        if self.player.volume > 0.001 {
+            self.player.unmuted_volume = self.player.volume;
+            self.set_volume(0.0);
+        } else {
+            let v = if self.player.unmuted_volume > 0.01 { self.player.unmuted_volume } else { 0.8 };
+            self.set_volume(v);
+        }
     }
 
     pub fn toggle_shuffle(&mut self) {

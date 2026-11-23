@@ -78,6 +78,8 @@ pub struct Player {
     pub shuffle: bool,
     pub repeat: Repeat,
     pub volume: f32,
+    /// Last non-zero volume before muting, restored on unmute in the player and tray.
+    pub unmuted_volume: f32,
     /// The user wants sound (not paused).
     pub playing: bool,
     pub loading: bool,
@@ -238,4 +240,17 @@ pub enum Sheet {
     Track(Box<Track>),
     /// The open album, playlist or artist (`State::detail`).
     Page,
+}
+
+/// Active track row drag-and-drop reorder state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowDrag {
+    /// Whether dragging in the play queue (`true`) or the open playlist (`false`).
+    pub queue: bool,
+    /// Row index where the drag started.
+    pub start: usize,
+    /// Current index of the dragged track after live swaps.
+    pub cur: usize,
+    /// Total vertical pointer displacement (`Drag.dy`).
+    pub dy: f32,
 }

@@ -87,3 +87,9 @@ pub struct PlaybackState {
     pub position: Duration,
     pub duration: Option<Duration>,
 }
+
+/// Probes an audio buffer for its duration in milliseconds without playing it.
+pub fn probe_duration_ms(audio: std::sync::Arc<[u8]>, ext: &str) -> Option<u64> {
+    let track = source::Track::open(0, audio, &LoadHint::default().ext(ext)).ok()?;
+    track.duration.map(|d| d.as_millis() as u64)
+}

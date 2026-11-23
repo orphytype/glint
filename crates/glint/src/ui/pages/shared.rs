@@ -74,12 +74,13 @@ pub(super) fn row_arrows(s: &State, key: &str, n: usize, card: f32, w: f32) -> O
             .role("button")
             .label(name.get(s.lang))
             .help(name.get(s.lang))
-            .w(34.0)
-            .h(34.0)
-            .radius(17.0)
+            .w(30.0)
+            .h(30.0)
+            .radius(15.0)
             .center()
-            .fill(th::veil(0.06))
-            .child(icon(ic, 16.0).color(if on { th::text() } else { th::text().alpha(0.28) }));
+            .fill(th::veil(if on { 0.06 } else { 0.035 }))
+            .border(1.0, th::veil(if on { 0.07 } else { 0.035 }))
+            .child(icon(ic, 15.0).color(if on { th::text() } else { th::text().alpha(0.24) }));
         if !on {
             return b.disabled(true);
         }
@@ -93,7 +94,7 @@ pub(super) fn row_arrows(s: &State, key: &str, n: usize, card: f32, w: f32) -> O
             });
         })
     };
-    Some(row().gap(8.0).items_center().child(arrow(-1.0)).child(arrow(1.0)))
+    Some(row().gap(6.0).items_center().child(arrow(-1.0)).child(arrow(1.0)))
 }
 
 pub(super) fn heading_side(arrows: Option<El>, more: Option<El>) -> Option<El> {
@@ -329,7 +330,14 @@ impl State {
                     self.library.shown.borrow().get(i).and_then(|&j| v.get(j))
                 }
             }
-            ListSrc::Detail => self.detail.tracks.get(i),
+            ListSrc::Detail => {
+                let q = self.detail.filter.text.trim().to_lowercase();
+                if q.is_empty() || !matches!(self.page, Page::Playlist(..)) {
+                    self.detail.tracks.get(i)
+                } else {
+                    self.detail.tracks.iter().filter(|t| self.detail_track_matches(t, &q)).nth(i)
+                }
+            }
             ListSrc::Search => self.search_view().and_then(|r| r.tracks.results.get(i)),
             ListSrc::Queue => self.player.queue.get(i),
             ListSrc::History => self.listening_history.get(i),
@@ -338,7 +346,10 @@ impl State {
 
     fn list_id(&self, src: ListSrc, i: usize) -> String {
         match self.list_track(src, i) {
-            Some(t) => format!("{:?}{i}-{}", src, t.id),
+            Some(t) => {
+                let occ = (0..i).filter(|&j| self.list_track(src, j).is_some_and(|o| o.id == t.id)).count();
+                format!("{src:?}-{}-{occ}", t.id)
+            }
             None => format!("{src:?}{i}"),
         }
     }

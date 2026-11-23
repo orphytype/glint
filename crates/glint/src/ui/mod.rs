@@ -8,6 +8,7 @@ mod icons;
 pub mod kit;
 mod login;
 mod menu;
+pub mod mini;
 pub mod np;
 mod np_icons;
 mod outline;

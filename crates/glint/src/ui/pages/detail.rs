@@ -1,7 +1,7 @@
 //! Album, playlist, and artist detail pages: header, track list, colophon/bio card, discography,
 //! and similar artists.
 
-use rune::{Cursor, El, Transition, Tx, col, el, icon, row};
+use rune::{Cursor, El, FileDialogOptions, Transition, Tx, col, el, icon, row, text_input};
 
 use super::shared::{GRID_GAP, album_card, artist_card, column, facts_line, fit, heading_side, hscroll, play_button, row_arrows, track_list};
 use crate::app::{DiscKind, DiscSort, Load, Page, Popover, Sheet, State, Station, TrackSort};
@@ -49,38 +49,10 @@ fn head_picture(s: &State, side: f32) -> El {
 fn detail_facts(s: &State) -> Option<El> {
     let lang = s.lang;
     let d = &s.detail;
-    let about = d.facts.iter().find(|(n, _)| *n == S::Description).map(|(_, v)| v.clone());
     if d.is_artist {
-        let text = about?;
-        let head = row().w_full().items_center().justify_between().child(label(S::AboutArtist.get(lang).to_owned(), th::BODY_M, th::text())).child(
-            row()
-                .gap(3.0)
-                .items_center()
-                .child(label(S::Details.get(lang).to_owned(), th::SMALL, th::text3()).gcol(th::text2()))
-                .child(icon(&icons::CHEVRON_RIGHT, 14.0).color(th::text3()).gcol(th::text2())),
-        );
-        return Some(
-            col()
-                .key("d-about")
-                .role("button")
-                .label(S::AboutArtist.get(lang))
-                .w_full()
-                .px(20.0)
-                .py(16.0)
-                .gap(8.0)
-                .radius(14.0)
-                .fill(th::veil(0.03))
-                .border(1.0, th::hairline())
-                .cursor(Cursor::Pointer)
-                .hov(th::veil(0.055))
-                .press(th::veil(0.08))
-                .hov_group()
-                .transition(Transition::none())
-                .on_press(|s: &mut State| s.open_sheet(Sheet::Page))
-                .child(head)
-                .child(label(text, th::BODY, th::text2()).wrap().max_lines(3).max_w(720.0)),
-        );
+        return None;
     }
+    let about = d.facts.iter().find(|(n, _)| *n == S::Description).map(|(_, v)| v.clone());
 
     let release_date = d.facts.iter().find(|(n, _)| *n == S::ReleaseDate).map(|(_, v)| v.as_str());
     let version = d.facts.iter().find(|(n, _)| *n == S::Version).map(|(_, v)| v.as_str());
@@ -122,7 +94,7 @@ fn head_backdrop(s: &State, w: f32, side: f32) -> Option<El> {
             .w(page_w)
             .h(h)
             .clip_fade(0.0, 0.0, 0.0, h * 0.66)
-            .transition(Transition::reveal(rune_motion::Edge::Top).springs(th::GLOW))
+            .transition(Transition::none())
             .child(el().absolute(0.0, 0.0).w_full().h_full().opacity(strength).pixels_fit(&px, rune::SurfaceFit::Fill)),
     )
 }
@@ -172,11 +144,24 @@ fn head_buttons(s: &State) -> El {
         bar = bar.child(w);
     }
     let on = s.popover_open && matches!(s.popover, Some(Popover::Actions { .. }));
-    bar.child(
+    bar = bar.child(
         kit::pill_icon("d-more", kit::Weight::Soft, &icons::MORE, kit::BTN_H, 20.0, S::More.get(lang))
             .checked(on)
             .on_press(|s: &mut State| s.open_popover(Popover::Actions { anchor: "d-more".into() })),
-    )
+    );
+    if let Some(Page::Playlist(uid, kind)) = d.page {
+        let upload = kit::btn_soft("d-upload", S::UploadTrack.get(lang), Some(&icons::UPLOAD)).on_press_tx(move |_s: &mut State, tx: &mut Tx| {
+            let opts = FileDialogOptions { title: S::UploadTrack.get(lang).to_owned(), ..Default::default() }
+                .filter(S::AudioFiles.get(lang), &["mp3", "flac", "m4a", "wav", "ogg"]);
+            tx.open_file(opts, move |s: &mut State, res, _tx: &mut Tx| {
+                if let Ok(Some(path)) = res {
+                    s.upload_playlist_files(uid, kind, vec![path]);
+                }
+            });
+        });
+        bar = bar.child(el().grow(1.0)).child(upload);
+    }
+    bar
 }
 
 fn head_button_bones(s: &State) -> El {
@@ -274,8 +259,19 @@ pub(super) fn detail(s: &State, w: f32) -> El {
         Load::Ready(()) => {
             let (_, card) = fit(w, 144.0, GRID_GAP, 8);
             let card = card.min(196.0);
+            let is_playlist = matches!(d.page, Some(Page::Playlist(..)));
             if !d.tracks.is_empty() {
-                let list = track_list("detail-rows", d.tracks.len(), ListSrc::Detail);
+                let q = d.filter.text.trim().to_lowercase();
+                let shown_count = if is_playlist && !q.is_empty() {
+                    d.tracks.iter().filter(|t| s.detail_track_matches(t, &q)).count()
+                } else {
+                    d.tracks.len()
+                };
+                let list = if shown_count == 0 {
+                    kit::empty(&p, Ill::Lens, S::NoResults.get(lang))
+                } else {
+                    track_list("detail-rows", shown_count, ListSrc::Detail)
+                };
                 let section = if all_mode {
                     let count = match &d.all_tracks {
                         Load::Ready(v) => format!("{} · {}", d.title, lang.tracks(v.len())),
@@ -300,6 +296,38 @@ pub(super) fn detail(s: &State, w: f32) -> El {
                             s.play_all(list, true);
                         }));
                     col().key("d-tracks").mt(16.0).gap(10.0).child(heading).child(list)
+                } else if is_playlist {
+                    let input = text_input(&d.filter, th::BODY)
+                        .key("pl-search")
+                        .single_line()
+                        .grow(1.0)
+                        .min_w(0.0)
+                        .color(th::text())
+                        .placeholder(S::SearchTrack.get(lang), th::text3())
+                        .caret(p.accent, p.accent.alpha(0.30))
+                        .on_edit(|s: &mut State| &mut s.detail.filter);
+                    let mut field = kit::field_surface(row())
+                        .key("pl-search-field")
+                        .grow(1.0)
+                        .min_w(0.0)
+                        .h(38.0)
+                        .pl(12.0)
+                        .pr(6.0)
+                        .gap(8.0)
+                        .radius(19.0)
+                        .items_center()
+                        .child(icon(&icons::SEARCH, 16.0).color(th::text3()))
+                        .child(input);
+                    if !q.is_empty() {
+                        field = field.child(
+                            kit::ibtn("pl-search-clear", &icons::CLOSE, 14.0, 28.0, th::text2(), S::ClearSearch.get(lang)).on_press(|s: &mut State| s.detail.filter.clear()),
+                        );
+                    }
+                    let mut search_row = row().key("pl-search-row").w_full().gap(10.0).items_center().child(field);
+                    if d.tracks.len() > 2 {
+                        search_row = search_row.child(track_sort_button(s));
+                    }
+                    col().key("d-tracks").gap(14.0).child(search_row).child(list)
                 } else {
                     let title = if d.is_artist { S::PopularTracks } else { S::Tracks };
                     let all = d.is_artist.then(|| {
@@ -365,7 +393,14 @@ pub(super) fn detail(s: &State, w: f32) -> El {
         }
         _ => {}
     }
-    kit::scroll_page_live(key, body)
+    let page_el = kit::scroll_page_live(key, body);
+    if let Page::Playlist(uid, kind) = s.page {
+        page_el.on_drop_files(move |s: &mut State, paths: &[std::path::PathBuf], _tx: &mut Tx| {
+            s.upload_playlist_files(uid, kind, paths.to_vec());
+        })
+    } else {
+        page_el
+    }
 }
 
 fn track_sort_button(s: &State) -> El {

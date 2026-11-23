@@ -16,20 +16,22 @@ impl State {
         if page == Page::Search {
             self.focus_search = true;
         }
-        self.np_open = false;
         self.sheet_open = false;
-        if self.page == page {
+        if self.page == page && !self.np_open {
             return;
         }
-        self.history.push(self.page.clone());
+        self.history.push((self.page.clone(), self.np_open));
         if self.history.len() > 40 {
             self.history.remove(0);
         }
         self.forward.clear();
+        self.np_open = false;
         self.glide.active = false;
-        self.keep_scroll(&page);
-        self.page = page.clone();
-        self.enter(page);
+        if self.page != page {
+            self.keep_scroll(&page);
+            self.page = page.clone();
+            self.enter(page);
+        }
     }
 
     /// Remembers the current scroll offset and schedules restoration for `to`.
@@ -43,9 +45,9 @@ impl State {
         self.scroll_restore = self.scroll_memory.get(&key).copied().filter(|y| *y > 1.0).map(|y| (key, y, self.now + 4.0));
     }
 
-    /// Whether there is a page to go back to (or an artist's full track list to collapse).
+    /// Whether there is a page or player state to go back to (or an artist's full track list to collapse).
     pub fn can_back(&self) -> bool {
-        !self.history.is_empty() || (self.detail.showing_all && matches!(self.page, Page::Artist(_)))
+        !self.history.is_empty() || (!self.np_open && self.detail.showing_all && matches!(self.page, Page::Artist(_)))
     }
 
     pub fn can_forward(&self) -> bool {
@@ -53,32 +55,47 @@ impl State {
     }
 
     pub fn back(&mut self) {
-        if self.detail.showing_all && matches!(self.page, Page::Artist(_)) {
+        if !self.np_open && self.detail.showing_all && matches!(self.page, Page::Artist(_)) {
             self.show_all_artist_tracks(false);
             return;
         }
-        if let Some(p) = self.history.pop() {
-            self.forward.push(self.page.clone());
-            self.leave_to(p);
+        while let Some((p, np)) = self.history.pop() {
+            let want_np = np && self.current().is_some();
+            if p == self.page && want_np == self.np_open {
+                continue;
+            }
+            self.forward.push((self.page.clone(), self.np_open));
+            self.leave_to(p, want_np);
+            break;
         }
     }
 
     pub fn go_forward(&mut self) {
-        if let Some(p) = self.forward.pop() {
-            self.history.push(self.page.clone());
-            self.leave_to(p);
+        while let Some((p, np)) = self.forward.pop() {
+            let want_np = np && self.current().is_some();
+            if p == self.page && want_np == self.np_open {
+                continue;
+            }
+            self.history.push((self.page.clone(), self.np_open));
+            self.leave_to(p, want_np);
+            break;
         }
     }
 
-    /// Switches to `p` during back/forward navigation without pushing to history.
-    fn leave_to(&mut self, p: Page) {
+    /// Switches to `(p, np)` during back/forward navigation without pushing to history.
+    fn leave_to(&mut self, p: Page, np: bool) {
         if self.page == Page::Search && p != Page::Search {
             self.remember_search();
         }
         self.menu_open = false;
         self.tmenu_open = false;
         self.close_volume();
-        self.np_open = false;
+        if self.np_open != np {
+            crate::diag_log::event("ui", if np { "np open" } else { "np close" });
+            self.log_mem(if np { "np:open" } else { "np:close" });
+            self.art_trim_at = Some(self.now + 2.5);
+            self.np_open = np;
+        }
         self.glide.active = false;
         let same = self.page == p;
         if !same {
@@ -201,14 +218,14 @@ impl State {
         }
     }
 
-    /// Appends a track to the open playlist, keeping it at the end of the original order.
+    /// Inserts a newly added track at the start of the open playlist.
     pub(crate) fn push_detail_track(&mut self, t: Track) {
         if let Some(base) = &mut self.detail.unsorted {
-            base.push(t);
+            base.insert(0, t);
             let sort = self.detail.sort;
             self.set_track_sort(sort);
         } else {
-            self.detail.tracks.push(t);
+            self.detail.tracks.insert(0, t);
         }
     }
 

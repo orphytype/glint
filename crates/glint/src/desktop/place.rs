@@ -31,6 +31,23 @@ pub fn save(store: &Store) {
     store.save_window(&SavedWindow { position, size, maximized: p.maximized });
 }
 
+/// Before the window hides. It gives its GPU back then and RUNE makes it again on the next
+/// open, so RUNE is told where the window stands now. Returns whether it was maximized, which
+/// a remade window doesn't keep on its own.
+pub fn hold(app: &rune::AppHandle<crate::app::State>) -> bool {
+    let Some(p) = WINDOW.with(|w| w.borrow().as_ref().and_then(rune::WindowHandle::placement)) else { return false };
+    if p.full_screen || p.minimized {
+        return false;
+    }
+    app.set_position(p.restore.map_or(p.position, |(position, _)| position));
+    p.maximized
+}
+
+/// Whether the window is maximized now. None while it doesn't exist.
+pub fn maximized() -> Option<bool> {
+    WINDOW.with(|w| w.borrow().as_ref().and_then(rune::WindowHandle::placement)).map(|p| p.maximized)
+}
+
 /// Whether a saved frame's top band (where it is grabbed) is still on a display.
 #[cfg(windows)]
 pub fn on_screen(w: &SavedWindow) -> bool {

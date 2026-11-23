@@ -101,7 +101,7 @@ pub(super) fn action_entries(s: &State) -> Vec<Entry> {
     }
     if d.page.is_some() {
         let pin_on = s.detail_is_pinned();
-        let (ic, name) = if pin_on { (&icons::PIN_OFF, S::Pinned) } else { (&icons::PIN, S::Pin) };
+        let (ic, name) = if pin_on { (&icons::PIN_OFF, S::Unpin) } else { (&icons::PIN, S::Pin) };
         out.push(Entry::Row(menu_row("da-pin", ic, name.get(lang), pin_on).on_press(|s: &mut State| {
             s.close_popover();
             s.toggle_detail_pin();
@@ -174,7 +174,7 @@ pub(super) fn pinned_entries(s: &State, item: &PinnedItem) -> Vec<Entry> {
             s.close_popover();
             s.go(page.clone());
         })),
-        Entry::Row(menu_row("pinned-remove", &icons::TRASH, S::Unpinned.get(lang), false).on_press(move |s: &mut State| s.remove_pinned(&key))),
+        Entry::Row(menu_row("pinned-remove", &icons::TRASH, S::Unpin.get(lang), false).on_press(move |s: &mut State| s.remove_pinned(&key))),
     ]
 }
 

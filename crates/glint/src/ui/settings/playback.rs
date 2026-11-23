@@ -66,7 +66,7 @@ pub(super) fn playback(s: &State, k: &rune_kit::Kit) -> Vec<El> {
         s.settings.play_on_launch = !s.settings.play_on_launch;
         s.mark_settings_dirty();
     });
-    let mut screen = vec![item_below(S::PlayerLayout.get(lang), Some(S::PlayerLayoutNote.get(lang)), layout)];
+    let mut screen = vec![item_below(S::PlayerLayout.get(lang), None, layout)];
     for (i, (name, opts)) in menu::stage_rows().into_iter().enumerate() {
         screen.push(item(name.get(lang), None, look_choice(s, k, i, opts)));
     }
@@ -84,7 +84,7 @@ pub(super) fn playback(s: &State, k: &rune_kit::Kit) -> Vec<El> {
             vec![
                 item_below(S::Quality.get(lang), Some(S::QualityNote.get(lang)), q),
                 item(S::FckCensor.get(lang), Some(S::FckCensorNote.get(lang)), censor),
-                item(S::PlayOnLaunch.get(lang), Some(S::PlayOnLaunchNote.get(lang)), launch),
+                item(S::PlayOnLaunch.get(lang), None, launch),
             ],
             None,
         ),
@@ -102,7 +102,7 @@ fn backdrop_rows(s: &State, k: &rune_kit::Kit) -> Vec<El> {
     let look = s.settings.backdrop;
     let pick = |key: &str, name: &str| kit::btn_small(key.to_owned(), name, None).on_press_tx(|s: &mut State, tx: &mut Tx| s.pick_backdrop(tx));
     if !look.on {
-        return vec![item(S::Backdrop.get(lang), Some(S::BackdropNote.get(lang)), pick("bd-pick", S::BdPick.get(lang)))];
+        return vec![item(S::Backdrop.get(lang), None, pick("bd-pick", S::BdPick.get(lang)))];
     }
     let buttons = row()
         .gap(8.0)
@@ -114,7 +114,7 @@ fn backdrop_rows(s: &State, k: &rune_kit::Kit) -> Vec<El> {
         s.mark_settings_dirty();
     });
     vec![
-        item(S::Backdrop.get(lang), Some(S::BackdropNote.get(lang)), buttons),
+        item(S::Backdrop.get(lang), None, buttons),
         item(
             S::BdBlur.get(lang),
             None,
@@ -167,12 +167,12 @@ pub(super) fn lyrics(s: &State, k: &rune_kit::Kit) -> Vec<El> {
     });
     let sample = label(S::LyricsFontSample.get(lang), th::lyric_face(th::LYRIC_CARD, font), th::text()).key("set-lyrics-sample").w_full().wrap();
     let face =
-        col().w_full().px(ROW_PAD).py(14.0).gap(12.0).child(words(S::LyricsFont.get(lang), Some(S::LyricsFontNote.get(lang)))).child(row().w_full().child(faces)).child(sample);
+        col().w_full().px(ROW_PAD).py(14.0).gap(12.0).child(words(S::LyricsFont.get(lang), None)).child(row().w_full().child(faces)).child(sample);
     let mut rows = vec![face];
     for (j, (name, opts)) in menu::lyric_rows().into_iter().enumerate() {
         rows.push(item(name.get(lang), None, look_choice(s, k, 1 + j, opts)));
     }
-    rows.push(item(S::WordLyrics.get(lang), Some(S::WordLyricsNote.get(lang)), word_lyrics));
+    rows.push(item(S::WordLyrics.get(lang), None, word_lyrics));
     vec![group("set-lyrics", None, rows, None)]
 }
 

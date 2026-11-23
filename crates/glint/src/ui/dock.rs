@@ -37,7 +37,7 @@ pub const CHIP: f32 = kit::CHROME;
 
 // ---- the rail ----------------------------------------------------------------------------------------
 
-pub fn rail(s: &State, w: f32) -> El {
+pub fn rail(s: &State, w: f32, lead: f32) -> El {
     let items: [(Page, &'static Icon, &'static Icon, S); 3] = [
         (Page::Search, &icons::SEARCH, &icons::SEARCH_ON, S::Search),
         (Page::Home, &icons::HOME, &icons::HOME_ON, S::Home),
@@ -122,16 +122,28 @@ pub fn rail(s: &State, w: f32) -> El {
     } else {
         14.0
     };
-    col()
+    let mac_chrome = cfg!(target_os = "macos") || lead > 0.0;
+    let mut col_el = col()
         .key("rail")
         .absolute(0.0, 0.0)
         .w(RAIL_W)
         .h_full()
         .items_center()
         .transition(Transition::none())
-        .instant_changes()
-        .child(row().key("rail-top").w(RAIL_W).h(TITLE_H).center().window_drag().transition(Transition::none()).child(profile(s)))
-        .child(places.mt(8.0))
+        .instant_changes();
+    if mac_chrome {
+        // On macOS the window's traffic-light buttons sit in the top-left corner over `rail-top`,
+        // so the profile avatar moves right below them instead of overlapping the buttons.
+        col_el = col_el
+            .child(row().key("rail-top").w(RAIL_W).h(TITLE_H).window_drag().transition(Transition::none()))
+            .child(profile(s).mt(2.0))
+            .child(places.mt(10.0));
+    } else {
+        col_el = col_el
+            .child(row().key("rail-top").w(RAIL_W).h(TITLE_H).center().window_drag().transition(Transition::none()).child(profile(s)))
+            .child(places.mt(8.0));
+    }
+    col_el
         // The pins take the room between the places and the foot buttons and scroll inside it,
         // so many of them never run under the downloads and settings.
         .child(
@@ -238,10 +250,33 @@ pub fn update_pill(s: &State) -> Option<El> {
     Some(chip("update-pill", &tip).checked(open).hov(th::veil(0.06)).child(glyph).on_press(|s: &mut State| s.open_popover(Popover::Update { anchor: "update-pill".into() })))
 }
 
-/// A way back or forward: a glass chip, faint and deaf while there is nowhere to go.
+/// A way back or forward: a compact pill in the title bar, subtle when disabled.
 pub fn nav_chip(key: &'static str, ic: &'static Icon, name: &str, on: bool) -> El {
-    let c = chip(key, name).child(icon(ic, 18.0).color(if on { th::text() } else { th::text().alpha(0.28) }));
-    if on { c } else { c.disabled(true).cursor(Cursor::Default) }
+    const SIZE: f32 = 30.0;
+    let base = row()
+        .key(key)
+        .role("button")
+        .label(name)
+        .help(name)
+        .w(SIZE)
+        .h(SIZE)
+        .radius(SIZE * 0.5)
+        .center()
+        .no_window_drag()
+        .transition(Transition::none());
+    if on {
+        base.cursor(Cursor::Pointer)
+            .press_scale(th::PRESS)
+            .hov(th::veil(0.08))
+            .child(kit::glass(Glass::Chip, SIZE * 0.5))
+            .child(icon(ic, 15.0).color(th::text()))
+    } else {
+        base.disabled(true)
+            .cursor(Cursor::Default)
+            .fill(th::veil(0.035))
+            .border(1.0, th::veil(0.04))
+            .child(icon(ic, 15.0).color(th::text().alpha(0.24)))
+    }
 }
 
 /// The account's picture, `size` points across (its initial until the picture is in, or when it
@@ -406,6 +441,11 @@ fn playing(s: &State, width: f32) -> El {
     // narrow one the speaker opens the volume card on hover and mutes on click.
     right = right.child(bar_quality_btn(s, rbtn, compact));
     right = if inline_vol { right.child(volume_inline(s)) } else { right.child(volume_btn(s)) };
+    if !compact {
+        right = right.child(
+            kit::quiet_toggle("bar-mini", &icons::MINI_PLAYER, 17.0, rbtn, s.mini_open, S::MiniPlayer.get(lang)).on_press(|s: &mut State| s.toggle_mini_player()),
+        );
+    }
     // What can be done with the track (as the right click on it, or the open player's "more").
     right = right.child(
         kit::quiet_btn("bar-more", &ni::MORE, 18.0, rbtn, th::text2(), S::More.get(lang)).on_press(|s: &mut State| s.open_player_menu(rune::PopupAnchor::Key("bar-more".into()))),
@@ -425,11 +465,6 @@ fn playing(s: &State, width: f32) -> El {
         .child(right)
 }
 
-thread_local! {
-    /// The volume before the speaker muted it, for the next press to bring back.
-    static UNMUTED: std::cell::Cell<f32> = const { std::cell::Cell::new(0.8) };
-}
-
 /// Nudges volume from a mouse wheel or trackpad event.
 pub(super) fn volume_wheel(s: &mut State, e: rune::WheelEvent, _tx: &mut Tx) -> bool {
     if e.dy == 0.0 {
@@ -438,16 +473,6 @@ pub(super) fn volume_wheel(s: &mut State, e: rune::WheelEvent, _tx: &mut Tx) -> 
     let step = if e.precise { -e.dy * 0.004 } else { -e.dy.signum() * 0.05 };
     s.set_volume((s.player.volume + step).clamp(0.0, 1.0));
     true
-}
-
-pub(super) fn toggle_mute_remembered(s: &mut State) {
-    let v = s.player.volume;
-    if v > 0.01 {
-        UNMUTED.with(|c| c.set(v));
-        s.set_volume(0.0);
-    } else {
-        s.set_volume(UNMUTED.with(std::cell::Cell::get).max(0.05));
-    }
 }
 
 /// Modern horizontal volume slider shared by the mini-player bar and Now Playing.
@@ -484,7 +509,7 @@ fn volume_inline(s: &State) -> El {
     } else {
         &ni::VOLUME
     };
-    let speaker = kit::quiet_btn("vol-mute", ic, 18.0, 30.0, th::text2(), S::Volume.get(s.lang)).on_wheel(volume_wheel).on_press(toggle_mute_remembered);
+    let speaker = kit::quiet_btn("vol-mute", ic, 18.0, 30.0, th::text2(), S::Volume.get(s.lang)).on_wheel(volume_wheel).on_press(State::toggle_mute);
     row().key("vol-inline-row").gap(2.0).pr(4.0).items_center().child(speaker).child(volume_slider(s, "vol-inline", 60.0))
 }
 
@@ -511,7 +536,7 @@ fn volume_btn(s: &State) -> El {
                 s.vol_close_at = Some(s.now + 0.28);
             }
         })
-        .on_press(toggle_mute_remembered)
+        .on_press(State::toggle_mute)
 }
 
 const BADGE_STYLE: rune::TextStyle = rune::TextStyle::new(11.0, 500.0).family(th::SANS).tracking(0.15).lh(14.0).features("'tnum' 1");

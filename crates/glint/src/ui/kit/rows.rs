@@ -19,8 +19,8 @@ pub const ROW_PAD: f32 = 8.0;
 const ROW_GAP: f32 = 10.0;
 const ROW_BTN: f32 = 32.0;
 const ROW_GLYPH: f32 = 16.0;
-const ROW_TIME: f32 = 54.0;
-const ROW_ACTIONS: f32 = ROW_BTN * 2.0 + 8.0 + ROW_TIME;
+const ROW_TIME: f32 = 48.0;
+const ROW_ACTIONS: f32 = ROW_BTN * 3.0 + 12.0 + ROW_TIME;
 pub const ROW_COVER: f32 = 44.0;
 pub const ROW_COVER_R: f32 = 7.0;
 
@@ -34,6 +34,14 @@ pub enum ListSrc {
 }
 
 impl State {
+    pub fn detail_track_matches(&self, t: &Track, q: &str) -> bool {
+        if q.is_empty() {
+            return true;
+        }
+        let has = |s: &str| s.to_lowercase().contains(q);
+        has(&t.title) || has(&t.artists_line()) || t.albums.first().is_some_and(|a| has(&a.title))
+    }
+
     pub fn list(&self, src: ListSrc) -> Vec<Track> {
         match src {
             ListSrc::Liked => {
@@ -44,7 +52,14 @@ impl State {
                     self.library.shown.borrow().iter().filter_map(|&i| all.get(i).cloned()).collect()
                 }
             }
-            ListSrc::Detail => self.detail.tracks.clone(),
+            ListSrc::Detail => {
+                let q = self.detail.filter.text.trim().to_lowercase();
+                if q.is_empty() || !matches!(self.page, Page::Playlist(..)) {
+                    self.detail.tracks.clone()
+                } else {
+                    self.detail.tracks.iter().filter(|t| self.detail_track_matches(t, &q)).cloned().collect()
+                }
+            }
             ListSrc::Search => self.search_view().map(|r| r.tracks.results.clone()).unwrap_or_default(),
             ListSrc::Queue => self.player.queue.clone(),
             ListSrc::History => self.listening_history.clone(),
@@ -243,11 +258,11 @@ fn row_cover(s: &State, t: &Track, playing: bool, hovered: bool, dim_past: bool)
     c
 }
 
-fn download_action(s: &State, t: &Track) -> El {
+fn download_status_or_button(s: &State, t: &Track) -> El {
     let state = s.downloads.get(&t.id).copied();
     let (mut ic, color, help) = match state {
         Some(DownloadState::Downloading) => (&icons::SPINNER, th::text2(), S::DownloadInProgress),
-        Some(DownloadState::Done) => (&icons::DOWNLOAD, th::rgb(0x4bd27e).alpha(0.75), S::DeleteDownload),
+        Some(DownloadState::Done) => (&icons::DOWNLOAD, th::rgb(0x4bd27e).alpha(0.85), S::DownloadDone),
         Some(DownloadState::Failed) => (&icons::DOWNLOAD, th::rgb(0xf18a8a), S::DownloadFailed),
         None => (&icons::DOWNLOAD, th::text3(), S::Download),
     };
@@ -261,8 +276,8 @@ fn download_action(s: &State, t: &Track) -> El {
         help_buf = Some(format!("{}: {}", help.get(s.lang), fail.reason().get(s.lang)));
     }
     let help_text = help_buf.as_deref().unwrap_or_else(|| help.get(s.lang));
-    if matches!(state, Some(DownloadState::Downloading)) {
-        return row()
+    match state {
+        Some(DownloadState::Downloading) => row()
             .key(format!("download-{}", t.id))
             .role("status")
             .label(help_text)
@@ -270,30 +285,52 @@ fn download_action(s: &State, t: &Track) -> El {
             .w(ROW_BTN)
             .h(ROW_BTN)
             .center()
-            .child(icon(ic, ROW_GLYPH).color(color).looping(rune::LoopSpec::rotation(0.9)));
+            .child(icon(ic, ROW_GLYPH).color(color).looping(rune::LoopSpec::rotation(0.9))),
+        Some(DownloadState::Done) => row()
+            .key(format!("download-done-{}", t.id))
+            .role("status")
+            .label(help_text)
+            .help(help_text)
+            .w(ROW_BTN)
+            .h(ROW_BTN)
+            .center()
+            .child(icon(ic, 14.0).color(color)),
+        Some(DownloadState::Failed) => {
+            let track = t.clone();
+            ibtn(format!("download-{}", t.id), ic, ROW_GLYPH, ROW_BTN, color, help_text).on_press(move |s: &mut State| s.ask_download(vec![track.clone()]))
+        }
+        None => {
+            let track = t.clone();
+            ibtn_gop(format!("download-{}", t.id), ic, ROW_GLYPH, ROW_BTN, color, help_text).on_press(move |s: &mut State| s.ask_download(vec![track.clone()]))
+        }
     }
-    let glyph_sz = if matches!(state, Some(DownloadState::Done)) { 14.0 } else { ROW_GLYPH };
-    let b = if state.is_none() {
-        ibtn_gop(format!("download-{}", t.id), ic, glyph_sz, ROW_BTN, color, help_text)
-    } else {
-        ibtn(format!("download-{}", t.id), ic, glyph_sz, ROW_BTN, color, help_text)
-    };
-    let track = t.clone();
-    match state {
-        Some(DownloadState::Done) => b.on_press(move |s: &mut State| s.ask_delete_download(track.clone())),
-        Some(DownloadState::Downloading) => b,
-        _ => b.on_press(move |s: &mut State| s.ask_download(vec![track.clone()])),
+}
+
+fn delete_download_or_queue_button(s: &State, t: &Track, queue: bool, qi: Option<usize>) -> Option<El> {
+    if let Some(i) = qi.filter(|&i| queue && Some(i) > s.player.index) {
+        return Some(
+            ibtn_gop(format!("q-rem-{i}-{}", t.id), &icons::CLOSE, 14.0, ROW_BTN, th::text3(), S::RemoveFromQueue.get(s.lang))
+                .on_press(move |s: &mut State| s.remove_from_queue(i)),
+        );
     }
+    if matches!(s.downloads.get(&t.id), Some(DownloadState::Done)) {
+        let track = t.clone();
+        return Some(
+            ibtn_gop(format!("dl-del-{}", t.id), &icons::TRASH, 15.0, ROW_BTN, th::text2(), S::DeleteDownload.get(s.lang))
+                .on_press(move |s: &mut State| s.ask_delete_download(track.clone())),
+        );
+    }
+    None
 }
 
 pub fn track_row(s: &State, t: &Track, n: usize, src: ListSrc) -> El {
     let qi = (src == ListSrc::Queue).then(|| s.player.queue.iter().position(|queued| queued.id == t.id).unwrap_or_else(|| n.saturating_sub(1)));
     let num = (src == ListSrc::Detail && !s.detail.is_artist).then_some(n);
-    track_row_at(s, t, src, qi, num, false)
+    track_row_at(s, t, src, qi, num, false, n.saturating_sub(1))
 }
 
 pub fn queue_row(s: &State, t: &Track, qi: usize, dim_past: bool) -> El {
-    track_row_at(s, t, ListSrc::Queue, Some(qi), None, dim_past).on_press(move |s: &mut State| {
+    track_row_at(s, t, ListSrc::Queue, Some(qi), None, dim_past, qi).on_press(move |s: &mut State| {
         if s.player.index == Some(qi) && s.player.pending_index.is_none() {
             s.toggle_pause();
         } else {
@@ -302,8 +339,16 @@ pub fn queue_row(s: &State, t: &Track, qi: usize, dim_past: bool) -> El {
     })
 }
 
-fn track_row_at(s: &State, t: &Track, src: ListSrc, qi: Option<usize>, num: Option<usize>, dim_past: bool) -> El {
+fn track_row_at(s: &State, t: &Track, src: ListSrc, qi: Option<usize>, num: Option<usize>, dim_past: bool, row_idx: usize) -> El {
     let queue = src == ListSrc::Queue;
+    let reorderable = queue
+        || (src == ListSrc::Detail
+            && matches!(s.page, Page::Playlist(..))
+            && s.detail.sort == TrackSort::Original
+            && s.detail.filter.text.trim().is_empty()
+            && s.detail.tracks.len() > 1);
+    let active_drag = s.row_drag.as_ref().filter(|d| d.queue == queue && d.cur == row_idx);
+    let is_dragging = active_drag.is_some();
     let playing = match (queue, qi) {
         (true, Some(i)) => s.player.index == Some(i),
         _ => s.current().is_some_and(|c| c.id == t.id),
@@ -333,43 +378,81 @@ fn track_row_at(s: &State, t: &Track, src: ListSrc, qi: Option<usize>, num: Opti
         .absolute(0.0, 0.0)
         .w_full()
         .h_full()
-        .items_center()
-        .justify_end()
+        .center()
         .child(label(crate::player::fmt_time(t.duration_ms.unwrap_or(0)), th::TIME, th::text3()).gop(1.0, 0.0));
-    let more = row().absolute(0.0, 0.0).w_full().h_full().items_center().justify_end().child(
+    let more = row().absolute(0.0, 0.0).w_full().h_full().center().child(
         ibtn_gop(more_key, &icons::MORE, ROW_GLYPH + 2.0, ROW_BTN, th::text2(), S::More.get(s.lang))
             .on_press(move |s: &mut State| open_track_menu(s, &t3, qi, more_anchor.clone())),
     );
     let tail = el().key(format!("row-tail-{}", t.id)).w(ROW_TIME).h(ROW_BTN).child(time).child(more);
-    let lead_action = if let Some(i) = qi.filter(|&i| queue && Some(i) > s.player.index) {
-        ibtn_gop(format!("q-rem-{i}-{}", t.id), &icons::CLOSE, 14.0, ROW_BTN, th::text3(), S::RemoveFromQueue.get(s.lang)).on_press(move |s: &mut State| s.remove_from_queue(i))
-    } else {
-        download_action(s, t)
-    };
+    let dl_slot = download_status_or_button(s, t);
+    let secondary_slot = delete_download_or_queue_button(s, t, queue, qi);
 
+    let mut actions = row().key(format!("row-actions-{}", t.id)).w(ROW_ACTIONS).h(ROW_BTN).gap(4.0).justify_end().items_center().child(dl_slot);
+    if let Some(sec) = secondary_slot {
+        actions = actions.child(sec);
+    }
+    actions = actions.child(heart).child(tail);
+
+    let has_left_slot = num.is_some() || reorderable;
     let mut r = row()
         .key(hot.clone())
         .role("button")
         .label(title.as_str())
         .w_full()
         .h(ROW_H)
-        .pl(if num.is_some() { 4.0 } else { ROW_PAD })
+        .pl(if has_left_slot { 4.0 } else { ROW_PAD })
         .pr(ROW_PAD)
         .gap(ROW_GAP)
         .items_center()
         .radius(10.0)
         .cursor(Cursor::Pointer)
-        .fill(if playing { veil(0.07) } else { Color::TRANSPARENT })
+        .fill(if is_dragging {
+            veil(0.12)
+        } else if playing {
+            veil(0.07)
+        } else {
+            Color::TRANSPARENT
+        })
         .hov(veil(if playing { 0.095 } else { 0.045 }))
         .press(veil(0.08))
         .on_press(move |s: &mut State| s.play_from_list(src, &id))
         .on_secondary_press(move |s: &mut State, press, _tx: &mut Tx| open_track_menu(s, &t2, qi, press))
         .hov_group()
         .on_hover_change(marquee_hover(hot.clone()));
-    if let Some(n) = num {
-        r = r.child(label(n.to_string(), th::TIME, if playing { s.pal().accent } else { th::text3() }).w(20.0).align(Align::Center));
+    if let Some(drag) = active_drag {
+        let residual = drag.dy - (drag.cur as f32 - drag.start as f32) * ROW_H;
+        r = r.offset(0.0, residual).raise().instant_changes();
+    }
+    if has_left_slot {
+        let mut slot = el().key(format!("row-lead-{}", t.id)).w(20.0).h(ROW_BTN);
+        if let Some(n) = num {
+            let num_lbl = label(n.to_string(), th::TIME, if playing { s.pal().accent } else { th::text3() }).w(20.0).align(Align::Center);
+            let num_el = if reorderable {
+                num_lbl.gop(if is_dragging { 0.0 } else { 1.0 }, 0.0)
+            } else {
+                num_lbl
+            };
+            slot = slot.child(row().absolute(0.0, 0.0).w_full().h_full().center().child(num_el));
+        }
+        if reorderable {
+            let grip = row()
+                .key(format!("grip-{}", t.id))
+                .absolute(0.0, 0.0)
+                .w_full()
+                .h_full()
+                .center()
+                .cursor(Cursor::Grab)
+                .on_press(|_s: &mut State| {})
+                .on_drag(move |s: &mut State, d: &mut rune::Drag, tx: &mut Tx| {
+                    s.drag_row(queue, row_idx, d, tx);
+                })
+                .child(icon(&icons::GRIP, 15.0).color(if is_dragging { th::text() } else { th::text3() }).gcol(th::text2()).gop(if is_dragging { 1.0 } else { 0.0 }, 1.0));
+            slot = slot.child(grip);
+        }
+        r = r.child(slot);
     }
     r.child(row_cover(s, t, playing, moving, dim_past))
         .child(measure_room(col().grow(1.0).min_w(0.0).h_full().justify_center().gap(2.0).child(title_line(s, t, title, ink, room_w, moving)).child(meta), hot))
-        .child(row().key(format!("row-actions-{}", t.id)).w(ROW_ACTIONS).h(ROW_BTN).gap(4.0).justify_end().items_center().child(lead_action).child(heart).child(tail))
+        .child(actions)
 }

@@ -97,7 +97,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .child(kit::veil_top(TITLE_H + 24.0))
                 .child(kit::veil_bottom(if bar_on { BAR_H + BAR_GAP + 28.0 } else { 40.0 }))
                 .child(kit::page_scrollbar(h))
-                .child(dock::rail(s, w));
+                .child(dock::rail(s, w, ins.leading));
         }
         // Opening: bar sits beneath `np` so `np-cover` flies unobstructed above everything.
         if bar_on && np_open && !np_full {
@@ -191,16 +191,22 @@ fn measure_bugs(s: &State, cx: &mut Cx<State>, h: f32) {
 }
 
 /// The top band of the page: the way back (or out of the player) on the left, the window controls
-/// on the right, and the rest of it drags the window.
+/// on the right (or on the left on macOS), and the rest of it drags the window.
 fn titlebar(s: &State, lead: f32, trail: f32, logged_in: bool, np: bool) -> El {
     let left = if logged_in && !np { RAIL_W } else { 0.0 };
-    // Over a page the way back lines up with the page's left edge; over the player, with the window's.
-    let pad = if left > 0.0 { kit::PAGE_PAD - 4.0 } else { kit::CHROME_INSET };
+    // `lead` is measured from the window's left edge (`x = 0`), while `titlebar` starts at `left`.
+    // Keep the back/forward arrows close to the rail on Windows/Linux and just right of the
+    // traffic lights on macOS.
+    let pl = if left > 0.0 {
+        ((lead - left).max(0.0) + 12.0).max(14.0)
+    } else {
+        lead + kit::CHROME_INSET
+    };
     let mut r = row()
         .key("titlebar")
         .pin(Some(left), Some(0.0), Some(0.0), None)
         .h(TITLE_H)
-        .pl(pad + lead)
+        .pl(pl)
         .pr(16.0 + trail)
         .items_center()
         .window_drag()
@@ -213,7 +219,7 @@ fn titlebar(s: &State, lead: f32, trail: f32, logged_in: bool, np: bool) -> El {
         let fwd = dock::nav_chip("forward", &icons::CHEVRON_RIGHT, S::Forward.get(s.lang), s.can_forward());
         r = r
             .child(if s.can_back() { back.on_press(|s: &mut State| s.back()) } else { back })
-            .child(if s.can_forward() { fwd.on_press(|s: &mut State| s.go_forward()) } else { fwd }.ml(8.0));
+            .child(if s.can_forward() { fwd.on_press(|s: &mut State| s.go_forward()) } else { fwd }.ml(6.0));
     }
     // A new version waits beside the window's controls.
     if logged_in && let Some(pill) = dock::update_pill(s) {

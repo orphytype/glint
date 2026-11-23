@@ -1,39 +1,35 @@
-Audio quality gets a pill in the mini player and a picker for batch downloads.
+A floating mini player that stays on top of other apps, plus playlist search, track reordering and local audio files in playlists.
 
 New:
 
-- The mini player has a rounded pill with the selected audio quality and its bitrate. Narrow windows show a quality icon button instead.
-- Now Playing has a quality button beside the volume slider. Both buttons open the same quality menu.
-- The quality menu shows an icon and the bitrate of each tier, with a check mark on the chosen tier.
-- The batch download dialog has a quality picker. The picked quality applies to that batch only and leaves playback quality unchanged.
-- Audio quality has three tiers: Saver, Balanced and Best. Best plays FLAC when the track has it and the highest lossy stream otherwise.
-- The Now Playing cover loads at 600x600 and keeps the cached smaller cover on screen until it is ready.
-- Covers load at 100, 300 or 600 pixels depending on where they appear. Track lists, queues, avatars and pins use the small size.
-- Player time labels show hours when a track runs for an hour or longer.
-- The Up Next count in the queue turns into a Clear button on hover, and tracks that already played are dimmed.
-- A slim scrollbar on the right of the page follows scrolling and can be dragged.
+- A mini player in its own small window, on top of other apps. Open it from the player bar, the tray menu or Settings -> On the desktop.
+- Opening the mini player hides the main window. The mini player's expand button brings it back.
+- The mini player opens where you last left it.
+- The mini player has three layouts (Bar, Card and Cover) and an opacity slider. It can also open by itself when you close the main window to the tray.
+- Playlists have a search field above the track list and an Upload track button for local audio files (MP3, FLAC, M4A, WAV and OGG). You can also drop audio files onto a playlist.
+- Tracks in playlists and in the queue show a grip on hover. Drag it to change the order.
+- Downloaded tracks keep their green mark on hover, with a trash button beside it to delete the download.
+- A track added to a playlist goes to the top of the list instead of the end.
+- The download dialog shows each quality as a card with its format, bitrate and approximate size. The track count and total length sit in a badge at the top right.
+- Opening and closing the now playing screen counts as a step for the Back and Forward buttons.
 
 Fixed:
 
-- Changing the quality in the menu now updates the pill in the mini player right away. It no longer keeps the bitrate of the stream that was playing before.
-- Removed the quality badge under the seek bar in Now Playing. The quality button beside the volume slider takes its place.
-- The first item in the settings sidebar now sits level with the header. The header title uses the same font size as the sidebar labels.
-- Muting in Now Playing brings back the previous volume, and the mouse wheel adjusts volume there.
-- The mini player shows Like on the left and Dislike on the right.
-- The queue panel no longer starts under the title bar.
-- Opening or closing Now Playing keeps the cover flight above the player curtain and uses one backdrop snapshot.
-- Covers are trimmed from memory after page switches and player transitions, and every 30 seconds while the app runs.
-- Turning FkCensor on refreshes the library and any open detail pages right away.
-- Downloaded tracks and tracks with a FkCensor replacement stay playable when Yandex marks them unavailable.
-- Audio downloads no longer stop after 120 seconds. The downloader accepts files up to 4 GB.
-- My Wave cards are shorter, with rounded corners and a smaller play icon.
-- Dialogs, menus, the settings card and toasts use 2px borders and no drop shadow.
-- The update check and install buttons show a disabled state while busy.
+- A hidden main window gives its graphics memory back, so the app takes less memory in the tray and with the mini player open.
+- The mini player appeared in a different place every time it opened.
+- Unpinning a page showed "Открепить" in the notification instead of "Откреплено". Clearing the download history showed "Очистить историю загрузок" instead of "История загрузок очищена".
+- Most settings lost their notes under the label. The ones left are shorter and only say what the label doesn't.
+- Hovered cards no longer jump in their scrolling title: the scroll starts from the beginning.
+- Unmuting in the player bar, the now playing screen, the mini player or the tray brings back the volume you had set instead of 80%.
+- On macOS the profile picture in the left rail sits below the window buttons instead of under them.
+- The Back and Forward buttons are smaller, with a thin border, and sit closer to the left rail.
+- The artist page no longer repeats the artist's bio. It is still in the About the artist window.
+- The header gradient on album, playlist and artist pages no longer fades in.
 
 Which file to download:
 
-- Windows: `Glint-0.9.2-windows-x64-setup.exe` (installs for the current user, no administrator rights needed) or `Glint-0.9.2-windows-x64-portable.zip` (data stays next to the program while a `glint.portable` file sits next to `glint.exe`).
-- macOS 11 and newer: `Glint-0.9.2-macos.dmg`. Open the image and drag Glint to Applications. The app is not signed with an Apple certificate, so on first launch right-click Glint, choose Open and confirm. If there is no Open button, allow it in System Settings -> Privacy & Security.
+- Windows: `Glint-0.9.3-windows-x64-setup.exe` (installs for the current user, no administrator rights needed) or `Glint-0.9.3-windows-x64-portable.zip` (data stays next to the program while a `glint.portable` file sits next to `glint.exe`).
+- macOS 11 and newer: `Glint-0.9.3-macos.dmg`. Open the image and drag Glint to Applications. The app is not signed with an Apple certificate, so on first launch right-click Glint, choose Open and confirm. If there is no Open button, allow it in System Settings -> Privacy & Security.
 - Linux: `.AppImage` (run `chmod +x`, then the file), `.deb`, `.rpm` or `.tar.gz` with `install.sh`. You need a Vulkan driver and glibc 2.31 or newer.
 
 The Windows installer and the AppImage update from inside the app: Settings -> Updates.

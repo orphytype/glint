@@ -17,8 +17,16 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 pub use downloads::{DownloadStore, DownloadedTrack};
-pub use settings::{BackdropLook, Effects, LyricLook, PinnedSetting, PlayerLayout, QualityPref, Repeat, Settings, StageLook, ThemeMode, WaveLook, WaveTune};
+pub use settings::{BackdropLook, Effects, LyricLook, MiniStyle, PinnedSetting, PlayerLayout, QualityPref, Repeat, Settings, StageLook, ThemeMode, WaveLook, WaveTune};
 pub use snapshots::{HomeSnapshot, LibrarySnapshot, PlaybackSnapshot};
+
+/// Locally uploaded tracks and custom track ordering for a playlist (`"{uid}:{kind}"`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalPlaylistData {
+    pub local_tracks: Vec<ym_api::Track>,
+    pub order: Vec<String>,
+}
 
 /// Where the window was when it last closed, in physical pixels: its frame's top-left, its
 /// content's size, and whether it was maximized (then the frame is the one it restores to).
@@ -130,6 +138,20 @@ impl Store {
     pub fn save_window(&self, window: &SavedWindow) {
         let Some(path) = self.write_file("window.json") else { return };
         if let Ok(json) = serde_json::to_vec_pretty(window) {
+            io::write_atomic(&path, &json);
+        }
+    }
+
+    pub fn load_local_playlists(&self) -> std::collections::BTreeMap<String, LocalPlaylistData> {
+        self.read_file("playlists.json")
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save_local_playlists(&self, map: &std::collections::BTreeMap<String, LocalPlaylistData>) {
+        let Some(path) = self.write_file("playlists.json") else { return };
+        if let Ok(json) = serde_json::to_vec_pretty(map) {
             io::write_atomic(&path, &json);
         }
     }

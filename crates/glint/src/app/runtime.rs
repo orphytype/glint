@@ -46,12 +46,18 @@ impl State {
         }
     }
 
-    /// Opens or closes the Now Playing page.
+    /// Opens or closes the Now Playing page and records the transition in navigation history.
     pub fn set_np(&mut self, open: bool) {
+        let open = open && self.current().is_some();
         self.menu_open = false;
         self.tmenu_open = false;
         self.close_volume();
         if self.np_open != open {
+            self.history.push((self.page.clone(), self.np_open));
+            if self.history.len() > 40 {
+                self.history.remove(0);
+            }
+            self.forward.clear();
             crate::diag_log::event("ui", if open { "np open" } else { "np close" });
             self.log_mem(if open { "np:open" } else { "np:close" });
             self.art_trim_at = Some(self.now + 2.5);
@@ -136,7 +142,7 @@ impl State {
 
     pub fn clear_download_history(&mut self) {
         self.wipe_downloads();
-        self.toast(self.tr(S::ClearDownloadHistory));
+        self.toast(self.tr(S::DownloadHistoryCleared));
     }
 
     pub fn error_toast(&mut self, e: &ym_api::Error) {
@@ -323,6 +329,7 @@ impl State {
             }
         }
         self.sync_desktop();
+        self.sync_mini();
         if self.page == Page::Search {
             self.drive_search();
         }

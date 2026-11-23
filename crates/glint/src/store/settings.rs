@@ -69,6 +69,33 @@ pub enum PlayerLayout {
     Cover,
 }
 
+/// Which layout the floating mini-player window uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum MiniStyle {
+    Compact,
+    #[default]
+    Standard,
+    Cover,
+}
+
+impl MiniStyle {
+    pub fn size(self) -> (f32, f32) {
+        match self {
+            MiniStyle::Compact => (340.0, 68.0),
+            MiniStyle::Standard => (360.0, 138.0),
+            MiniStyle::Cover => (240.0, 286.0),
+        }
+    }
+
+    pub fn next(self) -> MiniStyle {
+        match self {
+            MiniStyle::Compact => MiniStyle::Standard,
+            MiniStyle::Standard => MiniStyle::Cover,
+            MiniStyle::Cover => MiniStyle::Compact,
+        }
+    }
+}
+
 /// The look's current default (see [`StageLook::v`]). Version 4 combined flash and reaction into
 /// one visual effects choice (off, calm, lively).
 const STAGE_V: u8 = 4;
@@ -232,6 +259,16 @@ pub struct Settings {
     /// The keys the user changed: an action's id (`keys::Act::id`) and its chord, "none" for no
     /// key. An action that is not here has its default.
     pub keys: std::collections::BTreeMap<String, String>,
+    /// Floating mini-player layout (`Compact`, `Standard`, `Cover`).
+    pub mini_style: MiniStyle,
+    /// Keep the floating mini-player window above other windows.
+    pub mini_always_on_top: bool,
+    /// Opacity of the floating mini-player surface (`0.65..=1.0`).
+    pub mini_opacity: f32,
+    /// Automatically show the mini-player when closing the main window to the tray.
+    pub mini_on_close: bool,
+    /// Last screen position of the floating mini-player window.
+    pub mini_pos: Option<(i32, i32)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
@@ -279,6 +316,11 @@ impl Default for Settings {
             lyric_look: LyricLook::default(),
             pinned: Vec::new(),
             keys: std::collections::BTreeMap::new(),
+            mini_style: MiniStyle::Standard,
+            mini_always_on_top: true,
+            mini_opacity: 0.95,
+            mini_on_close: false,
+            mini_pos: None,
         }
     }
 }
@@ -288,6 +330,7 @@ impl Settings {
     pub fn sanitized(mut self) -> Settings {
         self.accent = self.accent.min(crate::theme::ACCENTS.len() - 1);
         self.volume = if self.volume.is_finite() { self.volume.clamp(0.0, 1.0) } else { 0.8 };
+        self.mini_opacity = if self.mini_opacity.is_finite() { self.mini_opacity.clamp(0.65, 1.0) } else { 0.95 };
         self.eq_preamp = if self.eq_preamp.is_finite() { self.eq_preamp.clamp(-12.0, 12.0) } else { 0.0 };
         for g in &mut self.eq_gains {
             *g = if g.is_finite() { g.clamp(-12.0, 12.0) } else { 0.0 };

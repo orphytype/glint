@@ -161,7 +161,7 @@ pub(super) fn updates(s: &State, k: &rune_kit::Kit) -> Vec<El> {
         s.settings.auto_update = !s.settings.auto_update;
         s.mark_settings_dirty();
     });
-    vec![group("set-update", None, vec![now], None), group("set-update-auto", None, vec![item(S::AutoUpdate.get(lang), Some(S::AutoUpdateNote.get(lang)), auto)], None)]
+    vec![group("set-update", None, vec![now], None), group("set-update-auto", None, vec![item(S::AutoUpdate.get(lang), None, auto)], None)]
 }
 
 fn link_row(key: &str, ic: &'static Icon, name: &str, url: &'static str) -> El {

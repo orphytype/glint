@@ -254,6 +254,8 @@ pub struct Detail {
     /// Track ordering and the original order kept while another sort is active.
     pub sort: TrackSort,
     pub unsorted: Option<Vec<Track>>,
+    /// Playlist search filter text.
+    pub filter: TextEdit,
     /// Artist discography sort order and release-type filter.
     pub disc_sort: DiscSort,
     pub disc_kind: DiscKind,

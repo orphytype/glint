@@ -499,18 +499,47 @@ impl Backend {
         }
     }
 
-    /// Adds `track` at the end of one of the account's playlists. Edits quote the playlist's
+    /// Adds `track` at the start of one of the account's playlists. Edits quote the playlist's
     /// revision, so it is read fresh first.
     pub async fn playlist_add(&self, uid: i64, kind: i64, track: &Track) -> Result<()> {
         match self {
             Backend::Live(c) => {
                 let list = c.playlist(uid, kind).await?;
                 let album = track.albums.first().map(|a| a.id.clone()).unwrap_or_default();
-                let at = list.track_count.map_or(list.tracks.len(), |n| n as usize);
-                c.playlist_insert(uid, kind, list.revision, at, &[(track.id.clone(), album)]).await.map(drop)
+                c.playlist_insert(uid, kind, list.revision, 0, &[(track.id.clone(), album)]).await.map(drop)
             }
             #[cfg(feature = "tooling")]
             Backend::Fixture(_) => Ok(()),
+            Backend::None => Err(no_session()),
+        }
+    }
+
+    /// Moves a track from `from` to `to` in one of the account's playlists.
+    pub async fn playlist_move(&self, uid: i64, kind: i64, from: usize, to: usize, track: &Track) -> Result<()> {
+        if from == to {
+            return Ok(());
+        }
+        match self {
+            Backend::Live(c) => {
+                let list = c.playlist(uid, kind).await?;
+                if from >= list.tracks.len() || to >= list.tracks.len() {
+                    return Ok(());
+                }
+                let album = track.albums.first().map(|a| a.id.clone()).unwrap_or_default();
+                c.playlist_move(uid, kind, list.revision, from, to, &(track.id.clone(), album)).await.map(drop)
+            }
+            #[cfg(feature = "tooling")]
+            Backend::Fixture(_) => Ok(()),
+            Backend::None => Err(no_session()),
+        }
+    }
+
+    /// Uploads a local audio file into one of the account's playlists via the UGC loader.
+    pub async fn playlist_upload_ugc(&self, uid: i64, kind: i64, filename: &str, audio: &[u8]) -> Result<String> {
+        match self {
+            Backend::Live(c) => c.playlist_upload_ugc(uid, kind, filename, audio).await,
+            #[cfg(feature = "tooling")]
+            Backend::Fixture(_) => Ok(String::new()),
             Backend::None => Err(no_session()),
         }
     }

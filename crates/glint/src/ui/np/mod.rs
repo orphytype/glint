@@ -198,7 +198,7 @@ pub fn page(s: &State, w: f32, h: f32, come: f32, front: bool, settled: bool) ->
         .w(utility_w)
         .h(40.0)
         .items_center()
-        .child(kit::quiet_btn("np-mute", vol_icon, MODE_GLYPH, MODE_BTN, th::text3(), S::Mute.get(lang)).on_wheel(dock::volume_wheel).on_press(dock::toggle_mute_remembered))
+        .child(kit::quiet_btn("np-mute", vol_icon, MODE_GLYPH, MODE_BTN, th::text3(), S::Mute.get(lang)).on_wheel(dock::volume_wheel).on_press(State::toggle_mute))
         .child(row().ml(4.0).mr(8.0).items_center().child(dock::volume_slider(s, "np-vol", vol_w)))
         .child(dock::quality_btn_at(s, "np-quality", MODE_BTN, th::text3()))
         .child(lyrics_btn)

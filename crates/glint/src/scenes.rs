@@ -222,7 +222,7 @@ fn library_albums(s: &mut State) {
 fn album(s: &mut State) {
     let c = signed_in(s);
     let id = c.albums[2].id.clone();
-    s.history.push(Page::Home);
+    s.history.push((Page::Home, false));
     s.page = Page::Album(id.clone());
     s.begin_detail(Page::Album(id.clone()));
     if let Some(a) = c.album(&id) {
@@ -235,7 +235,7 @@ fn playlist(s: &mut State) {
     let c = signed_in(s);
     let kind = c.playlists[0].kind;
     let uid = c.playlists[0].owner_uid();
-    s.history.push(Page::Library);
+    s.history.push((Page::Library, false));
     s.page = Page::Playlist(uid, kind);
     s.begin_detail(Page::Playlist(uid, kind));
     if let Some(p) = c.playlist(kind) {
@@ -263,7 +263,7 @@ fn queue_from(s: &mut State) {
 fn artist(s: &mut State) {
     let c = signed_in(s);
     let id = c.artists[0].id.clone();
-    s.history.push(Page::Home);
+    s.history.push((Page::Home, false));
     s.page = Page::Artist(id.clone());
     s.begin_detail(Page::Artist(id.clone()));
     if let Some(a) = c.artist(&id) {
@@ -518,10 +518,10 @@ fn update_popover(s: &mut State) {
     home_ru(s);
     s.update_method = glint_update::Method::WindowsInstaller;
     s.update = crate::update::Ui::Available(glint_update::Release {
-        version: "0.9.2".into(),
-        page_url: "https://github.com/orphytype/glint/releases/tag/v0.9.2".into(),
+        version: "0.9.3".into(),
+        page_url: "https://github.com/orphytype/glint/releases/tag/v0.9.3".into(),
         notes: "Audio quality gets a pill in the mini player and a picker for batch downloads.\n• The quality menu shows each tier with its bitrate.\n• Covers load at the size each view needs, with the large Now Playing cover showing the cached one first.".into(),
-        asset: Some(glint_update::Asset { name: "Glint-0.9.2-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
+        asset: Some(glint_update::Asset { name: "Glint-0.9.3-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
     });
     s.open_popover(crate::app::Popover::Update { anchor: "update-pill".into() });
     s.pop.t = 1.0;
@@ -673,10 +673,10 @@ fn settings_update(s: &mut State) {
     settings(s);
     s.update_method = glint_update::Method::WindowsInstaller;
     s.update = crate::update::Ui::Available(glint_update::Release {
-        version: "0.9.2".into(),
-        page_url: "https://github.com/orphytype/glint/releases/tag/v0.9.2".into(),
+        version: "0.9.3".into(),
+        page_url: "https://github.com/orphytype/glint/releases/tag/v0.9.3".into(),
         notes: "Audio quality gets a pill in the mini player and a picker for batch downloads.\n• The quality menu shows each tier with its bitrate.".into(),
-        asset: Some(glint_update::Asset { name: "Glint-0.9.2-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
+        asset: Some(glint_update::Asset { name: "Glint-0.9.3-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
     });
 }
 

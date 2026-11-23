@@ -79,9 +79,76 @@ impl Client {
     pub async fn playlist_insert(&self, uid: i64, kind: i64, revision: i64, at: usize, tracks: &[(String, String)]) -> Result<Playlist> {
         let mut list = Vec::with_capacity(tracks.len());
         for (id, album) in tracks {
-            list.push(json!({ "id": seg(id)?, "albumId": seg(album)? }));
+            if album.is_empty() {
+                list.push(json!({ "id": seg(id)? }));
+            } else {
+                list.push(json!({ "id": seg(id)?, "albumId": seg(album)? }));
+            }
         }
         self.playlist_change(uid, kind, revision, json!([{ "op": "insert", "at": at, "tracks": list }])).await
+    }
+
+    /// Moves a track from `from` to `to` (`track` is `(track id, album id)`).
+    pub async fn playlist_move(&self, uid: i64, kind: i64, revision: i64, from: usize, to: usize, track: &(String, String)) -> Result<Playlist> {
+        if from == to {
+            return self.playlist(uid, kind).await;
+        }
+        let item = if track.1.is_empty() {
+            json!({ "id": seg(&track.0)? })
+        } else {
+            json!({ "id": seg(&track.0)?, "albumId": seg(&track.1)? })
+        };
+        let diff = json!([
+            { "op": "delete", "from": from, "to": from + 1, "tracks": [item.clone()] },
+            { "op": "insert", "at": to, "tracks": [item] },
+        ]);
+        self.playlist_change(uid, kind, revision, diff).await
+    }
+
+    /// Uploads a user audio file to a playlist via the UGC loader endpoint and returns the
+    /// assigned `ugc-track-id` when accepted by the service.
+    pub async fn playlist_upload_ugc(&self, uid: i64, kind: i64, filename: &str, audio: &[u8]) -> Result<String> {
+        let kind_s = kind.to_string();
+        let meta = self
+            .post_form(
+                &format!("/handlers/ugc-upload.jsx?uid={uid}"),
+                &[("filename", filename), ("kind", &kind_s), ("visibility", "private")],
+            )
+            .await?;
+        let post_target = meta
+            .get("post-target")
+            .or_else(|| meta.get("postTarget"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::Parse("missing post-target".into()))?;
+        let track_id = meta
+            .get("ugc-track-id")
+            .or_else(|| meta.get("ugcTrackId"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::Parse("missing ugc-track-id".into()))?
+            .to_owned();
+        let boundary = format!("----GlintUgcBoundary{}", unix_millis());
+        let safe_name: String = filename.chars().filter(|c| *c != '"' && *c != '\r' && *c != '\n').collect();
+        let mut body = Vec::with_capacity(audio.len() + 256);
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{safe_name}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(audio);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let resp = self
+            .inner
+            .http
+            .post(post_target)
+            .header("Content-Type", format!("multipart/form-data; boundary={boundary}"))
+            .body(body)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(Error::Api(resp.text().await.unwrap_or_default()));
+        }
+        Ok(track_id)
     }
 
     /// Removes the tracks at positions `from..to`.

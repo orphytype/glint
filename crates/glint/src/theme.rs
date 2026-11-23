@@ -355,7 +355,4 @@ pub const SLIDE: rune::Spring = rune::Spring::new(0.38, 0.0);
 /// How a page (and each block of it) comes in: a calm rise that settles without a bounce, and a
 /// quick fade out of the way.
 pub const PAGE_IN: rune::SpringPair = rune::SpringPair::new(rune::Spring::new(0.38, 0.0), rune::Spring::new(0.16, 0.0));
-/// The glow at the head of an album or artist page: slower than a block of the page, so it wipes in
-/// after the page is there.
-pub const GLOW: rune::SpringPair = rune::SpringPair::new(rune::Spring::new(0.7, 0.0), rune::Spring::new(0.16, 0.0));
 pub const RISE: rune::SpringPair = rune::SpringPair::new(rune::Spring::new(0.26, 0.0), rune::Spring::new(0.18, 0.0));

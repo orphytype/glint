@@ -119,7 +119,13 @@ impl Gfx {
 
         let mut gpu = match self.gpu.take() {
             Some(g) if g.key == f.device_key() => g,
-            _ => Gpu::new(device, f.device_key()),
+            // A new device (the window was hidden and gave its GPU back): the like burst's
+            // renderer was made on the old one too.
+            _ => {
+                self.fx = None;
+                self.prof = None;
+                Gpu::new(device, f.device_key())
+            }
         };
         gpu.ensure(device, f.format);
         let first_gpu = !GPU_UP.load(Ordering::Relaxed) && !GPU_UP.swap(true, Ordering::Relaxed);

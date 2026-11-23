@@ -10,7 +10,7 @@ mod slots;
 mod stage;
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use rune::compose::{Compositor, Frame};
@@ -177,6 +177,16 @@ pub fn gpu_up() -> bool {
     GPU_UP.load(Ordering::Relaxed)
 }
 
+/// The compositor's GPU resources between frames. They wait here rather than in `Gfx`, so a
+/// hidden main window can drop them (`release_gpu`) while the mini player keeps playing.
+static PARKED: Mutex<Option<(Option<Gpu>, Option<FxRenderer>)>> = Mutex::new(None);
+
+/// Drops the compositor's textures, buffers and pipelines. The next frame makes them again.
+pub fn release_gpu() {
+    let parked = PARKED.lock().map(|mut p| p.take()).unwrap_or_default();
+    drop(parked);
+}
+
 pub fn snap_slot(el: rune::El) -> rune::El {
     if glass_enabled() { el.effect(SNAP).effect_backdrop(true) } else { el }
 }
@@ -309,7 +319,13 @@ impl Compositor<State> for Gfx {
     fn render(&mut self, f: &mut Frame<'_, State>) {
         let began = std::time::Instant::now();
         self.upd_ms += f.update_ms;
+        if let Some((gpu, fx)) = PARKED.lock().ok().and_then(|mut p| p.take()) {
+            (self.gpu, self.fx) = (gpu, fx);
+        }
         self.draw(f);
+        if let Ok(mut p) = PARKED.lock() {
+            *p = Some((self.gpu.take(), self.fx.take()));
+        }
         self.cpu_ms += began.elapsed().as_secs_f64() * 1e3;
     }
 }

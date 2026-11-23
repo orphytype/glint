@@ -114,6 +114,8 @@ pub enum Command {
     Repeat,
     /// Sound off, or back on (the tray menu).
     Mute,
+    /// Toggle the floating mini-player window (the tray menu).
+    MiniPlayer,
     /// Bring the window back.
     Show,
     Quit,
@@ -263,6 +265,7 @@ fn drifted(tl: Timeline, pos_ms: u64, playing: bool, at: Instant) -> bool {
 // ---- the tray ---------------------------------------------------------------------------------
 
 const ID_SHOW: &str = "show";
+const ID_MINI: &str = "mini";
 const ID_TOGGLE: &str = "toggle";
 const ID_PREV: &str = "prev";
 const ID_NEXT: &str = "next";
@@ -313,6 +316,7 @@ fn menu(lang: Lang, head: &str, m: MenuState) -> Vec<TrayItem> {
         TrayItem::action(ID_REPEAT, repeat.get(lang)),
         TrayItem::action(ID_MUTE, mute.get(lang)),
         TrayItem::Separator,
+        TrayItem::action(ID_MINI, S::MiniPlayer.get(lang)),
         TrayItem::action(ID_SHOW, S::TrayShow.get(lang)),
         TrayItem::action(ID_QUIT, S::TrayQuit.get(lang)),
     ]
@@ -340,6 +344,7 @@ fn heading(track: Option<&Track>) -> String {
 fn command_for_menu(id: &str) -> Option<Command> {
     Some(match id {
         ID_SHOW => Command::Show,
+        ID_MINI => Command::MiniPlayer,
         ID_TOGGLE => Command::Toggle,
         ID_PREV => Command::Prev,
         ID_NEXT => Command::Next,
