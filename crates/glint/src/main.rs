@@ -14,6 +14,7 @@ mod bugs;
 mod desktop;
 mod diag_log;
 mod find;
+#[cfg(feature = "tooling")]
 mod fixtures;
 mod fkcensor;
 mod fx;
