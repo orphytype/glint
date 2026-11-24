@@ -526,6 +526,7 @@ strings! {
     FckCensor => "FckCensor", "FckCensor";
     PlayOnLaunch => "Play on launch", "Включать музыку при запуске";
     FckCensorNote => "Replaces censored tracks with original versions.", "Заменяет треки с цензурой на оригинальные версии.";
+    FkCensorNoCredits => "This track comes from FckCensor. Yandex Music has no credits for it, so only its artist, album and length are shown.", "Этот трек из FckCensor. У Яндекс Музыки нет сведений о нём, поэтому здесь только исполнитель, альбом и длительность.";
     SetHistory => "History", "История";
     SearchHistory => "Search history", "История поиска";
     ClearShort => "Clear", "Очистить";

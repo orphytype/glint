@@ -87,6 +87,18 @@ fn credits(s: &State, t: &Track, width: f32) -> El {
             col().w(width).gap(14.0).children(c.iter().enumerate().map(|(i, c)| fact_line(format!("sheet-credit-{i}"), c.title.as_str(), c.value.as_str(), width)))
         }
         Load::Loading | Load::Idle if mine || s.sheet_credits.0.is_none() => return section("sheet-credits", S::SheetCredits.get(lang), bones("sheet-credits-bones", 6, width)),
+        // Yandex knows nothing about a track FckCensor brought back: show what the catalog has,
+        // and say why the rest is missing.
+        _ if s.fkcensor.knows(&t.id) => {
+            let mut c = col().w(width).gap(14.0).child(fact_line("sheet-credit-0".into(), S::Artist.get(lang), t.artists_line(), width));
+            if let Some(al) = t.albums.first().filter(|a| !a.title.is_empty()) {
+                c = c.child(fact_line("sheet-credit-1".into(), S::Album.get(lang), al.title.as_str(), width));
+            }
+            if let Some(ms) = t.duration_ms {
+                c = c.child(fact_line("sheet-credit-2".into(), S::Duration.get(lang), crate::player::fmt_time(ms), width));
+            }
+            c.child(label(S::FkCensorNoCredits.get(lang).to_owned(), th::SMALL, th::text3()).wrap().align(Align::Start).w(width).key("sheet-fkcensor-note"))
+        }
         _ => col().w(width).gap(14.0).child(fact_line("sheet-credit-0".into(), S::Artist.get(lang), t.artists_line(), width)),
     };
     section("sheet-credits", S::SheetCredits.get(lang), list)

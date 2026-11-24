@@ -65,17 +65,33 @@ impl State {
     }
 
     /// Opens or closes the Now Playing page and records the transition in navigation history.
+    ///
+    /// The open player is one step on top of the page under it. Closing it steps back off it, so
+    /// forward opens it again. It never leaves an "open player" entry in the back history:
+    /// otherwise back would reopen the player after every close and the pages behind it could
+    /// not be reached.
     pub fn set_np(&mut self, open: bool) {
         let open = open && self.current().is_some();
         self.menu_open = false;
         self.tmenu_open = false;
         self.close_volume();
         if self.np_open != open {
-            self.history.push((self.page.clone(), self.np_open));
-            if self.history.len() > 40 {
-                self.history.remove(0);
+            let under = (self.page.clone(), false);
+            let over = (self.page.clone(), true);
+            if open {
+                if self.forward.last() == Some(&over) {
+                    self.forward.pop();
+                } else {
+                    self.forward.clear();
+                }
+                self.history.push(under);
+                if self.history.len() > 40 {
+                    self.history.remove(0);
+                }
+            } else if self.history.last() == Some(&under) {
+                self.history.pop();
+                self.forward.push(over);
             }
-            self.forward.clear();
             crate::diag_log::event("ui", if open { "np open" } else { "np close" });
             self.log_mem(if open { "np:open" } else { "np:close" });
             self.art_trim_at = Some(self.now + 2.5);

@@ -283,6 +283,10 @@ pub const H3: TextStyle = TextStyle::new(14.0, 600.0).family(SANS).lh(19.0);
 pub const BODY: TextStyle = TextStyle::new(14.0, 400.0).family(SANS).lh(20.0);
 pub const BODY_M: TextStyle = TextStyle::new(14.0, 500.0).family(SANS).lh(20.0);
 pub const SMALL: TextStyle = TextStyle::new(12.5, 400.0).family(SANS).lh(17.0);
+/// A card's name under its cover, and the artists under that: a size down from the list, and
+/// lighter, so a row of covers reads as pictures first.
+pub const CARD_NAME: TextStyle = TextStyle::new(13.5, 450.0).family(SANS).lh(18.0);
+pub const CARD_BY: TextStyle = TextStyle::new(12.0, 400.0).family(SANS).lh(16.0);
 /// The line under a title, and longer reading (an artist's story).
 pub const LEAD: TextStyle = TextStyle::new(15.5, 400.0).family(SANS).lh(24.0);
 /// Section labels and tags: small, medium, in sentence case.

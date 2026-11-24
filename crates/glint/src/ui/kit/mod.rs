@@ -27,7 +27,7 @@ pub use media::{
     artist_line_width, artists_row_in_width, cover, cover_border, cover_sm, cover_tile, picture_url, playing_cover, playing_cover_lg, roll, seg_wave, track_title, wave_card,
     wave_glyph,
 };
-pub use rows::{ListSrc, ROW_COVER, ROW_COVER_R, ROW_H, ROW_PAD, ROW_TIME_INSET, bleed, explicit_badge, np_like_button, track_fields, queue_row, track_row};
+pub use rows::{ListSrc, ROW_COVER, ROW_COVER_R, ROW_H, ROW_PAD, ROW_TIME_INSET, bleed, explicit_badge, np_like_button, track_bones, track_fields, queue_row, track_row};
 
 pub const TITLE_H: f32 = 60.0;
 pub const CAPTION_H: f32 = if cfg!(target_os = "windows") { 44.0 } else { TITLE_H };

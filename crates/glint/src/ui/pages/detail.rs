@@ -377,7 +377,9 @@ pub(super) fn detail(s: &State, w: f32) -> El {
                 body = body.child(e);
             }
         }
-        _ => {}
+        // Rows in the shape of tracks while the list loads; an album's start with a number.
+        Load::Loading => body = body.child(kit::track_bones("d-track-bones", 8, !matches!(d.page, Some(Page::Album(_))))),
+        Load::Idle => {}
     }
     let page_el = kit::scroll_page_live(key, body);
     if let Page::Playlist(uid, kind) = s.page {

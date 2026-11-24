@@ -43,6 +43,8 @@ pub(super) fn hscroll(key: String, cards: Vec<El>) -> El {
             .gap(CARD_GAP)
             .py(6.0)
             .scroll_x()
+            // Cards fade out at the edges while more of the row is hidden behind them.
+            .scroll_edge_fade(36.0)
             .on_scroll_offset(move |p: rune::ScrollPos| {
                 ROWS.with_borrow_mut(|m| {
                     m.insert(watch.clone(), [p.offset[0], p.max[0], p.viewport[0]]);
@@ -160,17 +162,17 @@ fn media_card(s: &State, spec: CardSpec<'_>, play: OnPlay, on: impl Fn(&mut Stat
     }
     let reduce = s.settings.reduce_motion;
     let moving = kit::marquee_on(s, &key);
-    let name_w = rune::text::measure(&title, &[], th::BODY_M, None).0.ceil();
+    let name_w = rune::text::measure(&title, &[], th::CARD_NAME, None).0.ceil();
     let name = title.clone();
     let mut lines = col().w(size).min_w(0.0).gap(1.0);
     if round {
         lines = lines.items_center();
     }
-    lines = lines.child(kit::marquee(format!("{key}-name"), size, name_w, moving, reduce, move || label(name.clone(), th::BODY_M, th::text())));
+    lines = lines.child(kit::marquee(format!("{key}-name"), size, name_w, moving, reduce, move || label(name.clone(), th::CARD_NAME, th::text())));
     if !text.artists.is_empty() {
-        lines = lines.child(kit::artists_row_in_width(s, &text.artists, th::SMALL, false, &format!("{key}-ar"), th::text2(), size, moving));
+        lines = lines.child(kit::artists_row_in_width(s, &text.artists, th::CARD_BY, false, &format!("{key}-ar"), th::text2(), size, moving));
     } else if !text.by.is_empty() {
-        lines = lines.child(label(text.by, th::SMALL, th::text2()).truncate().max_w(size).min_w(0.0));
+        lines = lines.child(label(text.by, th::CARD_BY, th::text2()).truncate().max_w(size).min_w(0.0));
     }
     if !text.facts.is_empty() || text.explicit {
         let mut facts = row().key(format!("{key}-facts")).max_w(size).min_w(0.0).mt(2.0).gap(6.0).items_center();

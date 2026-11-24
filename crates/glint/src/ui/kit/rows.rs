@@ -46,6 +46,40 @@ pub enum ListSrc {
 }
 
 /// What a track filter looks through: the title, the artists and the album.
+/// Rows in the shape of tracks while a list loads: a cover (or an album's number), the title
+/// and artists in two lines of different lengths, and the time at the right.
+pub fn track_bones(key: &str, n: usize, covers: bool) -> El {
+    const TITLES: [f32; 8] = [0.42, 0.30, 0.36, 0.48, 0.27, 0.39, 0.33, 0.45];
+    const BYS: [f32; 8] = [0.20, 0.16, 0.24, 0.18, 0.14, 0.22, 0.17, 0.19];
+    let mut list = col().key(key.to_owned()).w_full();
+    for i in 0..n {
+        let lead = if covers {
+            el().w(ROW_COVER).h(ROW_COVER).radius(ROW_COVER_R).fill(super::bone_fill())
+        } else {
+            row().w(ROW_NUM).h(ROW_COVER).center().child(el().w(10.0).h(10.0).radius(5.0).fill(super::bone_fill()))
+        };
+        let words = col()
+            .grow(1.0)
+            .min_w(0.0)
+            .gap(8.0)
+            .child(row().w_full().child(el().w_frac(TITLES[i % 8]).h(10.0).radius(5.0).fill(super::bone_fill())))
+            .child(row().w_full().child(el().w_frac(BYS[i % 8]).h(8.0).radius(4.0).fill(super::bone_fill())));
+        list = list.child(
+            row()
+                .key(format!("{key}-{i}"))
+                .w_full()
+                .h(ROW_H)
+                .px(ROW_PAD)
+                .gap(if covers { 12.0 } else { ROW_NUM_GAP })
+                .items_center()
+                .child(lead)
+                .child(words)
+                .child(el().w(28.0).h(8.0).radius(4.0).fill(super::bone_fill())),
+        );
+    }
+    list
+}
+
 pub fn track_fields(t: &Track) -> Vec<String> {
     let mut f = vec![t.full_title(), t.artists_line()];
     f.extend(t.albums.first().map(|a| a.title.clone()));

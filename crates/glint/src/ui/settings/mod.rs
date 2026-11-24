@@ -98,6 +98,9 @@ impl State {
     pub fn close_settings(&mut self) {
         self.settings_open = false;
         self.settings_find.clear();
+        // Clearing keeps the field's focus; without this its caret shows the next time Settings
+        // opens, in a field nobody clicked.
+        self.settings_find.focused = false;
         self.settings_found = None;
         self.rebind = None;
         self.close_popover();

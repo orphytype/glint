@@ -247,20 +247,27 @@ fn np_source(s: &State, w: f32, h: f32, lead: f32, trail: f32, t: f32, settled: 
     let (cover_x, cover) = np::cover_span(s, w, h);
     let c = dock::CHIP;
     // Stay centered over the cover, never touching `np-close` on the left, the window caption
-    // controls on the right, or sticking out past the cover's edges.
+    // controls on the right, or sticking out past the cover's edges. The room is the same on both
+    // sides of the center, so a long name shortens instead of pushing the pill off center.
     let min_x = kit::CHROME_INSET + lead + c + 12.0;
     let win_right = (w - trail - 16.0).max(min_x + 80.0);
     let left_bound = min_x.max(cover_x);
-    let right_bound = (cover_x + cover).min(win_right).max(left_bound + 80.0).min(win_right);
-    let max_pw = (right_bound - left_bound).max(80.0);
+    let right_bound = (cover_x + cover).min(win_right);
+    let mut cx = cover_x + cover * 0.5;
+    let mut half = (cx - left_bound).min(right_bound - cx);
+    // Too little room over the cover: center in the free band of the title row instead.
+    if half < 60.0 {
+        cx = (min_x + win_right) * 0.5;
+        half = (win_right - min_x) * 0.5;
+    }
+    let max_pw = (half * 2.0).max(80.0);
     let overhead = 14.0 + 18.0 + 8.0 + 14.0;
     let max_text = (max_pw - overhead).max(0.0);
     let tw = rune::text::measure(&text, &[], th::SMALL, None).0.ceil().min(max_text);
     let pw = (overhead + tw + 2.0).min(max_pw);
     let glyph = if from.wave { kit::wave_glyph(18.0, th::text().alpha(t)) } else { icon(&icons::QUEUE, 16.0).color(th::text().alpha(t)).w(18.0) };
     let page = from.page.clone();
-    let cx = cover_x + cover * 0.5;
-    let px = (cx - pw * 0.5).clamp(left_bound, (right_bound - pw).max(left_bound));
+    let px = cx - pw * 0.5;
     let slide = if s.is_resizing() || !settled { rune::Spring::NONE } else { th::SLIDE };
     let mut pill = row()
         .key("np-source")

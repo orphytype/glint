@@ -27,9 +27,11 @@ pub const SCENES: &[(&str, Scene)] = &[
     ("library", library),
     ("library-albums", library_albums),
     ("album", album),
+    ("album-loading", album_loading),
     ("playlist", playlist),
     ("playlist-own", playlist_own),
     ("queue-from", queue_from),
+    ("np-from-long", np_from_long),
     ("artist", artist),
     ("nowplaying", nowplaying),
     ("nowplaying-wave", nowplaying_wave),
@@ -227,6 +229,15 @@ fn library_albums(s: &mut State) {
     play(s, &c, 1, 95_000);
 }
 
+/// An album page whose tracks are still on their way: the list shows its skeleton.
+fn album_loading(s: &mut State) {
+    let c = signed_in(s);
+    let id = c.albums[2].id.clone();
+    s.history.push((Page::Home, false));
+    s.page = Page::Album(id.clone());
+    s.begin_detail(Page::Album(id));
+}
+
 fn album(s: &mut State) {
     let c = signed_in(s);
     let id = c.albums[2].id.clone();
@@ -266,6 +277,15 @@ fn queue_from(s: &mut State) {
     s.np_open = true;
     s.np.t = 1.0;
     s.np_tab = NpTab::Queue;
+}
+
+/// The player in a narrow window, playing from a source with a long name: the pill above the
+/// cover shortens its text and stays centered.
+fn np_from_long(s: &mut State) {
+    nowplaying(s);
+    s.lang = Lang::Ru;
+    let name = crate::app::FromName::Text("Очень длинное название релиза, которое не помещается над обложкой".into());
+    s.playing_from = Some(crate::app::PlayingFrom { wave: true, kind: S::WaveByRelease, name, page: None });
 }
 
 fn artist(s: &mut State) {
@@ -526,10 +546,10 @@ fn update_popover(s: &mut State) {
     home_ru(s);
     s.update_method = glint_update::Method::WindowsInstaller;
     s.update = crate::update::Ui::Available(glint_update::Release {
-        version: "0.9.4".into(),
-        page_url: "https://github.com/orphytype/glint/releases/tag/v0.9.4".into(),
+        version: "0.9.5".into(),
+        page_url: "https://github.com/orphytype/glint/releases/tag/v0.9.5".into(),
         notes: "Audio quality gets a pill in the mini player and a picker for batch downloads.\n• The quality menu shows each tier with its bitrate.\n• Covers load at the size each view needs, with the large Now Playing cover showing the cached one first.".into(),
-        asset: Some(glint_update::Asset { name: "Glint-0.9.4-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
+        asset: Some(glint_update::Asset { name: "Glint-0.9.5-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
     });
     s.open_popover(crate::app::Popover::Update { anchor: "update-pill".into() });
     s.pop.t = 1.0;
@@ -681,10 +701,10 @@ fn settings_update(s: &mut State) {
     settings(s);
     s.update_method = glint_update::Method::WindowsInstaller;
     s.update = crate::update::Ui::Available(glint_update::Release {
-        version: "0.9.4".into(),
-        page_url: "https://github.com/orphytype/glint/releases/tag/v0.9.4".into(),
+        version: "0.9.5".into(),
+        page_url: "https://github.com/orphytype/glint/releases/tag/v0.9.5".into(),
         notes: "Audio quality gets a pill in the mini player and a picker for batch downloads.\n• The quality menu shows each tier with its bitrate.".into(),
-        asset: Some(glint_update::Asset { name: "Glint-0.9.4-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
+        asset: Some(glint_update::Asset { name: "Glint-0.9.5-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
     });
 }
 

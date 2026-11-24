@@ -46,6 +46,11 @@ impl FkCensor {
         self.catalog.read().ok()?.replacements.get(track_id).cloned()
     }
 
+    /// Whether the track comes from FckCensor: its audio, or its title and artists.
+    pub fn knows(&self, track_id: &str) -> bool {
+        self.catalog.read().ok().is_some_and(|c| c.replacements.contains_key(track_id) || c.tracks.contains_key(track_id))
+    }
+
     pub fn has_track(&self, track_id: &str) -> bool {
         self.catalog.read().ok().is_some_and(|c| c.replacements.contains_key(track_id))
     }

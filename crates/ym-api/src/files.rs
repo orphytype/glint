@@ -1,6 +1,10 @@
-//! The signed `get-file-info` endpoint: what the current desktop client streams from, and the only
-//! route to lossless (FLAC) audio. Requests carry an HMAC signature over the timestamp, the track,
-//! the quality and the accepted codecs; the answer is a plain (unencrypted, `raw` transport) URL.
+//! The signed file-info endpoint: what the current desktop client streams from, and the only route
+//! to lossless (FLAC) audio. Requests carry an HMAC signature over the timestamp, the track, the
+//! quality and the accepted codecs; the answer is a plain (unencrypted, `raw` transport) URL.
+//!
+//! The service moved it from `get-file-info` to `resources/v2/file-info`. The query and the
+//! signature are the same. The new one answers with the file info itself, where the old one
+//! wrapped it in `downloadInfo`. The old path still answers, so it stays as the fallback.
 
 use reqwest::Method;
 use serde::Deserialize;
@@ -27,16 +31,24 @@ struct FileInfo {
 }
 
 impl Client {
-    /// A playable URL for `track_id` from the signed file-info endpoint. Encrypted renditions
-    /// (`encraw`) are refused; we ask for `raw` only.
+    /// A playable URL for `track_id` from the signed file-info endpoint, the new path first and
+    /// the old one when that fails. Encrypted renditions (`encraw`) are refused; we ask for `raw`
+    /// only.
     pub async fn file_info(&self, track_id: &str, quality: Quality) -> Result<StreamInfo> {
+        match self.file_info_at("/resources/v2/file-info", track_id, quality).await {
+            Ok(info) => Ok(info),
+            Err(_) => self.file_info_at("/get-file-info", track_id, quality).await,
+        }
+    }
+
+    async fn file_info_at(&self, path: &str, track_id: &str, quality: Quality) -> Result<StreamInfo> {
         let id = seg(track_id)?.split(':').next().unwrap_or(track_id).to_owned();
         let ts = crate::client::unix_millis() / 1000;
         let q = quality.file_info_name();
         let sign = sign::file_info_sign(ts, &id, q, &CODECS, TRANSPORT);
         let ts = ts.to_string();
         let codecs = CODECS.join(",");
-        let rb = self.api(Method::GET, "/get-file-info").header("X-Yandex-Music-Client", FILE_INFO_CLIENT).query(&[
+        let rb = self.api(Method::GET, path).header("X-Yandex-Music-Client", FILE_INFO_CLIENT).query(&[
             ("ts", ts.as_str()),
             ("trackId", id.as_str()),
             ("quality", q),
@@ -45,7 +57,12 @@ impl Client {
             ("sign", sign.as_str()),
         ]);
         let mut v = self.call(rb).await?;
-        let info: FileInfo = from_value(v.get_mut("downloadInfo").map(Value::take).unwrap_or(Value::Null), "file info")?;
+        // The old path wraps it in `downloadInfo`; the new one answers with it as it is.
+        let body = match ["fileInfo", "downloadInfo"].iter().find_map(|k| v.get_mut(*k).map(Value::take)) {
+            Some(inner) => inner,
+            None => v,
+        };
+        let info: FileInfo = from_value(body, "file info")?;
         stream_from(info)
     }
 }

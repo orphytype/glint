@@ -22,7 +22,8 @@ impl State {
         }
         let Some(app) = self.app.clone() else { return };
         self.desktop = Some(Desktop::start(self.lang, self.settings.show_tray, move |command| match command {
-            Command::Show => app.open(),
+            // The window takes the mini player's place, as the mini player's own expand does.
+            Command::Show => app.update(|s, _| s.expand_mini_player()),
             Command::Quit => app.quit(),
             other => app.update(move |s, tx| {
                 let was = s.track_mark();
