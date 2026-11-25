@@ -4,23 +4,7 @@
 //! service already provides the title, artists, album, year and genre on the track model, while
 //! the cover is fetched as PNG bytes before this module is called.
 
-use std::borrow::Cow;
-
 use ym_api::Track;
-
-/// Skip in-memory full-file copy tagging above 256 MiB so multi-hour tracks do not double RAM use.
-const MAX_TAG_IN_MEMORY: usize = 256 << 20;
-
-pub fn embed<'a>(audio: &'a [u8], ext: &str, track: &Track, cover: Option<&[u8]>) -> Cow<'a, [u8]> {
-    if audio.len() > MAX_TAG_IN_MEMORY {
-        return Cow::Borrowed(audio);
-    }
-    match ext {
-        "flac" => embed_flac(audio, track, cover).map_or(Cow::Borrowed(audio), Cow::Owned),
-        "mp3" => Cow::Owned(embed_mp3(audio, track, cover)),
-        _ => Cow::Borrowed(audio),
-    }
-}
 
 fn metadata(track: &Track) -> (String, String, Option<String>, Option<String>, String) {
     let album = track.album();
@@ -28,41 +12,6 @@ fn metadata(track: &Track) -> (String, String, Option<String>, Option<String>, S
     let year = album.and_then(|a| a.year).map(|v| v.to_string()).or_else(|| album.and_then(|a| a.release_date.as_deref()).and_then(|v| v.get(..4)).map(str::to_owned));
     let genre = album.and_then(|a| a.genre.clone()).filter(|v| !v.is_empty());
     (track.full_title(), track.artists_line(), year, genre, album_title)
-}
-
-fn embed_mp3(audio: &[u8], track: &Track, cover: Option<&[u8]>) -> Vec<u8> {
-    let (title, artist, year, genre, album) = metadata(track);
-    let mut tag = Vec::new();
-    text_frame(&mut tag, *b"TIT2", &title);
-    text_frame(&mut tag, *b"TPE1", &artist);
-    if !album.is_empty() {
-        text_frame(&mut tag, *b"TALB", &album);
-    }
-    if let Some(year) = year {
-        text_frame(&mut tag, *b"TDRC", &year);
-        text_frame(&mut tag, *b"TYER", &year);
-    }
-    if let Some(genre) = genre {
-        text_frame(&mut tag, *b"TCON", &genre);
-    }
-    if let Some(image) = cover.filter(|bytes| !bytes.is_empty()) {
-        let mut frame = vec![3];
-        frame.extend_from_slice(b"image/png");
-        frame.push(0);
-        frame.push(3);
-        frame.push(0);
-        frame.extend_from_slice(image);
-        frame_with_payload(&mut tag, *b"APIC", &frame);
-    }
-
-    let mut out = Vec::with_capacity(10 + tag.len() + audio.len());
-    out.extend_from_slice(b"ID3");
-    // ID3v2.4: UTF-8 text (encoding 3) is only valid here, and so are the syncsafe frame sizes.
-    out.extend_from_slice(&[4, 0, 0]);
-    out.extend_from_slice(&syncsafe(tag.len() as u32));
-    out.extend_from_slice(&tag);
-    out.extend_from_slice(strip_id3(audio));
-    out
 }
 
 fn text_frame(tag: &mut Vec<u8>, id: [u8; 4], value: &str) {
@@ -82,79 +31,6 @@ fn frame_with_payload(tag: &mut Vec<u8>, id: [u8; 4], payload: &[u8]) {
 
 fn syncsafe(value: u32) -> [u8; 4] {
     [((value >> 21) & 0x7f) as u8, ((value >> 14) & 0x7f) as u8, ((value >> 7) & 0x7f) as u8, (value & 0x7f) as u8]
-}
-
-fn strip_id3(audio: &[u8]) -> &[u8] {
-    if audio.len() < 10 || &audio[..3] != b"ID3" {
-        return audio;
-    }
-    let size = (u32::from(audio[6] & 0x7f) << 21) | (u32::from(audio[7] & 0x7f) << 14) | (u32::from(audio[8] & 0x7f) << 7) | u32::from(audio[9] & 0x7f);
-    let end = 10usize.saturating_add(size as usize).min(audio.len());
-    &audio[end..]
-}
-
-fn embed_flac(audio: &[u8], track: &Track, cover: Option<&[u8]>) -> Option<Vec<u8>> {
-    if audio.len() < 4 || &audio[..4] != b"fLaC" {
-        return None;
-    }
-    let mut blocks = Vec::new();
-    let mut at = 4;
-    loop {
-        if at + 4 > audio.len() {
-            return None;
-        }
-        let header = u32::from_be_bytes([audio[at], audio[at + 1], audio[at + 2], audio[at + 3]]);
-        let last = header & 0x8000_0000 != 0;
-        let kind = (header >> 24) as u8 & 0x7f;
-        let len = (header & 0x00ff_ffff) as usize;
-        at += 4;
-        if at + len > audio.len() {
-            return None;
-        }
-        blocks.push((kind, audio[at..at + len].to_vec()));
-        at += len;
-        if last {
-            break;
-        }
-    }
-
-    // A FLAC file has at most one VORBIS_COMMENT block, and a re-tag must replace the old picture
-    // instead of leaving a second one behind.
-    blocks.retain(|(kind, _)| *kind != 4 && *kind != 6);
-
-    let (title, artist, year, genre, album) = metadata(track);
-    let mut comments = Vec::new();
-    comments.push(("TITLE", title));
-    comments.push(("ARTIST", artist));
-    if !album.is_empty() {
-        comments.push(("ALBUM", album));
-    }
-    if let Some(year) = year {
-        comments.push(("DATE", year));
-    }
-    if let Some(genre) = genre {
-        comments.push(("GENRE", genre));
-    }
-    let comment = vorbis_comments(&comments);
-    blocks.push((4, comment));
-    if let Some(image) = cover.filter(|bytes| !bytes.is_empty()) {
-        blocks.push((6, picture_block(image)));
-    }
-
-    let mut out = Vec::with_capacity(audio.len() + 1024 + cover.map_or(0, |c| c.len() + 64));
-    out.extend_from_slice(b"fLaC");
-    for (index, (kind, data)) in blocks.iter().enumerate() {
-        let last = index + 1 == blocks.len();
-        let len = u32::try_from(data.len()).ok()?;
-        if len > 0x00ff_ffff {
-            return None;
-        }
-        let header = (u32::from(last) << 31) | ((*kind as u32) << 24) | len;
-        out.extend_from_slice(&header.to_be_bytes());
-        out.extend_from_slice(data);
-    }
-    out.extend_from_slice(&audio[at..]);
-    Some(out)
 }
 
 fn vorbis_comments(comments: &[(&str, String)]) -> Vec<u8> {
@@ -436,91 +312,311 @@ pub fn mp4_has_flac_path(path: &std::path::Path) -> bool {
     false
 }
 
-/// Remuxes an unencrypted `flac-mp4` buffer into a native `.flac` stream without re-encoding.
-/// Returns `None` if the buffer is too large to copy in RAM or does not contain a valid FLAC track.
-pub fn remux_flac_from_mp4(mp4: &[u8]) -> Option<Vec<u8>> {
-    if mp4.len() > MAX_TAG_IN_MEMORY || mp4.len() < 16 || &mp4[4..8] != b"ftyp" {
-        return None;
+fn build_id3v2_header(track: &Track, cover: Option<&[u8]>) -> Vec<u8> {
+    let (title, artist, year, genre, album) = metadata(track);
+    let mut tag = Vec::new();
+    text_frame(&mut tag, *b"TIT2", &title);
+    text_frame(&mut tag, *b"TPE1", &artist);
+    if !album.is_empty() {
+        text_frame(&mut tag, *b"TALB", &album);
     }
-    let moov = mp4_child(mp4, *b"moov")?;
-    let stbl = mp4_children(moov)
+    if let Some(year) = year {
+        text_frame(&mut tag, *b"TDRC", &year);
+        text_frame(&mut tag, *b"TYER", &year);
+    }
+    if let Some(genre) = genre {
+        text_frame(&mut tag, *b"TCON", &genre);
+    }
+    if let Some(image) = cover.filter(|bytes| !bytes.is_empty()) {
+        let mut frame = vec![3];
+        frame.extend_from_slice(b"image/png");
+        frame.push(0);
+        frame.push(3);
+        frame.push(0);
+        frame.extend_from_slice(image);
+        frame_with_payload(&mut tag, *b"APIC", &frame);
+    }
+    let mut out = Vec::with_capacity(10 + tag.len());
+    out.extend_from_slice(b"ID3");
+    out.extend_from_slice(&[4, 0, 0]);
+    out.extend_from_slice(&syncsafe(tag.len() as u32));
+    out.extend_from_slice(&tag);
+    out
+}
+
+fn flac_tag_blocks(track: &Track, cover: Option<&[u8]>) -> Vec<(u8, Vec<u8>)> {
+    let (title, artist, year, genre, album) = metadata(track);
+    let mut comments = Vec::new();
+    comments.push(("TITLE", title));
+    comments.push(("ARTIST", artist));
+    if !album.is_empty() {
+        comments.push(("ALBUM", album));
+    }
+    if let Some(year) = year {
+        comments.push(("DATE", year));
+    }
+    if let Some(genre) = genre {
+        comments.push(("GENRE", genre));
+    }
+    let mut blocks = vec![(4, vorbis_comments(&comments))];
+    if let Some(image) = cover.filter(|bytes| !bytes.is_empty()) {
+        blocks.push((6, picture_block(image)));
+    }
+    blocks
+}
+
+fn write_flac_blocks(writer: &mut impl std::io::Write, blocks: &[(u8, Vec<u8>)]) -> std::io::Result<bool> {
+    writer.write_all(b"fLaC")?;
+    for (index, (kind, data)) in blocks.iter().enumerate() {
+        let last = index + 1 == blocks.len();
+        let Ok(len) = u32::try_from(data.len()) else { return Ok(false) };
+        if len > 0x00ff_ffff {
+            return Ok(false);
+        }
+        let header = (u32::from(last) << 31) | (u32::from(*kind) << 24) | len;
+        writer.write_all(&header.to_be_bytes())?;
+        writer.write_all(data)?;
+    }
+    Ok(true)
+}
+
+/// Streams a `flac-mp4` file into a native tagged `.flac` file on disk using a small 64 KiB copy
+/// buffer, keeping RAM usage flat even for multi-hundred-megabyte lossless tracks.
+pub fn remux_flac_from_mp4_file(src: &std::path::Path, dst: &std::path::Path, track: &Track, cover: Option<&[u8]>) -> bool {
+    use std::io::{BufWriter, Read as _, Seek as _, SeekFrom, Write as _};
+
+    let Ok(mut f) = std::fs::File::open(src) else { return false };
+    let Ok(file_len) = f.metadata().map(|m| m.len()) else { return false };
+    let mut moov_bytes: Option<Vec<u8>> = None;
+    let mut at = 0u64;
+    while at + 8 <= file_len {
+        if f.seek(SeekFrom::Start(at)).is_err() {
+            return false;
+        }
+        let mut h = [0u8; 16];
+        if f.read_exact(&mut h[..8]).is_err() {
+            return false;
+        }
+        let (head, size) = match mp4_be32(&h, 0) {
+            Some(0) => (8u64, file_len - at),
+            Some(1) => {
+                if f.read_exact(&mut h[8..]).is_err() {
+                    return false;
+                }
+                let Some(s) = mp4_be64(&h, 8) else { return false };
+                (16u64, s)
+            }
+            Some(s) => (8u64, u64::from(s)),
+            None => return false,
+        };
+        if size < head || at + size > file_len {
+            return false;
+        }
+        if &h[4..8] == b"moov" {
+            let body_len = (size - head) as usize;
+            if body_len > 16 << 20 {
+                return false;
+            }
+            let mut buf = vec![0u8; body_len];
+            if f.read_exact(&mut buf).is_err() {
+                return false;
+            }
+            moov_bytes = Some(buf);
+            break;
+        }
+        at += size;
+    }
+    let Some(moov) = moov_bytes else { return false };
+    let Some(stbl) = mp4_children(&moov)
         .into_iter()
         .filter(|(k, _)| k == b"trak")
-        .find_map(|(_, t)| mp4_child(t, *b"mdia").and_then(|m| mp4_child(m, *b"minf")).and_then(|m| mp4_child(m, *b"stbl")).filter(|s| mp4_stbl_has_flac(s)))?;
-
-    let stsd = mp4_child(stbl, *b"stsd")?;
-    let entry = mp4_child(stsd.get(8..)?, *b"fLaC")?;
-    let dfla = mp4_child(entry.get(28..)?, *b"dfLa")?;
-    let mut blocks: Vec<(u8, &[u8])> = Vec::new();
-    let mut b = dfla.get(4..)?;
+        .find_map(|(_, t)| mp4_child(t, *b"mdia").and_then(|m| mp4_child(m, *b"minf")).and_then(|m| mp4_child(m, *b"stbl")).filter(|s| mp4_stbl_has_flac(s)))
+    else {
+        return false;
+    };
+    let Some(stsd) = mp4_child(stbl, *b"stsd") else { return false };
+    let Some(entry) = stsd.get(8..).and_then(|s| mp4_child(s, *b"fLaC")) else { return false };
+    let Some(dfla) = entry.get(28..).and_then(|s| mp4_child(s, *b"dfLa")) else { return false };
+    let mut blocks: Vec<(u8, Vec<u8>)> = Vec::new();
+    let Some(mut b) = dfla.get(4..) else { return false };
     while b.len() >= 4 {
         let len = ((b[1] as usize) << 16) | ((b[2] as usize) << 8) | (b[3] as usize);
-        let body = b.get(4..4 + len)?;
-        blocks.push((b[0] & 0x7f, body));
+        let Some(body) = b.get(4..4 + len) else { return false };
+        let kind = b[0] & 0x7f;
+        if kind != 4 && kind != 6 {
+            blocks.push((kind, body.to_vec()));
+        }
         if b[0] & 0x80 != 0 {
             break;
         }
         b = &b[4 + len..];
     }
     if blocks.first().map(|(kind, _)| *kind) != Some(0) {
-        return None;
+        return false;
     }
+    blocks.extend(flac_tag_blocks(track, cover));
 
-    let stsz = mp4_child(stbl, *b"stsz")?;
-    let fixed = mp4_be32(stsz, 4)?;
-    let count = mp4_be32(stsz, 8)? as usize;
-    let sample_size = |i: usize| -> Option<usize> {
-        if fixed != 0 { Some(fixed as usize) } else { mp4_be32(stsz, 12 + 4 * i).map(|s| s as usize) }
+    let Some(stsz) = mp4_child(stbl, *b"stsz") else { return false };
+    let Some(fixed) = mp4_be32(stsz, 4) else { return false };
+    let Some(count) = mp4_be32(stsz, 8).map(|c| c as usize) else { return false };
+    let sample_size = |i: usize| -> Option<u64> {
+        if fixed != 0 { Some(u64::from(fixed)) } else { mp4_be32(stsz, 12 + 4 * i).map(u64::from) }
     };
-
-    let offsets: Vec<usize> = if let Some(co) = mp4_child(stbl, *b"stco") {
-        let n = mp4_be32(co, 4)? as usize;
-        (0..n).map(|i| mp4_be32(co, 8 + 4 * i).map(|o| o as usize)).collect::<Option<_>>()?
+    let offsets: Vec<u64> = if let Some(co) = mp4_child(stbl, *b"stco") {
+        let Some(n) = mp4_be32(co, 4).map(|n| n as usize) else { return false };
+        let Some(v) = (0..n).map(|i| mp4_be32(co, 8 + 4 * i).map(u64::from)).collect::<Option<Vec<_>>>() else { return false };
+        v
     } else {
-        let co = mp4_child(stbl, *b"co64")?;
-        let n = mp4_be32(co, 4)? as usize;
-        (0..n).map(|i| mp4_be64(co, 8 + 8 * i).and_then(|o| usize::try_from(o).ok())).collect::<Option<_>>()?
+        let Some(co) = mp4_child(stbl, *b"co64") else { return false };
+        let Some(n) = mp4_be32(co, 4).map(|n| n as usize) else { return false };
+        let Some(v) = (0..n).map(|i| mp4_be64(co, 8 + 8 * i)).collect::<Option<Vec<_>>>() else { return false };
+        v
+    };
+    let Some(stsc) = mp4_child(stbl, *b"stsc") else { return false };
+    let Some(run_count) = mp4_be32(stsc, 4).map(|n| n as usize) else { return false };
+    let Some(runs) = (0..run_count)
+        .map(|i| Some((mp4_be32(stsc, 8 + 12 * i)? as usize, mp4_be32(stsc, 12 + 12 * i)? as usize)))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
     };
 
-    let stsc = mp4_child(stbl, *b"stsc")?;
-    let run_count = mp4_be32(stsc, 4)? as usize;
-    let runs: Vec<(usize, usize)> = (0..run_count).map(|i| Some((mp4_be32(stsc, 8 + 12 * i)? as usize, mp4_be32(stsc, 12 + 12 * i)? as usize))).collect::<Option<_>>()?;
-
-    let mut parts: Vec<(usize, usize)> = Vec::new();
+    let mut parts: Vec<(u64, u64)> = Vec::new();
     let mut sample = 0usize;
-    let mut total_audio = 0usize;
     for (chunk_idx, &off) in offsets.iter().enumerate() {
         let per = runs.iter().take_while(|(first, _)| *first <= chunk_idx + 1).last().map_or(0, |r| r.1);
-        let mut chunk_len = 0usize;
+        let mut chunk_len = 0u64;
         for _ in 0..per.min(count.saturating_sub(sample)) {
-            chunk_len = chunk_len.checked_add(sample_size(sample)?)?;
+            let Some(sz) = sample_size(sample) else { return false };
+            let Some(next) = chunk_len.checked_add(sz) else { return false };
+            chunk_len = next;
             sample += 1;
         }
-        total_audio = total_audio.checked_add(chunk_len)?;
+        if off.checked_add(chunk_len).is_none_or(|end| end > file_len) {
+            return false;
+        }
         match parts.last_mut() {
             Some((o, l)) if *o + *l == off => *l += chunk_len,
             _ => parts.push((off, chunk_len)),
         }
     }
     if sample != count {
-        return None;
+        return false;
     }
+    drop(moov);
 
-    let mut out = Vec::with_capacity(4 + blocks.iter().map(|(_, d)| 4 + d.len()).sum::<usize>() + total_audio);
-    out.extend_from_slice(b"fLaC");
-    for (idx, (kind, body)) in blocks.iter().enumerate() {
-        let last = if idx + 1 == blocks.len() { 0x80 } else { 0 };
-        let len = u32::try_from(body.len()).ok()?;
-        if len >= (1 << 24) {
-            return None;
+    let Ok(out_file) = std::fs::File::create(dst) else { return false };
+    let mut writer = BufWriter::with_capacity(64 * 1024, out_file);
+    if !matches!(write_flac_blocks(&mut writer, &blocks), Ok(true)) {
+        drop(writer);
+        let _ = std::fs::remove_file(dst);
+        return false;
+    }
+    let mut buf = vec![0u8; 64 * 1024];
+    for (off, mut rem) in parts {
+        if f.seek(SeekFrom::Start(off)).is_err() {
+            drop(writer);
+            let _ = std::fs::remove_file(dst);
+            return false;
         }
-        out.push(last | *kind);
-        out.extend_from_slice(&len.to_be_bytes()[1..]);
-        out.extend_from_slice(body);
+        while rem > 0 {
+            let want = (rem as usize).min(buf.len());
+            if f.read_exact(&mut buf[..want]).is_err() || writer.write_all(&buf[..want]).is_err() {
+                drop(writer);
+                let _ = std::fs::remove_file(dst);
+                return false;
+            }
+            rem -= want as u64;
+        }
     }
-    for (off, len) in parts {
-        let slice = mp4.get(off..off.checked_add(len)?)?;
-        out.extend_from_slice(slice);
+    if writer.flush().is_err() {
+        let _ = std::fs::remove_file(dst);
+        return false;
     }
-    Some(out)
+    true
+}
+
+/// Streams a downloaded FLAC or MP3 file from `src` to `dst` while embedding metadata and cover art,
+/// never holding the audio frames in RAM. Returns `false` if the container needs no rewrite.
+pub fn embed_file(src: &std::path::Path, dst: &std::path::Path, ext: &str, track: &Track, cover: Option<&[u8]>) -> bool {
+    use std::io::{BufReader, BufWriter, Read as _, Seek as _, SeekFrom, Write as _};
+
+    match ext {
+        "mp3" => {
+            let Ok(mut f) = std::fs::File::open(src) else { return false };
+            let mut head = [0u8; 10];
+            let skip = if f.read_exact(&mut head).is_ok() && &head[..3] == b"ID3" {
+                let size = (u64::from(head[6] & 0x7f) << 21)
+                    | (u64::from(head[7] & 0x7f) << 14)
+                    | (u64::from(head[8] & 0x7f) << 7)
+                    | u64::from(head[9] & 0x7f);
+                10u64.saturating_add(size)
+            } else {
+                0
+            };
+            if f.seek(SeekFrom::Start(skip)).is_err() {
+                return false;
+            }
+            let Ok(out_file) = std::fs::File::create(dst) else { return false };
+            let mut writer = BufWriter::with_capacity(64 * 1024, out_file);
+            let header = build_id3v2_header(track, cover);
+            if writer.write_all(&header).is_err() {
+                drop(writer);
+                let _ = std::fs::remove_file(dst);
+                return false;
+            }
+            let mut reader = BufReader::with_capacity(64 * 1024, f);
+            if std::io::copy(&mut reader, &mut writer).is_err() || writer.flush().is_err() {
+                let _ = std::fs::remove_file(dst);
+                return false;
+            }
+            true
+        }
+        "flac" => {
+            let Ok(mut f) = std::fs::File::open(src) else { return false };
+            let mut magic = [0u8; 4];
+            if f.read_exact(&mut magic).is_err() || &magic != b"fLaC" {
+                return false;
+            }
+            let mut blocks: Vec<(u8, Vec<u8>)> = Vec::new();
+            loop {
+                let mut h = [0u8; 4];
+                if f.read_exact(&mut h).is_err() {
+                    return false;
+                }
+                let header = u32::from_be_bytes(h);
+                let last = header & 0x8000_0000 != 0;
+                let kind = (header >> 24) as u8 & 0x7f;
+                let len = (header & 0x00ff_ffff) as usize;
+                if len > 16 << 20 {
+                    return false;
+                }
+                let mut data = vec![0u8; len];
+                if f.read_exact(&mut data).is_err() {
+                    return false;
+                }
+                if kind != 4 && kind != 6 {
+                    blocks.push((kind, data));
+                }
+                if last {
+                    break;
+                }
+            }
+            blocks.extend(flac_tag_blocks(track, cover));
+            let Ok(out_file) = std::fs::File::create(dst) else { return false };
+            let mut writer = BufWriter::with_capacity(64 * 1024, out_file);
+            if !matches!(write_flac_blocks(&mut writer, &blocks), Ok(true)) {
+                drop(writer);
+                let _ = std::fs::remove_file(dst);
+                return false;
+            }
+            let mut reader = BufReader::with_capacity(64 * 1024, f);
+            if std::io::copy(&mut reader, &mut writer).is_err() || writer.flush().is_err() {
+                let _ = std::fs::remove_file(dst);
+                return false;
+            }
+            true
+        }
+        _ => false,
+    }
 }

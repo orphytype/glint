@@ -3,13 +3,14 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use reqwest::Method;
 use reqwest::header::{AUTHORIZATION, USER_AGENT};
 use serde::Deserialize;
 use serde_json::Value;
 
 use super::parse::{as_i64, from_value, id_pairs, seg, unwrap_items_newest_first};
 use super::{APP_UA, BATCH, Client, Likeable, MAX_TEXT_BYTES, SearchKind, read_limited};
-use crate::models::{Account, Album, Artist, ArtistPage, Credit, Playlist, SearchResult, Track, TrackRef, donation_url, lossy_vec};
+use crate::models::{Account, Album, Artist, ArtistPage, Credit, Playlist, SearchResult, TopArtist, Track, TrackRef, donation_url, lossy_vec};
 use crate::{Error, Result};
 
 /// Yandex ID's "who am I" endpoint: the account's picture (the music API does not give it).
@@ -50,6 +51,56 @@ impl Client {
     pub async fn liked_artists(&self, uid: i64) -> Result<Vec<Artist>> {
         let v = self.get(&format!("/users/{uid}/likes/artists"), &[("with-timestamps", "true")]).await?;
         Ok(unwrap_items_newest_first(v, "artist"))
+    }
+
+    /// Account's most-listened artists over the past month with listening time and rank movement.
+    pub async fn top_artists(&self, count: u32) -> Result<Vec<TopArtist>> {
+        let count = count.clamp(1, 50);
+        let v = self.call_flex(self.desktop_api(Method::GET, &format!("/personal/top/artists/month?count={count}"))).await?;
+        let mut out = Vec::new();
+        for item in v.get("artists").and_then(Value::as_array).into_iter().flatten() {
+            let Some(raw_artist) = item.get("artist") else { continue };
+            let Ok(artist) = Artist::deserialize(raw_artist) else { continue };
+            if artist.id.is_empty() || artist.name.is_empty() {
+                continue;
+            }
+            let seconds = item.get("listenTimeSeconds").and_then(Value::as_u64).unwrap_or(0);
+            let position = item.pointer("/top/position").and_then(Value::as_u64).unwrap_or((out.len() + 1) as u64) as u32;
+            let progress = item.pointer("/top/progress").and_then(Value::as_str).unwrap_or("same").to_owned();
+            out.push(TopArtist { artist, seconds, position, progress });
+        }
+        Ok(out)
+    }
+
+    /// Playlists the account has liked (other people's or editorial playlists).
+    pub async fn liked_playlists(&self, uid: i64) -> Result<Vec<Playlist>> {
+        let v = self.get(&format!("/users/{uid}/likes/playlists"), &[]).await?;
+        Ok(unwrap_items_newest_first(v, "playlist"))
+    }
+
+    /// Disliked tracks as bare references, newest first.
+    pub async fn disliked_track_refs(&self, uid: i64) -> Result<Vec<TrackRef>> {
+        let mut v = self.get(&format!("/users/{uid}/dislikes/tracks"), &[]).await?;
+        let raw = v.pointer_mut("/library/tracks").map(Value::take).unwrap_or(Value::Null);
+        let mut refs: Vec<TrackRef> = lossy_vec(raw);
+        refs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        Ok(refs)
+    }
+
+    /// Removes tracks from the account's dislikes list.
+    pub async fn undislike_tracks(&self, uid: i64, ids: &[String]) -> Result<()> {
+        self.track_list_action(&format!("/users/{uid}/dislikes/tracks/remove"), ids).await
+    }
+
+    /// Artists the account has disliked, newest first.
+    pub async fn disliked_artists(&self, uid: i64) -> Result<Vec<Artist>> {
+        let v = self.get(&format!("/users/{uid}/dislikes/artists"), &[("with-timestamps", "true")]).await?;
+        Ok(unwrap_items_newest_first(v, "artist"))
+    }
+
+    /// Removes an artist from the account's dislikes list.
+    pub async fn undislike_artist(&self, uid: i64, id: &str) -> Result<()> {
+        self.post_form(&format!("/users/{uid}/dislikes/artists/remove"), &[("artist-ids", seg(id)?)]).await.map(drop)
     }
 
     pub async fn playlists(&self, uid: i64) -> Result<Vec<Playlist>> {

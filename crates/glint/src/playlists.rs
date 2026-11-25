@@ -130,6 +130,38 @@ impl State {
         });
     }
 
+    /// Toggles public/private visibility on one of the account's own playlists.
+    pub fn toggle_playlist_visibility(&mut self, uid: i64, kind: i64) {
+        let next_private = !self.detail.playlist_private;
+        self.detail.playlist_private = next_private;
+        let next_vis = if next_private { "private" } else { "public" };
+        if let Load::Ready(v) = &mut self.library.playlists
+            && let Some(p) = v.iter_mut().find(|p| p.owner_uid() == uid && p.kind == kind)
+        {
+            p.visibility = Some(next_vis.to_owned());
+        }
+        let b = self.backend.clone();
+        self.job(async move { b.playlist_set_visibility(uid, kind, next_private).await }, move |s, _, res| match res {
+            Ok(()) => {
+                s.save_library_snapshot();
+                let text = s.tr(if next_private { S::PlaylistMadePrivate } else { S::PlaylistMadePublic });
+                s.toast(text);
+            }
+            Err(e) => {
+                if s.page == Page::Playlist(uid, kind) {
+                    s.detail.playlist_private = !next_private;
+                }
+                let prev_vis = if next_private { "public" } else { "private" };
+                if let Load::Ready(v) = &mut s.library.playlists
+                    && let Some(p) = v.iter_mut().find(|p| p.owner_uid() == uid && p.kind == kind)
+                {
+                    p.visibility = Some(prev_vis.to_owned());
+                }
+                s.error_toast(&e);
+            }
+        });
+    }
+
     pub fn ask_delete_playlist(&mut self, uid: i64, kind: i64) {
         self.close_popover();
         self.delete_playlist_confirm = Some((uid, kind));

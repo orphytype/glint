@@ -241,7 +241,7 @@ impl Pal {
 
 // ---- type --------------------------------------------------------------------------------------
 
-pub const SANS: Family = Family::Named("Commissioner");
+pub const SANS: Family = Family::Named("Mustica Pro");
 pub const DISPLAY: Family = Family::Named("Cormorant");
 
 /// Cormorant's weight wherever it is used.
@@ -302,7 +302,7 @@ pub const LYRIC_XS: TextStyle = display(35.0, 40.0);
 /// A line in the details card's lyrics.
 pub const LYRIC_CARD: TextStyle = display(26.0, 32.0);
 /// `style` (one of the lyric styles above, sized for Cormorant) in the face picked for the lyrics
-/// (`LyricLook::font`): 0 IBM Plex Mono, 1 Commissioner, 2 Cormorant. The mono and the sans have
+/// (`LyricLook::font`): 0 Commissioner, 1 Mustica Pro (default), 2 Cormorant. The sans faces have
 /// bigger letters for their size, so they are set smaller to stand as tall, and upright.
 pub fn lyric_face(style: TextStyle, font: u8) -> TextStyle {
     let mut t = style;
@@ -317,11 +317,11 @@ pub fn lyric_face(style: TextStyle, font: u8) -> TextStyle {
             t.italic = false;
         }
         _ => {
-            t.family = Family::Named("IBM Plex Mono");
-            t.size *= 0.70;
-            t.weight = 400.0;
-            t.tracking = -t.size * 0.01;
-            t.line_height *= 0.94;
+            t.family = Family::Named("Commissioner");
+            t.size *= 0.80;
+            t.weight = 600.0;
+            t.tracking = -t.size * 0.015;
+            t.line_height *= 0.92;
             t.italic = false;
         }
     }

@@ -2,10 +2,12 @@
 
 use super::parse::{https, seg};
 use super::{CLIENT_ID, Client, MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, Quality, StreamInfo};
+use crate::aes_ctr::Aes128Ctr;
 use crate::models::{DownloadInfo, lossy_vec};
 use crate::{Error, Result, cover, sign};
 
-/// An open streaming audio HTTP response whose body can be read chunk-by-chunk as it arrives.
+/// An open streaming audio HTTP response whose body can be read chunk-by-chunk as it arrives,
+/// decrypting `encraw` AES-128-CTR streams on the fly at the exact byte offset.
 pub struct AudioResponse {
     resp: reqwest::Response,
     /// Total file size in bytes when known from `Content-Range`, `Content-Length`, or metadata.
@@ -14,12 +16,21 @@ pub struct AudioResponse {
     pub accepts_ranges: bool,
     /// True when the server answered `206 Partial Content` for a non-zero `from` offset.
     pub partial: bool,
+    cipher: Option<Aes128Ctr>,
+    pos: u64,
 }
 
 impl AudioResponse {
-    /// Reads the next chunk from the network, returning `Ok(None)` at EOF.
+    /// Reads the next chunk from the network (decrypting in place when `encraw`), returning
+    /// `Ok(None)` at EOF.
     pub async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>> {
-        Ok(self.resp.chunk().await?.map(|b| b.to_vec()))
+        let Some(bytes) = self.resp.chunk().await? else { return Ok(None) };
+        let mut chunk = bytes.to_vec();
+        if let Some(cipher) = &self.cipher {
+            cipher.apply_at(self.pos, &mut chunk);
+        }
+        self.pos = self.pos.saturating_add(chunk.len() as u64);
+        Ok(Some(chunk))
     }
 }
 
@@ -66,6 +77,7 @@ impl Client {
             codec: pick.codec.clone(),
             bitrate_kbps: pick.bitrate_in_kbps,
             size_bytes: 0,
+            key: None,
         })
     }
 
@@ -95,7 +107,8 @@ impl Client {
         None
     }
 
-    /// Downloads the audio file. `progress(downloaded, total)` is called as chunks arrive.
+    /// Downloads the audio file, decrypting `encraw` streams when `info.key` is present.
+    /// `progress(downloaded, total)` is called as chunks arrive.
     pub async fn fetch_audio(&self, info: &StreamInfo, mut progress: impl FnMut(u64, Option<u64>)) -> Result<Vec<u8>> {
         let mut last = Error::Api("no stream URL".into());
         for url in &info.urls {
@@ -103,7 +116,12 @@ impl Client {
                 continue;
             }
             match self.fetch(url, MAX_AUDIO_BYTES, None, &mut progress).await {
-                Ok(bytes) => return Ok(bytes),
+                Ok(mut bytes) => {
+                    if let Some(key) = info.key {
+                        Aes128Ctr::new(key).apply_at(0, &mut bytes);
+                    }
+                    return Ok(bytes);
+                }
                 // A wrong signature is a 403: the next salt may be the right one.
                 Err(e @ Error::Http { .. }) => last = e,
                 Err(e) => return Err(e),
@@ -112,14 +130,16 @@ impl Client {
         Err(last)
     }
 
-    /// Streams the audio file directly to `path` on disk without buffering the whole file in RAM.
+    /// Streams the audio file directly to `path` on disk without buffering the whole file in RAM,
+    /// decrypting `encraw` chunks on the fly when `info.key` is present.
     pub async fn fetch_audio_to_file(&self, info: &StreamInfo, path: &std::path::Path) -> Result<(u64, Vec<u8>)> {
         let mut last = Error::Api("no stream URL".into());
+        let cipher = info.key.map(Aes128Ctr::new);
         for url in &info.urls {
             if !cover::is_trusted_host(url) {
                 continue;
             }
-            match self.fetch_to_file(url, MAX_AUDIO_BYTES, path).await {
+            match self.fetch_to_file(url, MAX_AUDIO_BYTES, path, cipher).await {
                 Ok(out) => return Ok(out),
                 Err(e @ Error::Http { .. }) => last = e,
                 Err(e) => return Err(e),
@@ -133,18 +153,19 @@ impl Client {
         if !url.starts_with("https://raw.githubusercontent.com/") {
             return Err(Error::Parse("replacement audio points outside GitHub raw".into()));
         }
-        self.fetch_to_file(url, MAX_AUDIO_BYTES, path).await
+        self.fetch_to_file(url, MAX_AUDIO_BYTES, path, None).await
     }
 
     /// Opens a streaming HTTP response for `info` starting at byte `from` without reading the body.
     pub async fn open_audio(&self, info: &StreamInfo, from: u64) -> Result<AudioResponse> {
         let mut last = Error::Api("no stream URL".into());
         let hint_len = (info.size_bytes > 0).then_some(info.size_bytes);
+        let cipher = info.key.map(Aes128Ctr::new);
         for url in &info.urls {
             if !cover::is_trusted_host(url) {
                 continue;
             }
-            match self.open_url_from(url, from, hint_len).await {
+            match self.open_url_from(url, from, hint_len, cipher).await {
                 Ok(resp) => return Ok(resp),
                 Err(e @ Error::Http { .. }) => last = e,
                 Err(e) => return Err(e),
@@ -158,10 +179,10 @@ impl Client {
         if !url.starts_with("https://raw.githubusercontent.com/") {
             return Err(Error::Parse("replacement audio points outside GitHub raw".into()));
         }
-        self.open_url_from(url, from, None).await
+        self.open_url_from(url, from, None, None).await
     }
 
-    async fn open_url_from(&self, url: &str, from: u64, hint_len: Option<u64>) -> Result<AudioResponse> {
+    async fn open_url_from(&self, url: &str, from: u64, hint_len: Option<u64>, cipher: Option<Aes128Ctr>) -> Result<AudioResponse> {
         let mut req = self.inner.http.get(url).header(reqwest::header::USER_AGENT, CLIENT_ID);
         if from > 0 {
             req = req.header(reqwest::header::RANGE, format!("bytes={from}-"));
@@ -187,7 +208,8 @@ impl Client {
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|v| v.eq_ignore_ascii_case("bytes"))
             || (from == 0 && total_len.is_some());
-        Ok(AudioResponse { resp, total_len, accepts_ranges, partial })
+        let pos = if partial { from } else { 0 };
+        Ok(AudioResponse { resp, total_len, accepts_ranges, partial, cipher, pos })
     }
 
     /// Loads the public FkCensorData catalog without sending the account token.

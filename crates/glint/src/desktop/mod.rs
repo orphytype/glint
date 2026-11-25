@@ -106,17 +106,13 @@ pub enum Command {
     Stop,
     /// Jump to a position (milliseconds), from the scrubber of the media flyout.
     Seek(u64),
-    /// Like the playing track, or take the like back (the tray menu).
-    Like,
-    /// Shuffle on or off (the tray menu).
-    Shuffle,
-    /// The next repeat mode (the tray menu).
-    Repeat,
-    /// Sound off, or back on (the tray menu).
-    Mute,
     /// Toggle the floating mini-player window (the tray menu).
     MiniPlayer,
-    /// Bring the window back.
+    /// Show or hide the main window (the tray menu).
+    ToggleWindow,
+    /// Check for updates from the tray menu.
+    CheckUpdates,
+    /// Bring the window back (left-clicking the tray icon).
     Show,
     Quit,
 }
@@ -143,11 +139,8 @@ pub struct Playback<'a> {
     pub dur_ms: u64,
     pub has_next: bool,
     pub has_prev: bool,
-    /// The playing track is in the user's likes.
-    pub liked: bool,
-    pub shuffle: bool,
-    pub repeat: crate::store::Repeat,
-    pub muted: bool,
+    pub window_visible: bool,
+    pub mini_open: bool,
 }
 
 impl Playback<'_> {
@@ -158,10 +151,8 @@ impl Playback<'_> {
             playing: self.playing,
             has_next: self.has_next,
             has_prev: self.has_prev,
-            liked: self.liked,
-            shuffle: self.shuffle,
-            repeat: self.repeat,
-            muted: self.muted,
+            window_visible: self.window_visible,
+            mini_open: self.mini_open,
         }
     }
 
@@ -264,17 +255,14 @@ fn drifted(tl: Timeline, pos_ms: u64, playing: bool, at: Instant) -> bool {
 
 // ---- the tray ---------------------------------------------------------------------------------
 
-const ID_SHOW: &str = "show";
+const ID_WINDOW: &str = "window";
 const ID_MINI: &str = "mini";
+const ID_UPDATES: &str = "updates";
 const ID_TOGGLE: &str = "toggle";
 const ID_PREV: &str = "prev";
 const ID_NEXT: &str = "next";
 const ID_QUIT: &str = "quit";
 const ID_HEAD: &str = "head";
-const ID_LIKE: &str = "like";
-const ID_SHUFFLE: &str = "shuffle";
-const ID_REPEAT: &str = "repeat";
-const ID_MUTE: &str = "mute";
 
 /// What the tray menu depends on besides the language and the track's name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -283,43 +271,30 @@ struct MenuState {
     playing: bool,
     has_next: bool,
     has_prev: bool,
-    liked: bool,
-    shuffle: bool,
-    repeat: crate::store::Repeat,
-    muted: bool,
+    window_visible: bool,
+    mini_open: bool,
 }
 
-/// The tray menu: what plays (a line that can't be picked), the playback, the track's like and
-/// the modes, then the window and the way out. The modes say what they are set to now; picking
-/// one moves it on.
+/// Minimalist tray menu matching Yandex Music's clean grouping while keeping the mini-player toggle
+/// and a strongly shortened track title line when playing.
 fn menu(lang: Lang, head: &str, m: MenuState) -> Vec<TrayItem> {
-    use crate::store::Repeat;
-    let toggle = if m.playing { S::TrayPause } else { S::TrayPlay };
-    let like = if m.liked { S::TrayUnlike } else { S::TrayLike };
-    let shuffle = if m.shuffle { S::TrayShuffleOn } else { S::TrayShuffleOff };
-    let repeat = match m.repeat {
-        Repeat::Off => S::TrayRepeatOff,
-        Repeat::All => S::TrayRepeatAll,
-        Repeat::One => S::TrayRepeatOne,
-    };
-    let mute = if m.muted { S::TrayUnmute } else { S::TrayMute };
-    let head = if m.has_track { menu_label(head) } else { S::TrayNothing.get(lang).to_owned() };
-    vec![
-        TrayItem::action(ID_HEAD, head).enabled(false),
-        TrayItem::Separator,
-        TrayItem::action(ID_TOGGLE, toggle.get(lang)).enabled(m.has_track),
-        TrayItem::action(ID_PREV, S::TrayPrev.get(lang)).enabled(m.has_track && m.has_prev),
-        TrayItem::action(ID_NEXT, S::TrayNext.get(lang)).enabled(m.has_track && m.has_next),
-        TrayItem::Separator,
-        TrayItem::action(ID_LIKE, like.get(lang)).enabled(m.has_track),
-        TrayItem::action(ID_SHUFFLE, shuffle.get(lang)),
-        TrayItem::action(ID_REPEAT, repeat.get(lang)),
-        TrayItem::action(ID_MUTE, mute.get(lang)),
-        TrayItem::Separator,
-        TrayItem::action(ID_MINI, S::MiniPlayer.get(lang)),
-        TrayItem::action(ID_SHOW, S::TrayShow.get(lang)),
-        TrayItem::action(ID_QUIT, S::TrayQuit.get(lang)),
-    ]
+    let window_label = if m.window_visible { S::TrayHide } else { S::TrayShow };
+    let toggle = if m.playing { S::TrayPause } else { S::TrayPlayTrack };
+    let mut items = Vec::with_capacity(11);
+    if m.has_track && !head.is_empty() {
+        items.push(TrayItem::action(ID_HEAD, menu_label(head)).enabled(false));
+        items.push(TrayItem::Separator);
+    }
+    items.push(TrayItem::action(ID_WINDOW, window_label.get(lang)));
+    items.push(TrayItem::action(ID_MINI, S::MiniPlayer.get(lang)));
+    items.push(TrayItem::action(ID_UPDATES, S::TrayCheckUpdates.get(lang)));
+    items.push(TrayItem::Separator);
+    items.push(TrayItem::action(ID_TOGGLE, toggle.get(lang)).enabled(m.has_track));
+    items.push(TrayItem::action(ID_PREV, S::TrayPrevTrack.get(lang)).enabled(m.has_track && m.has_prev));
+    items.push(TrayItem::action(ID_NEXT, S::TrayNextTrack.get(lang)).enabled(m.has_track && m.has_next));
+    items.push(TrayItem::Separator);
+    items.push(TrayItem::action(ID_QUIT, S::TrayQuitApp.get(lang)));
+    items
 }
 
 /// A track's name as a menu line: the character that marks a menu's access key (`&` on Windows,
@@ -329,29 +304,23 @@ fn menu_label(text: &str) -> String {
     text.replace(mark, &mark.repeat(2))
 }
 
-/// The longest first line of the tray menu, in UTF-16 units. The menu is as wide as its longest
-/// line, so a long name would stretch it far past its other lines.
-const HEADING_MAX: usize = 34;
+/// Keep the tray track title strongly shortened so the minimalist tray menu stays compact.
+const HEADING_MAX: usize = 20;
 
-/// "Title — Artist" for the tray menu's first line, cut to [`HEADING_MAX`].
+/// Shortened track title for the tray menu's first line, cut to [`HEADING_MAX`].
 fn heading(track: Option<&Track>) -> String {
     let Some(t) = track else { return String::new() };
-    let artists = t.artists_line();
-    let text = if artists.is_empty() { t.full_title() } else { format!("{} — {artists}", t.full_title()) };
-    clip_utf16(&text, HEADING_MAX)
+    clip_utf16(&t.full_title(), HEADING_MAX)
 }
 
 fn command_for_menu(id: &str) -> Option<Command> {
     Some(match id {
-        ID_SHOW => Command::Show,
+        ID_WINDOW => Command::ToggleWindow,
         ID_MINI => Command::MiniPlayer,
+        ID_UPDATES => Command::CheckUpdates,
         ID_TOGGLE => Command::Toggle,
         ID_PREV => Command::Prev,
         ID_NEXT => Command::Next,
-        ID_LIKE => Command::Like,
-        ID_SHUFFLE => Command::Shuffle,
-        ID_REPEAT => Command::Repeat,
-        ID_MUTE => Command::Mute,
         ID_QUIT => Command::Quit,
         _ => return None,
     })

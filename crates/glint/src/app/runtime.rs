@@ -370,7 +370,7 @@ impl State {
         let mut changed = false;
         if self.vol_close_at.is_some_and(|at| self.now >= at) {
             self.vol_close_at = None;
-            if !self.vol_button_hover && !self.vol_card_hover {
+            if !self.vol_button_hover && !self.vol_card_hover && !self.vol_bridge_hover {
                 self.vol_open = false;
                 changed = true;
             }
@@ -492,7 +492,7 @@ impl State {
             v
         };
         let due_nav_trim = self.art_trim_at.is_some_and(|at| self.now >= at);
-        let due_periodic_trim = self.now - self.art_trimmed_at >= 3.0;
+        let due_periodic_trim = self.now - self.art_trimmed_at >= 8.0;
         if !self.menu_moving() && !self.is_resizing() && (due_nav_trim || due_periodic_trim) {
             let keep = keep_covers();
             let refs: Vec<&str> = keep.iter().map(String::as_str).collect();

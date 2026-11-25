@@ -1,42 +1,11 @@
 // ---- wave_stage: continuous non-repeating procedural My Wave backdrop --------------------------
 //
 // Based on the continuous block-indexed quadratic B-spline wave shader (`wave.wgsl`):
-// evaluates 13 independent phase lanes with continuous position and velocity across 4-second
-// blocks (never loops), builds the warped front-surface creases, radial light vanes, and bloom
-// directly at screen pixel resolution, and frames the wave behind Home's album cover while fading
-// cleanly into the dark canvas toward the sidebar and right wave wheel.
+// all 13 frame-constant B-spline phase lanes and trig terms are precomputed on CPU once per frame
+// (u.p0 = rotation, u.p1 = drift, u.p2 = shape, u.ink = rays_v), leaving the fragment shader
+// focused purely on the per-pixel surface creases, radial light vanes, and bloom.
 
-const WAVE_TAU: f32 = 6.28318530718;
-const WAVE_BLOCK_SECONDS: f32 = 4.0;
 const WAVE_REF_ASPECT: f32 = 752.0 / 700.0;
-
-fn wave_hash32(input: u32) -> u32 {
-    var h = (input ^ (input >> 16u)) * 0x7feb352du;
-    h = (h ^ (h >> 15u)) * 0x846ca68bu;
-    return h ^ (h >> 16u);
-}
-
-fn wave_fraction(bits: u32) -> f32 {
-    return f32(bits >> 8u) * (1.0 / 16777216.0);
-}
-
-// Each motion has a sustained forward drift and an independent, bounded variation in speed.
-// A quadratic B-spline joins the random offsets with matching velocity, including at block boundaries.
-fn wave_phase(seed: u32, block: u32, local_seconds: f32, lane: u32, turns_per_block: f32) -> f32 {
-    let stream = wave_hash32(seed ^ ((lane + 1u) * 0x9e3779b9u));
-    let speed = turns_per_block * (1.04 + 0.20 * wave_fraction(wave_hash32(stream)));
-    let step = u32(speed * 4294967296.0);
-    let start = wave_fraction(wave_hash32(stream ^ 0xa511e9b3u) + block * step);
-    let tu = local_seconds / WAVE_BLOCK_SECONDS;
-    let id = stream + block;
-    let knots = vec3<f32>(
-        wave_fraction(wave_hash32(id - 1u)),
-        wave_fraction(wave_hash32(id)),
-        wave_fraction(wave_hash32(id + 1u)),
-    );
-    let weights = vec3<f32>(0.5 * (1.0 - tu) * (1.0 - tu), 0.5 + tu * (1.0 - tu), 0.5 * tu * tu);
-    return WAVE_TAU * (start + tu * speed + 0.50 * speed * dot(weights, knots));
-}
 
 fn wave_crest_profile(signed_fold: f32, width: f32) -> f32 {
     let d = signed_fold / width;
@@ -145,63 +114,38 @@ fn wave_print_stage(print: i32, col: vec3<f32>, p: vec2<f32>, k: f32, size: f32,
 @fragment
 fn fs_wave_stage(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let p = frag.xy;
-    let appear = clamp(u.p1.z, 0.0, 1.0);
+    let size = max(u.rect.zw, vec2<f32>(1.0));
+    let suv = (p - u.rect.xy) / size;
+    if (suv.x >= 0.80) { discard; }
+
+    let appear = clamp(u.p3.w, 0.0, 1.0);
     let clip = clip_alpha(p + u.misc.xy, u.clip, u.fade) * appear;
     if (clip <= 0.0) { discard; }
 
-    let size = max(u.rect.zw, vec2<f32>(1.0));
     let k = max(u.misc.w, 1.0);
     let light = u.view.w > 0.5;
-    let seed = u32(max(u.p0.y, 0.0));
-    let block = u32(max(u.p0.z, 0.0));
-    let local_seconds = clamp(u.p0.w, 0.0, WAVE_BLOCK_SECONDS);
-
-    let suv = (p - u.rect.xy) / size;
     let focal = u.rect.xy + u.region.xy * size;
     let ref_h = max(min(size.y, max(size.x * 0.85, 420.0)), 1.0);
     let ref_size = vec2<f32>(ref_h * WAVE_REF_ASPECT, ref_h);
     let zoom = max(u.region.w, 0.35);
     let uv = (p - focal) / (ref_size * zoom) + vec2<f32>(0.505, 0.376);
 
-    let yaw = wave_phase(seed, block, local_seconds, 0u, 0.285);
-    let tilt = 0.55 * sin(wave_phase(seed, block, local_seconds, 1u, 0.133))
-             + 0.24 * sin(wave_phase(seed, block, local_seconds, 2u, 0.202));
-    let drift = vec4<f32>(
-        wave_phase(seed, block, local_seconds, 3u, 0.193),
-        wave_phase(seed, block, local_seconds, 4u, 0.247),
-        wave_phase(seed, block, local_seconds, 5u, 0.158),
-        wave_phase(seed, block, local_seconds, 6u, 0.209),
-    );
-    let shape = sin(vec4<f32>(
-        wave_phase(seed, block, local_seconds, 7u, 0.107),
-        wave_phase(seed, block, local_seconds, 8u, 0.149),
-        wave_phase(seed, block, local_seconds, 9u, 0.181),
-        wave_phase(seed, block, local_seconds, 10u, 0.129),
-    ));
-    let fan = vec2<f32>(
-        wave_phase(seed, block, local_seconds, 11u, 0.34),
-        wave_phase(seed, block, local_seconds, 12u, 0.265),
-    );
-    let rotation = vec4<f32>(cos(yaw), sin(yaw), cos(tilt), sin(tilt));
-    let rays_v = vec4<f32>(cos(fan.x), sin(fan.x), cos(fan.y), sin(fan.y));
-
-    let m_raw = wave_material(uv, rotation, drift, shape, rays_v);
+    let m_raw = wave_material(uv, u.p0, u.p1, u.p2, u.ink);
 
     // Keep the left edge approaching the sidebar dark (closer to Yandex Music's black) and
     // dissolve smoothly into pure black behind the right wave wheel.
     let left_fade = 0.18 + 0.82 * smoothstep(0.0, 0.28, suv.x);
     let right_fade = 1.0 - smoothstep(0.48, 0.80, suv.x);
-    let edge_fade = left_fade * right_fade;
-    let m = m_raw * edge_fade;
+    let m = m_raw * (left_fade * right_fade);
 
     let shadow = u.p3.rgb;
     let wash = u.tint.rgb;
     let crest = u.p4.rgb;
     var rgb = shadow * (1.0 - m.x) + wash * (m.x - m.y) + crest * m.y;
 
-    let print = i32(floor(fract(u.p0.x) * 64.0)) / 8;
+    let print = i32(round(u.tint.w));
     if (print > 0) {
-        rgb = wave_print_stage(print, rgb, p, k, min(size.x, size.y), u.p0.y, light);
+        rgb = wave_print_stage(print, rgb, p, k, min(size.x, size.y), u.p4.w, light);
     } else {
         rgb = clamp(rgb + (ign(p) - 0.5) / 255.0, vec3<f32>(0.0), vec3<f32>(1.0));
     }

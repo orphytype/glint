@@ -25,7 +25,7 @@ const STAGE_HEAD: f32 = 34.0;
 const STAGE_DIV: f32 = 9.0;
 const STAGE_MARGIN: f32 = 2.0 * EDGE + 2.0 * PAD + 8.0;
 const PICK_SPRING: rune::Spring = rune::Spring::new(0.34, 0.12);
-const LYRIC_FACES: [&str; 3] = ["Plex Mono", "Commissioner", "Cormorant"];
+const LYRIC_FACES: [&str; 3] = ["Commissioner", "Mustica Pro", "Cormorant"];
 
 pub fn lyric_rows() -> [(S, [S; 3]); 2] {
     [(S::LyricSize, [S::SizeSmall, S::SizeMedium, S::SizeLarge]), (S::LyricAlign, [S::AlignLeft, S::AlignCenter, S::AlignRight])]
@@ -256,6 +256,11 @@ fn toggle_effects(s: &mut State) {
     s.mark_settings_dirty();
 }
 
+fn toggle_waveform(s: &mut State) {
+    s.settings.stage.waveform = !s.settings.stage.waveform;
+    s.mark_settings_dirty();
+}
+
 fn look_text(s: &State) -> (El, f32) {
     let lang = s.lang;
     let mut rows = vec![look_row(
@@ -277,10 +282,16 @@ fn look_text(s: &State) -> (El, f32) {
 
 fn look_back(s: &State, pw: f32) -> (El, f32) {
     let lang = s.lang;
-    let mut rows = vec![look_row(
-        S::Effects.get(lang),
-        mini_switch("sl-0", s.settings.stage.effects > 0, s.pal().accent, S::Effects.get(lang), toggle_effects),
-    )];
+    let mut rows = vec![
+        look_row(
+            S::Effects.get(lang),
+            mini_switch("sl-0", s.settings.stage.effects > 0, s.pal().accent, S::Effects.get(lang), toggle_effects),
+        ),
+        look_row(
+            S::WaveformBars.get(lang),
+            mini_switch("sl-waveform", s.settings.stage.waveform, s.pal().accent, S::WaveformBars.get(lang), toggle_waveform),
+        ),
+    ];
     let bd = s.settings.backdrop;
     let pick = |key: &str, name: &str| inline_btn(key, name).on_press_tx(|s: &mut State, tx: &mut rune::Tx| s.pick_backdrop(tx));
     let picture = if bd.on {

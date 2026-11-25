@@ -24,10 +24,20 @@ thread_local! {
     static VROWS: RefCell<HashMap<String, std::ops::Range<usize>>> = RefCell::new(HashMap::new());
 }
 
-fn visible_row_window(key: &str, pad: usize, fallback_end: usize) -> std::ops::Range<usize> {
+pub(super) fn visible_row_window(key: &str, pad: usize, fallback_end: usize) -> std::ops::Range<usize> {
     VROWS.with_borrow(|m| match m.get(key) {
         Some(r) => r.start.saturating_sub(pad)..r.end.saturating_add(pad),
         None => 0..fallback_end,
+    })
+}
+
+pub(super) fn record_visible_rows(key: &str, range: std::ops::Range<usize>) -> bool {
+    VROWS.with_borrow_mut(|m| {
+        let changed = m.get(key).is_none_or(|prev| *prev != range);
+        if changed {
+            m.insert(key.to_owned(), range);
+        }
+        changed
     })
 }
 
@@ -160,6 +170,7 @@ where
         .key(key)
         .w_full()
         .growth(GrowthSpec::default())
+        .no_scroll_anchor()
         .virtual_rows(
             rows,
             row_h,
@@ -283,7 +294,7 @@ fn media_card(s: &State, spec: CardSpec<'_>, play: OnPlay, on: impl Fn(&mut Stat
                     .radius(21.0)
                     .center()
                     .child(el().absolute(0.0, 0.0).w_full().h_full().radius(21.0).fill(th::rgb(0xededed)).hov(th::rgb(0xffffff)).gop(0.0, 1.0))
-                    .child(icon(play_ic, 18.0).color(th::rgb(0x0a0a0a)).ml(if own_playing { 0.0 } else { 1.5 }).gop(0.0, 1.0)),
+                    .child(icon(play_ic, 18.0).color(th::rgb(0x0a0a0a)).gop(0.0, 1.0)),
             );
         }
 
@@ -323,7 +334,7 @@ fn media_card(s: &State, spec: CardSpec<'_>, play: OnPlay, on: impl Fn(&mut Stat
                 .radius(21.0)
                 .center()
                 .child(el().absolute(0.0, 0.0).w_full().h_full().radius(21.0).fill(th::rgb(0xededed)).hov(th::rgb(0xffffff)).gop(0.0, 1.0))
-                .child(icon(&icons::PLAY, 18.0).color(th::rgb(0x0a0a0a)).ml(1.5).gop(0.0, 1.0)),
+                .child(icon(&icons::PLAY, 18.0).color(th::rgb(0x0a0a0a)).gop(0.0, 1.0)),
         );
     }
     let reduce = s.settings.reduce_motion;
@@ -374,16 +385,16 @@ pub(super) fn facts_line(parts: impl IntoIterator<Item = String>) -> String {
 pub(super) fn playlist_card_lazy(s: &State, pl: &Playlist, size: f32, load_art: bool) -> El {
     let (uid, kind) = (pl.owner_uid(), pl.kind);
     let lang = s.lang;
-    let by = pl
-        .owner
-        .as_ref()
-        .and_then(|o| o.name.clone().filter(|n| !n.is_empty()).or_else(|| Some(o.login.clone())))
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| S::Playlist.get(lang).to_owned());
-    let facts = facts_line([
-        pl.track_count.map(|n| lang.tracks(n as usize)).unwrap_or_default(),
-        pl.duration_ms.filter(|ms| *ms >= 60_000).map(|ms| lang.duration(ms / 1000)).unwrap_or_default(),
-    ]);
+    let (owner_label, is_ym) = crate::app::playlist_owner_display(pl.owner.as_ref(), lang);
+    let by = if owner_label.is_empty() { S::Playlist.get(lang).to_owned() } else { owner_label };
+    let facts = if is_ym {
+        String::new()
+    } else {
+        facts_line([
+            pl.track_count.map(|n| lang.tracks(n as usize)).unwrap_or_default(),
+            pl.duration_ms.filter(|ms| *ms >= 60_000).map(|ms| lang.duration(ms / 1000)).unwrap_or_default(),
+        ])
+    };
     let name = pl.title.clone();
     let play: OnPlay = Some(Box::new(move |s: &mut State| s.play_playlist(uid, kind, &name)));
     let page = Page::Playlist(uid, kind);
@@ -409,7 +420,10 @@ pub(super) fn playlist_card_lazy(s: &State, pl: &Playlist, size: f32, load_art: 
 
 pub(super) fn album_card_lazy(s: &State, a: &Album, size: f32, load_art: bool) -> El {
     let (id, play_id, name) = (a.id.clone(), a.id.clone(), a.title.clone());
-    let kind = crate::app::release_kind_name(a.kind.as_deref()).get(s.lang).to_owned();
+    let had_various = a.artists.iter().any(Artist::is_various);
+    let real_artists: Vec<Artist> = a.artists.iter().filter(|ar| !ar.is_various()).cloned().collect();
+    let effective_kind = a.kind.as_deref().or(had_various.then_some("compilation"));
+    let kind = crate::app::release_kind_name(effective_kind).get(s.lang).to_owned();
     let facts = facts_line([a.year.map(|y| y.to_string()).unwrap_or_default(), kind]);
     let play: OnPlay = Some(Box::new(move |s: &mut State| s.play_album(&play_id, &name)));
     let page = Page::Album(id.clone());
@@ -421,8 +435,8 @@ pub(super) fn album_card_lazy(s: &State, a: &Album, size: f32, load_art: bool) -
         link: Some(format!("https://music.yandex.ru/album/{id}")),
         station: Some(Station::Album(id)),
     });
-    let preview = Preview { title: a.title.clone(), cover: a.cover_template().map(str::to_owned), artists: a.artists.clone(), year: a.year };
-    let text = CardText { artists: a.artists.clone(), facts, explicit: a.is_explicit(), ..CardText::default() };
+    let preview = Preview { title: a.title.clone(), cover: a.cover_template().map(str::to_owned), artists: real_artists.clone(), year: a.year };
+    let text = CardText { artists: real_artists, facts, explicit: a.is_explicit(), ..CardText::default() };
     media_card(
         s,
         CardSpec { key: format!("al-{}", a.id), tpl: a.cover_template(), title: a.title.clone(), text, size, round: false, load_art, overlay },
@@ -508,43 +522,49 @@ impl State {
         }
         let start = if shuffle { (self.now.to_bits() as usize) % tracks.len() } else { 0 };
         self.play_queue(tracks, start, Source::Manual);
-        self.playing_from = self.list_from(if self.page == Page::Library { ListSrc::Liked } else { ListSrc::Detail });
+        let src = if self.page == Page::Library {
+            match self.library.tab {
+                crate::app::LibTab::Downloads => ListSrc::Downloads,
+                crate::app::LibTab::Dislikes => ListSrc::Dislikes,
+                _ => ListSrc::Liked,
+            }
+        } else {
+            ListSrc::Detail
+        };
+        self.playing_from = self.list_from(src);
     }
 
     pub(super) fn queue_from(&self, page: &Page) -> bool {
         self.current().is_some() && self.playing_from.as_ref().is_some_and(|f| !f.wave && f.page.as_ref() == Some(page))
     }
 
-    fn list_track(&self, src: ListSrc, i: usize) -> Option<&Track> {
+    fn with_list_track<R>(&self, src: ListSrc, i: usize, f: impl FnOnce(&Track) -> R) -> Option<R> {
         match src {
             ListSrc::Liked => {
                 let v = self.library.tracks.get()?;
                 if self.library.filter.text.trim().is_empty() && self.library.track_filter.is_empty() && self.library.sort == crate::app::TrackSort::Original {
-                    v.get(i)
+                    v.get(i).map(f)
                 } else {
-                    self.library.shown.borrow().get(i).and_then(|&j| v.get(j))
+                    self.library.shown.borrow().get(i).and_then(|&j| v.get(j)).map(f)
                 }
             }
-            ListSrc::Detail => {
-                match self.detail_shown() {
-                    None => self.detail.tracks.get(i),
-                    Some(shown) => shown.get(i).and_then(|&j| self.detail.tracks.get(j)),
-                }
+            ListSrc::Downloads => {
+                self.ensure_downloaded_shown();
+                self.library.downloaded_shown.borrow().get(i).map(f)
             }
-            ListSrc::Search => self.search_view().and_then(|r| r.tracks.results.get(i)),
-            ListSrc::Queue => self.player.queue.get(i),
-            ListSrc::History => self.listening_history.get(i),
+            ListSrc::Dislikes => self.library.disliked_tracks.get()?.get(i).map(f),
+            ListSrc::Detail => match self.detail_shown() {
+                None => self.detail.tracks.get(i).map(f),
+                Some(shown) => shown.get(i).and_then(|&j| self.detail.tracks.get(j)).map(f),
+            },
+            ListSrc::Search => self.search_view().and_then(|r| r.tracks.results.get(i)).map(f),
+            ListSrc::Queue => self.player.queue.get(i).map(f),
+            ListSrc::History => self.listening_history.get(i).map(f),
         }
     }
 
     fn list_id(&self, src: ListSrc, i: usize) -> String {
-        match self.list_track(src, i) {
-            Some(t) => {
-                let occ = (0..i).filter(|&j| self.list_track(src, j).is_some_and(|o| o.id == t.id)).count();
-                format!("{src:?}-{}-{occ}", t.id)
-            }
-            None => format!("{src:?}{i}"),
-        }
+        self.with_list_track(src, i, |t| format!("{src:?}-{}-{i}", t.id)).unwrap_or_else(|| format!("{src:?}-{i}"))
     }
 }
 
@@ -574,27 +594,18 @@ pub(super) fn track_list(key: &'static str, n: usize, src: ListSrc) -> El {
         col()
             .key(key)
             .growth(GrowthSpec::default())
+            .no_scroll_anchor()
             .virtual_rows(
                 n,
                 ROW_H,
                 move |s: &State, i: usize| Cow::Owned(s.list_id(src, i)),
-                move |s: &State, i: usize| match s.list_track(src, i) {
-                    Some(t) => {
-                        let load_art = visible_row_window(key, 4, 16).contains(&i);
-                        kit::built_under(under, || kit::track_row_lazy(s, t, i + 1, src, load_art))
-                    }
-                    None => el().h(ROW_H),
+                move |s: &State, i: usize| {
+                    let load_art = visible_row_window(key, 4, 16).contains(&i);
+                    s.with_list_track(src, i, |t| kit::built_under(under, || kit::track_row_lazy(s, t, i + 1, src, load_art)))
+                        .unwrap_or_else(|| el().h(ROW_H))
                 },
             )
-            .on_visible_rows(move |_s: &mut State, range: std::ops::Range<usize>| {
-                VROWS.with_borrow_mut(|m| {
-                    let changed = m.get(key).is_none_or(|prev| *prev != range);
-                    if changed {
-                        m.insert(key.to_owned(), range);
-                    }
-                    changed
-                })
-            }),
+            .on_visible_rows(move |_s: &mut State, range: std::ops::Range<usize>| record_visible_rows(key, range)),
     )
 }
 

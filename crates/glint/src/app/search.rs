@@ -199,6 +199,7 @@ impl State {
         if self.liked.contains(&track.id) {
             self.set_like(track, false);
         }
+        self.library.disliked_tracks = Load::Idle;
         let (b, uid, t) = (self.backend.clone(), self.account.as_ref().map_or(0, |a| a.uid), track.clone());
         self.job(async move { b.set_dislike(uid, &t).await }, |s, _, res| {
             if let Err(e) = res {

@@ -326,6 +326,9 @@ fn entries(s: &State) -> Vec<Entry> {
         set(SetTab::General, S::Autostart, Some(S::SetSystem)),
         set(SetTab::General, S::TrayIcon, Some(S::SetSystem)),
     ];
+    if s.settings.butterflies && s.settings.shaders && !crate::fx::cpu_mode() && !s.settings.reduce_motion {
+        v.push(set(SetTab::General, S::ButterflyCount, Some(S::SetGraphics)));
+    }
     if s.settings.show_tray {
         v.push(set(SetTab::General, S::CloseToTray, Some(S::SetSystem)));
         if s.settings.autostart {

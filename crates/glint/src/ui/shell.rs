@@ -78,7 +78,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     kit::set_bar_on(bar_on);
     // What the pointer is on, of the surfaces that float over the page: the page (and, under the
     // volume card, the bar) is built taking no hover while it is on one.
-    let on_card = logged_in && !np_open && s.vol_visible() && s.vol_card_hover;
+    let on_card = logged_in && !np_open && s.vol_visible() && (s.vol_card_hover || s.vol_bridge_hover);
     let on_surface = s.over_titlebar || (bar_on && !np_open && s.over_bar) || on_card;
     kit::set_under(on_surface);
 
@@ -281,56 +281,58 @@ fn chip_surface(s: &State, radius: f32, alpha: f32) -> El {
     }
 }
 
+const NP_CLOSE_S: f32 = 30.0;
+const NP_PILL_H: f32 = 28.0;
+const NP_PILL_STYLE: rune::TextStyle = rune::TextStyle::new(12.0, 520.0).family(th::SANS).lh(16.0);
+
 #[expect(clippy::too_many_arguments, reason = "explicit chrome layout, alpha, and interaction state")]
 fn np_source(s: &State, w: f32, h: f32, lead: f32, trail: f32, t: f32, interactive: bool, settled: bool) -> El {
     let Some(from) = &s.playing_from else { return el() };
     let t = t.clamp(0.0, 1.0);
     let text = from.line_for_track(s.lang, s.current());
     let (cover_x, cover) = np::cover_span(s, w, h);
-    let c = dock::CHIP;
+    let pill_y = ((TITLE_H - NP_PILL_H) * 0.5).round();
     // Stay centered over the cover, never touching `np-close` on the left, the window caption
-    // controls on the right, or sticking out past the cover's edges. The room is the same on both
-    // sides of the center, so a long name shortens instead of pushing the pill off center.
-    let min_x = kit::CHROME_INSET + lead + c + 12.0;
+    // controls on the right, or sticking out past the cover's edges.
+    let min_x = 16.0 + lead + NP_CLOSE_S + 12.0;
     let win_right = (w - trail - 16.0).max(min_x + 80.0);
     let left_bound = min_x.max(cover_x);
     let right_bound = (cover_x + cover).min(win_right);
     let mut cx = cover_x + cover * 0.5;
     let mut half = (cx - left_bound).min(right_bound - cx);
-    // Too little room over the cover: center in the free band of the title row instead.
     if half < 60.0 {
         cx = (min_x + win_right) * 0.5;
         half = (win_right - min_x) * 0.5;
     }
-    let max_pw = (half * 2.0).clamp(80.0, 260.0);
-    let overhead = 14.0 + 16.0 + 7.0 + 14.0;
+    let max_pw = (half * 2.0).clamp(80.0, 236.0);
+    let overhead = 10.0 + 13.0 + 6.0 + 10.0;
     let max_text = (max_pw - overhead).max(0.0);
-    let tw = kit::measure_w(&text, th::SMALL).ceil().min(max_text);
+    let tw = kit::measure_w(&text, NP_PILL_STYLE).ceil().min(max_text);
     let pw = (overhead + tw + 2.0).min(max_pw);
-    let glyph = kit::source_glyph(from, th::text().alpha(t), 15.0);
+    let glyph = kit::source_glyph(from, th::text().alpha(0.88 * t), 13.0);
     let page = from.page.clone();
-    let px = cx - pw * 0.5;
+    let px = (cx - pw * 0.5).round();
     let slide = if s.is_resizing() || !settled { rune::Spring::NONE } else { th::SLIDE };
     let mut pill = row()
         .key("np-source")
         .role(if page.is_some() { "link" } else { "note" })
         .label(text.as_str())
-        .absolute(px, kit::CHROME_INSET)
+        .absolute(px, pill_y)
         .w(pw)
         .max_w(max_pw)
-        .h(c)
-        .px(13.0)
-        .gap(7.0)
-        .radius(c * 0.5)
-        .offset(0.0, -(1.0 - t) * 12.0)
+        .h(NP_PILL_H)
+        .px(10.0)
+        .gap(6.0)
+        .radius(NP_PILL_H * 0.5)
+        .offset(0.0, -(1.0 - t) * 10.0)
         .items_center()
         .no_window_drag()
         .transition(Transition::none())
         .animated_changes()
         .motion(slide)
-        .child(chip_surface(s, c * 0.5, t))
+        .child(chip_surface(s, NP_PILL_H * 0.5, t))
         .child(glyph)
-        .child(label(text, th::SMALL, th::text().alpha(t)).truncate().grow(1.0).min_w(0.0));
+        .child(label(text, NP_PILL_STYLE, th::text().alpha(0.92 * t)).truncate().grow(1.0).min_w(0.0));
     if interactive
         && let Some(p) = page
     {
@@ -339,28 +341,28 @@ fn np_source(s: &State, w: f32, h: f32, lead: f32, trail: f32, t: f32, interacti
     pill
 }
 
-/// The way out of the player, at the window's top left.
+/// Compact collapse button aligned cleanly with the title bar and Now Playing source pill.
 fn np_close(s: &State, lead: f32, t: f32, interactive: bool) -> El {
     let t = t.clamp(0.0, 1.0);
-    let c = dock::CHIP;
+    let y = ((TITLE_H - NP_CLOSE_S) * 0.5).round();
     let mut btn = row()
         .key("np-close")
         .role("button")
         .label(S::Close.get(s.lang))
         .help(S::Close.get(s.lang))
-        .absolute(kit::CHROME_INSET + lead, kit::CHROME_INSET)
-        .w(c)
-        .h(c)
-        .radius(c * 0.5)
-        .offset(0.0, -(1.0 - t) * 12.0)
+        .absolute(16.0 + lead, y)
+        .w(NP_CLOSE_S)
+        .h(NP_CLOSE_S)
+        .radius(NP_CLOSE_S * 0.5)
+        .offset(0.0, -(1.0 - t) * 10.0)
         .center()
         .no_window_drag()
         .transition(Transition::none())
         .motion(rune::Spring::NONE)
-        .child(chip_surface(s, c * 0.5, t))
-        .child(icon(&icons::CHEVRON_DOWN, kit::GLYPH).color(th::text().alpha(t)));
+        .child(chip_surface(s, NP_CLOSE_S * 0.5, t))
+        .child(icon(&icons::CHEVRON_DOWN, 16.0).color(th::text().alpha(0.92 * t)));
     if interactive {
-        btn = btn.cursor(Cursor::Pointer).hov(th::veil(0.06)).press(th::veil(0.10)).press_scale(th::PRESS).on_press(|s: &mut State| s.set_np(false));
+        btn = btn.cursor(Cursor::Pointer).hov(th::veil(0.07)).press(th::veil(0.12)).press_scale(th::PRESS).on_press(|s: &mut State| s.set_np(false));
     }
     btn
 }

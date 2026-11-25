@@ -27,11 +27,12 @@ use crate::net::Backend;
 use crate::palette::Palette;
 use crate::store::{DownloadStore, QualityPref, Settings, Store};
 
+pub use content::playlist_owner_display;
 pub use model::{CardMenu, DownloadActivity, FromName, Library, Lives, LyricsUi, Player, PlayingFrom, Popover, RowDrag, Sheet, Source, Station, Toast, TrackMenu, WaveChoice};
 pub use motion::{LYRIC_LEAD_MS, PAGE_KEY, Pop, WheelGlide, clear_scroll, page_scroll, report_scroll, scroll_thumb};
 pub use types::{
-    AlbumSort, ArtistSort, Detail, DiscKind, DiscSort, DownloadFail, DownloadState, LibTab, Load, LoginUi, NpTab, Page, PinnedItem, PlaylistSort, SearchTab, SearchUi, Session,
-    TrackSort, album_kind_name, release_kind_name,
+    AlbumSort, ArtistSort, Detail, DiscKind, DiscSort, DislikeTab, DownloadFail, DownloadState, LibTab, Load, LoginUi, NpTab, Page, PinnedItem, PlaylistSort, PlaylistTab,
+    SearchTab, SearchUi, Session, TrackSort, album_kind_name, release_kind_name,
 };
 
 /// The app's home page, sent to lrc.red as the contact required by its API terms.
@@ -119,6 +120,10 @@ pub struct State {
     pub home: Load<Vec<Shelf>>,
     /// Additional personalized My Waves returned by `/wheel/new` (or rotor dashboard fallback).
     pub wheel_waves: Vec<ym_api::WheelItem>,
+    pub wheel_loading: bool,
+    pub wheel_gen: u64,
+    pub wheel_seen: Vec<String>,
+    pub wave_name: Option<String>,
     pub liked: HashSet<String>,
     pub liked_items: HashSet<String>,
     pub likes_loaded: bool,
@@ -169,6 +174,7 @@ pub struct State {
     pub vol: Pop,
     pub vol_button_hover: bool,
     pub vol_card_hover: bool,
+    pub vol_bridge_hover: bool,
     pub over_bar: bool,
     pub over_titlebar: bool,
     pub vol_close_at: Option<f64>,
@@ -181,6 +187,7 @@ pub struct State {
     pub wave_arc_to: f32,
     pub wave_arc_vel: f32,
     pub garden_hover: Option<&'static str>,
+    pub lib_head_hover: Option<&'static str>,
     pub wave_hover: Option<String>,
     pub glide: WheelGlide,
     pub scroll_memory: HashMap<String, f32>,
@@ -325,6 +332,10 @@ impl State {
             wave_label: None,
             home: Load::Idle,
             wheel_waves: Vec::new(),
+            wheel_loading: false,
+            wheel_gen: 0,
+            wheel_seen: Vec::new(),
+            wave_name: None,
             liked: HashSet::new(),
             library: Library::default(),
             search: SearchUi::default(),
@@ -394,6 +405,7 @@ impl State {
             vol: Pop::default(),
             vol_button_hover: false,
             vol_card_hover: false,
+            vol_bridge_hover: false,
             over_bar: false,
             over_titlebar: false,
             vol_close_at: None,
@@ -405,12 +417,13 @@ impl State {
             wave_arc: 0.0,
             wave_arc_to: 0.0,
             wave_arc_vel: 0.0,
-            swarm: crate::bugs::Swarm::new(0),
+            swarm: crate::bugs::Swarm::new(0, 3),
             bug_geom: RefCell::new(crate::bugs::Geom::default()),
             glide: WheelGlide::default(),
             scroll_memory: HashMap::new(),
             scroll_restore: None,
             garden_hover: None,
+            lib_head_hover: None,
             wave_hover: None,
             restore_kick_at: 0.0,
             remax: false,

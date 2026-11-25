@@ -222,16 +222,68 @@ pub(super) fn detail(s: &State, w: f32) -> El {
         if let Some(b) = head_backdrop(s, w, side) {
             body = body.child(b);
         }
+        let is_album = matches!(s.page, Page::Album(_));
         let title_style = if wide { th::RELEASE } else { th::RELEASE_S };
         let name = if coming && d.title.is_empty() {
             kit::text_bone("d-title-bone", title_style.line_height, 26.0, 320.0)
         } else {
             label(d.title.clone(), title_style, th::text()).max_lines(2).w_full()
         };
-        let mut meta = col().key("d-meta").min_w(0.0).child(name);
+        let mut meta = col().key("d-meta").min_w(0.0);
+        if is_album && !coming {
+            meta = meta.child(label(kind.get(lang).to_owned(), th::SMALL, th::text3()).mb(2.0));
+        }
+        meta = meta.child(name);
         let by_w = if wide { (cw - side - HEAD_GAP).max(180.0) } else { cw.max(180.0) };
         let has_by = !d.artists.is_empty() || !d.subtitle.is_empty();
-        if !d.artists.is_empty() {
+        if is_album {
+            let extra = if coming {
+                String::new()
+            } else {
+                let mut parts = Vec::new();
+                if let Some(y) = d.year {
+                    parts.push(y.to_string());
+                }
+                let one = d.facts.iter().any(|(n, v)| *n == S::Tracks && v.trim() == "1");
+                if !one {
+                    for (name, value) in &d.facts {
+                        match name {
+                            S::Tracks => parts.push(value.parse::<usize>().map_or_else(|_| value.clone(), |n| lang.tracks(n))),
+                            S::Duration => parts.push(value.clone()),
+                            _ => {}
+                        }
+                    }
+                }
+                facts_line(parts)
+            };
+            if !d.artists.is_empty() {
+                let mut by_row = row()
+                    .key("d-by")
+                    .w_full()
+                    .min_w(0.0)
+                    .mt(HEAD_STEP_BY)
+                    .gap(8.0)
+                    .items_center()
+                    .child(kit::artists_row_in_width(
+                        s,
+                        &d.artists,
+                        th::BYLINE_M,
+                        true,
+                        "d-art",
+                        th::text().alpha(0.88),
+                        (by_w * 0.65).max(120.0),
+                        true,
+                    ));
+                if !extra.is_empty() {
+                    by_row = by_row
+                        .child(label("·", th::BYLINE_M, th::text3()))
+                        .child(label(extra, th::BYLINE_M, th::text3()).truncate().min_w(0.0));
+                }
+                meta = meta.child(by_row);
+            } else if !extra.is_empty() {
+                meta = meta.child(label(extra, th::BYLINE_M, th::text3()).truncate().min_w(0.0).mt(HEAD_STEP_BY));
+            }
+        } else if !d.artists.is_empty() {
             meta = meta.child(el().key("d-by").w_full().min_w(0.0).mt(HEAD_STEP_BY).child(kit::artists_row_in_width(
                 s,
                 &d.artists,
@@ -250,7 +302,7 @@ pub(super) fn detail(s: &State, w: f32) -> El {
                 if let Some(n) = d.monthly_listeners {
                     meta = meta.child(artist_listeners_row(n, lang).mt(6.0));
                 }
-            } else {
+            } else if !is_album && !d.yandex_playlist {
                 let facts = head_facts(s, kind);
                 if !facts.is_empty() {
                     meta = meta.child(label(facts, th::SMALL, th::text3()).truncate().min_w(0.0).mt(if has_by { 4.0 } else { 6.0 }));
@@ -322,6 +374,7 @@ pub(super) fn detail(s: &State, w: f32) -> El {
                         .key("d-tracks-h")
                         .w_full()
                         .h(32.0)
+                        .pl(kit::ROW_PAD)
                         .gap(12.0)
                         .items_center()
                         .child(label(S::AllTracks.get(lang), th::SECTION, th::text()))

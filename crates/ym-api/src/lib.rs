@@ -14,6 +14,7 @@
 //! Security note: the OAuth token is attached per request and only to the Yandex API host, never
 //! to image, audio or lyrics requests (see `client`).
 
+pub(crate) mod aes_ctr;
 pub mod auth;
 pub mod client;
 pub mod cover;

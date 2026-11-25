@@ -217,6 +217,7 @@ impl State {
         self.listening_history.insert(0, track.clone());
         self.listening_history.truncate(30);
         self.lyrics.active = None;
+        self.lyrics.user_scroll_at = None;
         self.scroll_lyrics = true;
         self.load_lyrics_for_current();
         if self.settings.quality != crate::store::QualityPref::Best || !self.player.loading {
@@ -252,7 +253,7 @@ impl State {
                 {
                     e.load(token, a.data.clone(), hint(a.ext, dur), playing, Duration::from_millis(start_ms));
                 }
-                if crate::fx::shaders_enabled() {
+                if crate::fx::shaders_enabled() && self.settings.stage.waveform {
                     self.measure_waveform(a.data, a.ext, dur);
                 }
                 self.player.sim_started = true;

@@ -134,12 +134,16 @@ pub fn fixture_playing_quality(track: &Track, pref: crate::store::QualityPref) -
     }
 }
 
-/// What `audio` hands back for offline download tagging: raw bytes, container, and source flag.
-pub struct Audio {
-    pub bytes: Arc<[u8]>,
+/// Disk-backed audio file staged for offline download tagging (zero full-file RAM buffer).
+pub struct DownloadedAudioFile {
+    pub path: std::path::PathBuf,
     pub ext: &'static str,
     /// FckCensor's uncensored version of the track, not Yandex's own.
     pub clean: bool,
+    /// True when `path` is a newly created temporary file that the caller should move or delete.
+    pub is_temp: bool,
+    /// True when the file is an ISO BMFF (`m4a`) container holding lossless FLAC frames (`flac-mp4`).
+    pub is_mp4_flac: bool,
 }
 
 /// Disk-backed playback audio handle (64 KiB read buffer in RAM instead of holding whole FLAC/MP3
@@ -521,12 +525,18 @@ impl Backend {
 
     /// Additional personalized My Waves for the Home arc wheel (`POST /wheel/new`, falling back to
     /// `/rotor/stations/dashboard` if the wheel endpoint returns nothing).
-    pub async fn wheel(&self) -> Result<Vec<ym_api::WheelItem>> {
+    pub async fn wheel(&self, seeds: &[String]) -> Result<Vec<ym_api::WheelItem>> {
         match self {
             #[cfg(feature = "tooling")]
-            Backend::Fixture(c) => Ok(c.wheel()),
+            Backend::Fixture(c) => {
+                let mut items = c.wheel();
+                if !seeds.is_empty() && items.len() > 2 {
+                    items.rotate_left(2);
+                }
+                Ok(items)
+            }
             Backend::Live(c) => {
-                if let Ok(items) = c.wheel().await
+                if let Ok(items) = c.wheel_with_seeds(seeds).await
                     && !items.is_empty()
                 {
                     return Ok(items);
@@ -625,6 +635,79 @@ impl Backend {
             #[cfg(feature = "tooling")]
             Backend::Fixture(c) => Ok(c.artists.clone()),
             Backend::Live(c) => c.liked_artists(uid).await,
+            Backend::None => Err(no_session()),
+        }
+    }
+
+    pub async fn top_artists(&self, count: u32) -> Result<Vec<ym_api::TopArtist>> {
+        match self {
+            #[cfg(feature = "tooling")]
+            Backend::Fixture(c) => Ok(c.top_artists()),
+            Backend::Live(c) => c.top_artists(count).await,
+            Backend::None => Err(no_session()),
+        }
+    }
+
+    pub async fn liked_playlists(&self, uid: i64) -> Result<Vec<Playlist>> {
+        match self {
+            #[cfg(feature = "tooling")]
+            Backend::Fixture(c) => Ok(c.liked_playlists()),
+            Backend::Live(c) => c.liked_playlists(uid).await,
+            Backend::None => Err(no_session()),
+        }
+    }
+
+    pub async fn disliked_tracks(&self, uid: i64) -> Result<Vec<Track>> {
+        match self {
+            #[cfg(feature = "tooling")]
+            Backend::Fixture(c) => Ok(c.disliked_tracks()),
+            Backend::Live(c) => {
+                let refs = c.disliked_track_refs(uid).await?;
+                if refs.is_empty() {
+                    return Ok(Vec::new());
+                }
+                let ids: Vec<String> = refs.iter().map(|r| r.id.clone()).collect();
+                c.tracks(&ids).await
+            }
+            Backend::None => Err(no_session()),
+        }
+    }
+
+    pub async fn undislike_track(&self, uid: i64, track: &Track) -> Result<()> {
+        match self {
+            #[cfg(feature = "tooling")]
+            Backend::Fixture(_) => Ok(()),
+            Backend::Live(c) => c.undislike_tracks(uid, &[track.compound_id()]).await,
+            Backend::None => Err(no_session()),
+        }
+    }
+
+    pub async fn disliked_artists(&self, uid: i64) -> Result<Vec<Artist>> {
+        match self {
+            #[cfg(feature = "tooling")]
+            Backend::Fixture(c) => Ok(c.disliked_artists()),
+            Backend::Live(c) => c.disliked_artists(uid).await,
+            Backend::None => Err(no_session()),
+        }
+    }
+
+    pub async fn undislike_artist(&self, uid: i64, id: &str) -> Result<()> {
+        match self {
+            #[cfg(feature = "tooling")]
+            Backend::Fixture(_) => Ok(()),
+            Backend::Live(c) => c.undislike_artist(uid, id).await,
+            Backend::None => Err(no_session()),
+        }
+    }
+
+    pub async fn playlist_set_visibility(&self, uid: i64, kind: i64, private: bool) -> Result<()> {
+        match self {
+            #[cfg(feature = "tooling")]
+            Backend::Fixture(_) => Ok(()),
+            Backend::Live(c) => {
+                let vis = if private { Visibility::Private } else { Visibility::Public };
+                c.playlist_set_visibility(uid, kind, vis).await.map(drop)
+            }
             Backend::None => Err(no_session()),
         }
     }
@@ -964,10 +1047,10 @@ impl Backend {
         }
     }
 
-    /// The audio file of `track`, from the downloaded-track store when it is there. Playback reads
-    /// existing downloads without adding ordinary listening to the offline library. `exact`: only a
-    /// copy in `quality` counts (a download in a new quality must fetch it, not copy an old one).
-    pub async fn audio(
+    /// Streams the audio file of `track` directly to `tmp_path` on disk (or reuses an existing
+    /// downloaded file path) without buffering whole FLAC/MP3 files in RAM.
+    #[expect(clippy::too_many_arguments, reason = "download source, quality, cache, fkcensor, and staging path")]
+    pub async fn download_audio_to_file(
         &self,
         track: &Track,
         quality: ym_api::Quality,
@@ -975,7 +1058,8 @@ impl Backend {
         fkcensor: &crate::fkcensor::FkCensor,
         fkcensor_on: bool,
         exact: bool,
-    ) -> Result<Audio> {
+        tmp_path: &std::path::Path,
+    ) -> Result<DownloadedAudioFile> {
         match self {
             #[cfg(feature = "tooling")]
             Backend::Fixture(_) => Err(ym_api::Error::Api("the scene fixtures have no audio".into())),
@@ -985,57 +1069,53 @@ impl Backend {
                 }
                 let replacement = fkcensor_on.then(|| fkcensor.replacement(&track.id)).flatten();
                 let q = format!("{quality:?}");
-                // A downloaded copy in any quality plays before anything is asked of the network,
-                // so downloads play offline whatever the quality setting is now.
                 let find = |variant: &str| {
                     let disk = downloads.as_ref()?;
-                    if exact { disk.get_audio(&format!("{}-{q}-{variant}", track.id)) } else { disk.find_audio(&track.id, &q, variant) }
+                    if exact { disk.get_audio_path(&format!("{}-{q}-{variant}", track.id)) } else { disk.find_audio_path(&track.id, &q, variant) }
                 };
                 if replacement.is_some()
-                    && let Some(bytes) = find("replacement")
+                    && let Some((path, _)) = find("replacement")
                 {
-                    let ext = sniff_ext(&bytes);
-                    return Ok(Audio { bytes, ext, clean: true });
+                    let head = read_file_head(&path);
+                    let ext = sniff_ext(&head);
+                    let is_mp4_flac = ext == "m4a" && crate::audio_tags::mp4_has_flac_path(&path);
+                    return Ok(DownloadedAudioFile { path, ext, clean: true, is_temp: false, is_mp4_flac });
                 }
                 let local = find("original");
                 if replacement.is_none()
-                    && let Some(bytes) = local.clone()
+                    && let Some((path, _)) = local.clone()
                 {
-                    let ext = sniff_ext(&bytes);
-                    return Ok(Audio { bytes, ext, clean: false });
+                    let head = read_file_head(&path);
+                    let ext = sniff_ext(&head);
+                    let is_mp4_flac = ext == "m4a" && crate::audio_tags::mp4_has_flac_path(&path);
+                    return Ok(DownloadedAudioFile { path, ext, clean: false, is_temp: false, is_mp4_flac });
                 }
-                // With the original on disk, the clean version gets only a short wait: offline,
-                // the download must not sit behind a connection that never comes. Without a local
-                // fallback, rely on reqwest's per-chunk read timeout so long tracks finish cleanly.
                 if let Some(replacement) = replacement {
                     let fetched = if local.is_some() {
-                        tokio::time::timeout(std::time::Duration::from_secs(4), c.fetch_fkcensor_audio(&replacement.url)).await.ok().and_then(Result::ok)
+                        tokio::time::timeout(std::time::Duration::from_secs(4), c.fetch_fkcensor_audio_to_file(&replacement.url, tmp_path))
+                            .await
+                            .ok()
+                            .and_then(Result::ok)
                     } else {
-                        c.fetch_fkcensor_audio(&replacement.url).await.ok()
+                        c.fetch_fkcensor_audio_to_file(&replacement.url, tmp_path).await.ok()
                     };
-                    if let Some(data) = fetched {
-                        let bytes: Arc<[u8]> = data.into();
-                        let ext = sniff_ext(&bytes);
-                        return Ok(Audio { bytes, ext, clean: true });
+                    if let Some((_, head)) = fetched {
+                        let ext = sniff_ext(&head);
+                        let is_mp4_flac = ext == "m4a" && crate::audio_tags::mp4_has_flac_path(tmp_path);
+                        return Ok(DownloadedAudioFile { path: tmp_path.to_path_buf(), ext, clean: true, is_temp: true, is_mp4_flac });
                     }
                 }
-                if let Some(bytes) = local {
-                    let ext = sniff_ext(&bytes);
-                    return Ok(Audio { bytes, ext, clean: false });
+                if let Some((path, _)) = local {
+                    let head = read_file_head(&path);
+                    let ext = sniff_ext(&head);
+                    let is_mp4_flac = ext == "m4a" && crate::audio_tags::mp4_has_flac_path(&path);
+                    return Ok(DownloadedAudioFile { path, ext, clean: false, is_temp: false, is_mp4_flac });
                 }
                 let info = c.stream(&track.id, quality).await?;
-                let data = c.fetch_audio(&info, |_, _| {}).await?;
-                // Yandex serves lossless as FLAC wrapped in MP4 (`flac-mp4`). Remux it into a
-                // native `.flac` stream so downloads are tagged with Vorbis comments and cover art
-                // and work in every player.
-                if info.codec.to_ascii_lowercase().contains("flac")
-                    && sniff_ext(&data) == "m4a"
-                    && let Some(flac) = crate::audio_tags::remux_flac_from_mp4(&data)
-                {
-                    return Ok(Audio { bytes: flac.into(), ext: "flac", clean: false });
-                }
-                let ext = container_ext(&data, &info.codec);
-                Ok(Audio { bytes: data.into(), ext, clean: false })
+                let (_, head) = c.fetch_audio_to_file(&info, tmp_path).await?;
+                let ext = container_ext(&head, &info.codec);
+                let is_mp4_flac = ext == "m4a" && (info.codec.to_ascii_lowercase().contains("flac") || crate::audio_tags::mp4_has_flac_path(tmp_path));
+                Ok(DownloadedAudioFile { path: tmp_path.to_path_buf(), ext, clean: false, is_temp: true, is_mp4_flac })
             }
             Backend::None => Err(no_session()),
         }

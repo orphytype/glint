@@ -2,10 +2,33 @@
 
 use ym_api::{Album, Track};
 
-use super::{DiscSort, Load, Page, PinnedItem, Session, State, TrackSort, clear_scroll, page_scroll};
+use super::{DiscSort, LibTab, Load, Page, PinnedItem, Session, State, TrackSort, clear_scroll, page_scroll};
 use crate::i18n::S;
 
 impl State {
+    /// Opens the Collection overview hub from the sidebar rail (or returns to it from a sub-view)
+    /// and resets its scroll position to the top.
+    pub fn open_collection(&mut self) {
+        if self.page == Page::Library && !self.np_open {
+            if self.library.tab != LibTab::Overview {
+                self.load_library_tab(LibTab::Overview);
+            } else {
+                self.reset_scroll_key("library");
+            }
+            return;
+        }
+        self.library.tab = LibTab::Overview;
+        self.go(Page::Library);
+    }
+
+    /// Resets a scroll container's saved offset and snaps it to the top.
+    pub fn reset_scroll_key(&mut self, key: &str) {
+        self.scroll_memory.remove(key);
+        clear_scroll(key);
+        self.glide.active = false;
+        self.scroll_restore = Some((key.to_owned(), 0.0, self.now + 0.6));
+    }
+
     pub fn go(&mut self, page: Page) {
         if self.page == Page::Search && page != Page::Search {
             self.remember_search();
@@ -16,6 +39,7 @@ impl State {
         self.blur_edits();
         self.sheet_open = false;
         if self.page == page && !self.np_open {
+            self.reset_scroll_key(&page.key());
             return;
         }
         self.history.push((self.page.clone(), self.np_open));
@@ -29,11 +53,24 @@ impl State {
         }
         self.glide.active = false;
         if self.page != page {
-            self.keep_scroll(&page);
+            self.reset_scroll(&page);
             self.page = page.clone();
             self.art_trim_at = Some(self.now + 0.5);
             self.enter(page);
         }
+    }
+
+    /// Remembers the outgoing scroll offset (for Back/Forward history) and resets the incoming
+    /// page to the top so sidebar switches, artists, and releases always open at scroll `0`.
+    fn reset_scroll(&mut self, to: &Page) {
+        let from = self.page.key();
+        if let Some([offset, _]) = page_scroll(&from) {
+            self.scroll_memory.insert(from, offset);
+        }
+        let key = to.key();
+        self.scroll_memory.remove(&key);
+        clear_scroll(&key);
+        self.scroll_restore = Some((key, 0.0, self.now + 0.6));
     }
 
     /// Remembers the current scroll offset and schedules restoration for `to`.
@@ -47,9 +84,11 @@ impl State {
         self.scroll_restore = self.scroll_memory.get(&key).copied().filter(|y| *y > 1.0).map(|y| (key, y, self.now + 4.0));
     }
 
-    /// Whether there is a page or player state to go back to (or an artist's full track list to collapse).
+    /// Whether there is a page or player state to go back to (or a sub-view to collapse).
     pub fn can_back(&self) -> bool {
-        !self.history.is_empty() || (!self.np_open && self.detail.showing_all && matches!(self.page, Page::Artist(_)))
+        !self.history.is_empty()
+            || (!self.np_open && self.detail.showing_all && matches!(self.page, Page::Artist(_)))
+            || (!self.np_open && self.page == Page::Library && self.library.tab != LibTab::Overview)
     }
 
     pub fn can_forward(&self) -> bool {
@@ -59,6 +98,10 @@ impl State {
     pub fn back(&mut self) {
         if !self.np_open && self.detail.showing_all && matches!(self.page, Page::Artist(_)) {
             self.show_all_artist_tracks(false);
+            return;
+        }
+        if !self.np_open && self.page == Page::Library && self.library.tab != LibTab::Overview {
+            self.load_library_tab(LibTab::Overview);
             return;
         }
         while let Some((p, np)) = self.history.pop() {

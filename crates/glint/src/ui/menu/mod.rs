@@ -105,8 +105,12 @@ pub(super) fn flow_menu(name: &'static str, t: f32, open: bool, flow: &Flow, ent
     let skin = (t * 6.0).clamp(0.0, 1.0);
 
     let mut items = col().key(format!("{name}-items")).absolute(tx - x, ty - y).w(tw).h(th_).padding(PAD).transition(Transition::none());
+    let count = entries.len();
+    // Spread stagger across at most 0.34 of the spring so even long menus (15+ items) reach full
+    // opacity cleanly instead of leaving the last item dimmed at `t == 1.0`.
+    let step = (0.34 / count.saturating_sub(1).max(1) as f32).min(0.032);
     for (i, entry) in entries.into_iter().enumerate() {
-        let a = ((t - 0.16 - 0.04 * i as f32) / 0.40).clamp(0.0, 1.0);
+        let a = ((t - 0.12 - step * i as f32) / 0.36).clamp(0.0, 1.0);
         let a = a * a * (3.0 - 2.0 * a);
         let el = match entry {
             Entry::Row(r) => r,
@@ -248,14 +252,39 @@ pub fn volume(s: &State, cx: &Cx<State>, w: f32, h: f32) -> El {
         .on_hover_change(|s: &mut State, over: bool, _tx: &mut rune::Tx| {
             s.vol_card_hover = over;
             if over {
-                s.vol_open = true;
-                s.vol_close_at = None;
+                if s.vol_open || s.vol.t > 0.72 {
+                    s.vol_open = true;
+                    s.vol_close_at = None;
+                }
             } else {
-                s.vol_close_at = Some(s.now + 0.28);
+                s.vol_close_at = Some(s.now + 0.24);
             }
         })
         .child(inner);
-    el().key("vol-layer").absolute(0.0, 0.0).w(0.0).h(0.0).transition(Transition::none()).child(kit::snapshot().key("vol-snap").w(w).h(h)).child(card)
+    // Invisible hover bridge spanning the gap between the volume card and the speaker button so
+    // resting or moving the pointer across the gap keeps the popup steadily open without jitter.
+    let bridge_top = to[1] + VOL_H - 6.0;
+    let bridge_bot = from[1] + 2.0;
+    let bridge = (s.vol_open && bridge_bot > bridge_top).then(|| {
+        let bx = to[0].min(from[0]) - 6.0;
+        let br = (to[0] + VOL_W).max(from[0] + from[2]) + 6.0;
+        el().key("vol-bridge")
+            .absolute(bx.max(0.0), bridge_top)
+            .w((br - bx.max(0.0)).max(VOL_W))
+            .h(bridge_bot - bridge_top)
+            .transition(Transition::none())
+            .on_wheel(super::dock::volume_wheel)
+            .on_hover_change(|s: &mut State, over: bool, _tx: &mut rune::Tx| {
+                s.vol_bridge_hover = over;
+                if over {
+                    s.vol_open = true;
+                    s.vol_close_at = None;
+                } else {
+                    s.vol_close_at = Some(s.now + 0.24);
+                }
+            })
+    });
+    el().key("vol-layer").absolute(0.0, 0.0).w(0.0).h(0.0).transition(Transition::none()).child(kit::snapshot().key("vol-snap").w(w).h(h)).children(bridge).child(card)
 }
 
 /// Renders the profile menu anchored to the rail avatar button.

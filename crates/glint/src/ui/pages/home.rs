@@ -1,7 +1,7 @@
 //! Home page (full-height fluid Wave stage + infinite arc wheel) and dedicated Explore page
 //! (catalog shelves: Chart, New Releases, For You, Editorial).
 
-use rune::{El, Transition, col, el, row};
+use rune::{El, Transition, col, el, icon, row};
 use ym_api::{Shelf, ShelfItem, ShelfKind};
 
 use super::garden::{bug_layer, garden};
@@ -9,7 +9,7 @@ use super::shared::{CARD_GAP, CARD_R, GRID_GAP, album_card_lazy, column, fit, hs
 use crate::app::{Load, State};
 use crate::i18n::S;
 use crate::theme as th;
-use crate::ui::blobs::{self, Family, Fill, Look, Rng};
+use crate::ui::icons;
 use crate::ui::kit::{self, RAIL_W, label};
 
 /// Home screen: full-height 3D-textured fluid Wave stage paired with the infinite My Wave arc wheel.
@@ -32,7 +32,7 @@ pub(super) fn explore(s: &State, w: f32) -> El {
     let lang = s.lang;
     let cw = column(w);
     let compact = cw < 840.0;
-    let mut body = col().gap(if compact { 32.0 } else { 40.0 }).child(kit::rise(kit::page_title(S::Explore.get(lang), "").mt(8.0), 0));
+    let mut body = col().gap(if compact { 28.0 } else { 34.0 }).child(kit::rise(kit::page_title(S::Explore.get(lang), "").mt(8.0), 0));
     match &s.home {
         Load::Ready(shelves) => {
             let mut order: Vec<usize> = (0..shelves.len()).collect();
@@ -62,14 +62,14 @@ fn shelf_bones(w: f32, i: usize) -> El {
     let (_, size) = fit(w, 144.0, GRID_GAP, 7);
     let size = size.min(200.0);
     let n = (((column(w) + CARD_GAP) / (size + CARD_GAP)).floor() as usize).max(1);
-    let mark = el().w(8.0).h(8.0).radius(4.0).fill(kit::bone_fill());
-    let head = row().key(format!("bone-shelf-head-{i}")).w_full().items_center().gap(10.0).child(mark).child(kit::text_bone(
+    let mark = el().w(24.0).h(24.0).radius(7.0).fill(kit::bone_fill());
+    let head = row().key(format!("bone-shelf-head-{i}")).w_full().items_center().gap(9.0).child(mark).child(kit::text_bone(
         format!("bone-shelf-name-{i}"),
-        th::H1.line_height,
-        14.0,
-        150.0 - 30.0 * i as f32,
+        th::SECTION.line_height,
+        15.0,
+        150.0 - 24.0 * i as f32,
     ));
-    let mut cards = row().key(format!("bone-shelf-row-{i}")).w_full().gap(CARD_GAP).py(6.0);
+    let mut cards = row().key(format!("bone-shelf-row-{i}")).w_full().gap(CARD_GAP).py(4.0);
     for j in 0..n {
         cards = cards.child(
             col().key(format!("bone-card-{i}-{j}")).w(size).gap(10.0).child(el().w(size).h(size).radius(CARD_R).fill(kit::bone_fill())).child(
@@ -82,7 +82,7 @@ fn shelf_bones(w: f32, i: usize) -> El {
             ),
         );
     }
-    col().key(format!("bone-shelf-{i}")).w_full().gap(16.0).transition(Transition::opacity().springs(th::RISE)).child(head).child(cards)
+    col().key(format!("bone-shelf-{i}")).w_full().gap(14.0).transition(Transition::opacity().springs(th::RISE)).child(head).child(cards)
 }
 
 pub(super) fn shelf(s: &State, p: &str, i: usize, sh: &Shelf, w: f32) -> El {
@@ -110,24 +110,32 @@ pub(super) fn shelf(s: &State, p: &str, i: usize, sh: &Shelf, w: f32) -> El {
             }
         })
         .collect();
-    let mut rng = Rng::new(s.home_seed ^ (i as u64 + 1).wrapping_mul(0x51_7cc1_b727_220a));
-    let (family, hue) = match sh.kind {
-        ShelfKind::Personal => (Family::Heart, 348.0),
-        ShelfKind::Editorial => (Family::Star, 205.0),
-        ShelfKind::NewReleases => (Family::Sun, 42.0),
-        ShelfKind::Chart => (Family::Crown, 16.0),
+    let light = th::light();
+    let (ic, tint) = match sh.kind {
+        ShelfKind::Personal => (&icons::SHELF_PERSONAL, if light { th::rgb(0xd8345f) } else { th::rgb(0xff5b7f) }),
+        ShelfKind::Editorial => (&icons::SHELF_EDITORIAL, if light { th::rgb(0x2878d8) } else { th::rgb(0x52a8ff) }),
+        ShelfKind::NewReleases => (&icons::SHELF_NEW, if light { th::rgb(0xc68200) } else { th::rgb(0xffd24c) }),
+        ShelfKind::Chart => (&icons::SHELF_CHART, if light { th::rgb(0xcf5616) } else { th::rgb(0xff8a3d) }),
     };
-    let mark = blobs::shape(format!("{p}shelf-mark-{i}-{}", s.home_seed), family, rng.seed(), Fill::Hue(hue), Look::default(), 36.0, 36.0);
+    let mark = row()
+        .key(format!("{p}shelf-mark-{i}"))
+        .w(24.0)
+        .h(24.0)
+        .radius(7.0)
+        .center()
+        .fill(tint.alpha(if light { 0.14 } else { 0.16 }))
+        .child(icon(ic, 14.0).color(tint));
     let head = row()
         .key(format!("{p}shelf-head-{i}"))
         .w_full()
+        .h(32.0)
         .items_center()
-        .gap(8.0)
+        .gap(9.0)
         .child(mark)
-        .child(label(title.get(lang).to_owned(), th::H1, th::text()).truncate().min_w(0.0));
+        .child(label(title.get(lang).to_owned(), th::SECTION, th::text()).truncate().min_w(0.0));
     let head = match row_arrows(s, &row_key, sh.items.len(), size, w) {
         Some(a) => head.child(el().grow(1.0)).child(a),
         None => head,
     };
-    col().key(format!("{p}shelf-{i}")).gap(16.0).child(head).child(hscroll(s, row_key, size, cards))
+    col().key(format!("{p}shelf-{i}")).gap(12.0).child(head).child(hscroll(s, row_key, size, cards))
 }

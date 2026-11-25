@@ -6,7 +6,7 @@ use rune::{Live, LiveText, PopupAnchor, TextEdit};
 use ym_api::{Album, Artist, Lyrics, Playlist, Track};
 use ym_audio::{Engine, EqSettings};
 
-use super::types::{AlbumSort, ArtistSort, DiscKind, LibTab, Load, Page, PinnedItem, PlaylistSort, TrackSort};
+use super::types::{AlbumSort, ArtistSort, DiscKind, DislikeTab, LibTab, Load, Page, PinnedItem, PlaylistSort, PlaylistTab, TrackSort};
 use crate::i18n::{Lang, S};
 use crate::store::Repeat;
 
@@ -42,13 +42,13 @@ impl PlayingFrom {
                 if name.is_empty() || name.eq_ignore_ascii_case(title) || name == S::WaveOnYour.get(lang) {
                     return title.to_owned();
                 }
-                return format!("{} · {name}", S::WaveShort.get(lang));
+                return name.to_owned();
             }
             if self.kind == S::WaveByCollection {
-                return format!("{} · {}", S::WaveShort.get(lang), S::Collection.get(lang));
+                return S::Collection.get(lang).to_owned();
             }
             if !name.is_empty() {
-                return format!("{} · {name}", S::WaveShort.get(lang));
+                return name.to_owned();
             }
             return self.kind.get(lang).to_owned();
         }
@@ -88,6 +88,8 @@ impl PlayingFrom {
 #[derive(Default)]
 pub struct Library {
     pub tab: LibTab,
+    pub playlist_tab: PlaylistTab,
+    pub dislike_tab: DislikeTab,
     pub sort: TrackSort,
     pub playlist_sort: PlaylistSort,
     pub album_sort: AlbumSort,
@@ -100,13 +102,20 @@ pub struct Library {
     pub shown: RefCell<Vec<usize>>,
     /// Cache key for `shown`: trimmed query, genre/mood chip, active sort, track slice pointer, and length.
     pub shown_key: RefCell<(String, String, TrackSort, usize, usize)>,
+    /// Cached filtered/ordered downloaded tracks for O(1) virtualized row indexing.
+    pub downloaded_shown: RefCell<Vec<Track>>,
+    pub downloaded_key: RefCell<(usize, usize, String)>,
     pub tracks: Load<Vec<Track>>,
     pub playlists: Load<Vec<Playlist>>,
+    pub liked_playlists: Load<Vec<Playlist>>,
     pub albums: Load<Vec<Album>>,
     pub artists: Load<Vec<Artist>>,
+    pub top_artists: Load<Vec<ym_api::TopArtist>>,
+    pub disliked_tracks: Load<Vec<Track>>,
+    pub disliked_artists: Load<Vec<Artist>>,
     /// Whether `playlists` came from the service this session (not only from the snapshot).
     pub playlists_fresh: bool,
-    /// Whether liked albums, artists, and the Liked cover came from the service this session.
+    /// Whether liked albums, artists, top artists, and the Liked cover came from the service this session.
     pub collections_fresh: bool,
     pub liked_cover: Option<String>,
 }
@@ -160,6 +169,9 @@ pub struct LyricsUi {
     pub active: Option<usize>,
     /// True while the pointer hovers over the lyrics panel, softly revealing past lines.
     pub hover: bool,
+    /// App clock (`State::now`) of the user's most recent manual scroll inside the lyrics panel.
+    /// Auto-scrolling pauses for 4 seconds after manual scrolling and then returns to the active line.
+    pub user_scroll_at: Option<f64>,
 }
 
 #[derive(Clone, Debug)]

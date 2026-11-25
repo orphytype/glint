@@ -107,7 +107,22 @@ impl Client {
     /// Personalized waves for the Home wheel (`POST /wheel/new`), as shown in the official desktop
     /// app: mood/activity/editorial vibes, waves by favorite artists, genres, and eras.
     pub async fn wheel(&self) -> Result<Vec<WheelItem>> {
-        let v = self.call_flex(self.desktop_api(Method::POST, "/wheel/new").json(&json!({}))).await?;
+        self.wheel_with_seeds(&[]).await
+    }
+
+    /// Personalized waves for the Home wheel (`POST /wheel/new`), optionally contextualized by
+    /// active wave `seeds` (falling back to an empty body if the service returns nothing).
+    pub async fn wheel_with_seeds(&self, seeds: &[String]) -> Result<Vec<WheelItem>> {
+        if !seeds.is_empty() {
+            let body = json!({ "seeds": seeds });
+            if let Ok(v) = self.call_flex(self.desktop_api(Method::POST, "/wheel/new").header("Cache-Control", "no-cache").json(&body)).await {
+                let items = parse_wheel(&v);
+                if !items.is_empty() {
+                    return Ok(items);
+                }
+            }
+        }
+        let v = self.call_flex(self.desktop_api(Method::POST, "/wheel/new").header("Cache-Control", "no-cache").json(&json!({}))).await?;
         Ok(parse_wheel(&v))
     }
 

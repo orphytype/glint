@@ -49,6 +49,7 @@ use store::Store;
 const INSTANCE_ID: &str = "io.github.orphytype.glint";
 
 pub(crate) static APP_FONTS: &[&[u8]] = &[
+    include_bytes!("../assets/fonts/MusticaPro-SemiBold.otf"),
     include_bytes!("../assets/fonts/Commissioner[FLAR,VOLM,slnt,wght].ttf"),
     include_bytes!("../assets/fonts/Cormorant[wght].ttf"),
     include_bytes!("../assets/fonts/Cormorant-Italic[wght].ttf"),
@@ -98,7 +99,7 @@ fn main() {
         #[cfg(feature = "tooling")]
         scenes: scenes::SCENES,
         fonts: APP_FONTS,
-        families: ("Commissioner", "IBM Plex Mono"),
+        families: ("Mustica Pro", "IBM Plex Mono"),
         poll: Some(poll),
         on_key: Some(on_key),
         ..rune::AppSpec::new("Glint", (1320.0, 820.0), || State::new(None, Store::none(), store::Settings::default(), true), ui::view)
@@ -119,7 +120,7 @@ fn main() {
     let mini_spec = rune::AppSpec {
         min_size: Some((0.0, 0.0)),
         fonts: APP_FONTS,
-        families: ("Commissioner", "IBM Plex Mono"),
+        families: ("Mustica Pro", "IBM Plex Mono"),
         on_key: Some(ui::mini::on_key),
         ..rune::AppSpec::new("Glint Mini", mini_size, ui::mini::MiniState::default, ui::mini::view)
     };
@@ -374,14 +375,15 @@ fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
     } else if s.resized_at.replace(f64::NEG_INFINITY).is_finite() {
         changed = true;
     }
-    // A page come back to goes to where it was left, once it is tall enough for that (a list
-    // that loads again grows in a moment); after a while it settles for as far as it goes.
+    // Restore a remembered scroll offset on back/forward, or snap back to the top when `y == 0.0`.
     if let Some((key, y, until)) = s.scroll_restore.as_ref() {
         let (y, late) = (*y, s.now > *until);
         let mut clear = late;
         match app::page_scroll(key) {
             Some([offset, _]) if (offset - y).abs() < 1.0 => clear = true,
+            Some([offset, _]) if y <= 0.5 && offset >= 1.0 => tx.scroll_to_instant(key.as_str(), 0.0, 0.0),
             Some([_, max]) if max >= y - 0.5 || (late && max > 0.0) => tx.scroll_to_instant(key.as_str(), 0.0, y.min(max)),
+            None if y <= 0.5 => tx.scroll_to_instant(key.as_str(), 0.0, 0.0),
             _ => {}
         }
         if clear {
@@ -436,8 +438,9 @@ fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
     let fx_on = visible && fx::wants_tick();
     let bugs_on = visible && s.bugs_alive();
     let wiping_now = s.np_open && s.np_panel() == NpTab::Lyrics && (ui::np::wiping(s) || ui::np::counting(s));
-    if bugs_on && s.swarm.seed != s.home_seed {
-        s.swarm = bugs::Swarm::new(s.home_seed);
+    let want_bugs = usize::from(s.settings.butterfly_count.clamp(1, 10));
+    if bugs_on && (s.swarm.seed != s.home_seed || s.swarm.bugs.len() != want_bugs) {
+        s.swarm = bugs::Swarm::new(s.home_seed, want_bugs);
         s.bugs_at = s.now;
         changed = true;
     }
@@ -513,15 +516,27 @@ fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
         s.queue_placed = None;
     }
 
-    // Keep the lyric that is being sung in the middle of its panel.
+    // Keep the lyric that is being sung in the middle of its panel, pausing auto-scroll for 4 s
+    // whenever the user scrolls manually and smoothly returning focus once they stop.
     let showing = s.np_open && s.np_panel() == NpTab::Lyrics && s.current().is_some();
     if showing != s.lyrics_showing {
         s.lyrics_showing = showing;
+        s.lyrics.user_scroll_at = None;
         if showing {
             s.scroll_lyrics = true;
         }
     }
-    if showing && s.scroll_lyrics {
+    if showing && let Some(at) = s.lyrics.user_scroll_at {
+        let elapsed = s.now - at;
+        if elapsed >= 4.0 {
+            s.lyrics.user_scroll_at = None;
+            s.scroll_lyrics = true;
+            changed = true;
+        } else {
+            tx.wake_after(Duration::from_secs_f64((4.0 - elapsed).max(0.05)));
+        }
+    }
+    if showing && s.scroll_lyrics && s.lyrics.user_scroll_at.is_none() {
         s.scroll_lyrics = false;
         // Before the first line has started (a seek back to the intro, say) nothing is being sung
         // yet, and the list goes back to the top so the first line waits at its resting place.

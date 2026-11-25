@@ -135,6 +135,15 @@ impl ArtistLink {
 }
 
 impl Artist {
+    /// True for Yandex Music's synthetic "Various Artists" / "сборник" placeholder artist.
+    pub fn is_various(&self) -> bool {
+        if self.various || self.id == "171" {
+            return true;
+        }
+        let n = self.name.trim();
+        n.eq_ignore_ascii_case("сборник") || n.eq_ignore_ascii_case("various artists")
+    }
+
     pub fn cover_template(&self) -> Option<&str> {
         self.cover.as_ref().and_then(|c| c.uri.as_deref()).or(self.og_image.as_deref())
     }
@@ -280,6 +289,17 @@ fn de_labels<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
         .collect())
 }
 
+/// One artist from the account's recent top-listened artists (`/personal/top/artists/month`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct TopArtist {
+    pub artist: Artist,
+    pub seconds: u64,
+    pub position: u32,
+    /// `"same"`, `"up"`, `"down"`, or `"new"`.
+    pub progress: String,
+}
+
 /// One line of a track's credits, as the service words it ("Автор музыки": "...").
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
@@ -299,7 +319,7 @@ pub struct OutLink {
 
 impl Album {
     pub fn artists_line(&self) -> String {
-        self.artists.iter().map(|a| a.name.as_str()).filter(|n| !n.is_empty()).collect::<Vec<_>>().join(", ")
+        self.artists.iter().filter(|a| !a.is_various()).map(|a| a.name.as_str()).filter(|n| !n.is_empty()).collect::<Vec<_>>().join(", ")
     }
 
     pub fn cover_template(&self) -> Option<&str> {

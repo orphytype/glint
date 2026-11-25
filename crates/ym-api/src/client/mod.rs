@@ -264,8 +264,9 @@ impl Client {
     }
 
     /// Streams a (checked) absolute URL straight to `path` on disk using a small 64 KiB buffer,
-    /// returning `(total_bytes, head_bytes)` without ever holding the whole audio file in RAM.
-    pub(super) async fn fetch_to_file(&self, url: &str, max: u64, path: &std::path::Path) -> Result<(u64, Vec<u8>)> {
+    /// decrypting `encraw` chunks on the fly when `cipher` is provided, and returning
+    /// `(total_bytes, head_bytes)` without ever holding the whole audio file in RAM.
+    pub(super) async fn fetch_to_file(&self, url: &str, max: u64, path: &std::path::Path, cipher: Option<crate::aes_ctr::Aes128Ctr>) -> Result<(u64, Vec<u8>)> {
         use std::io::Write as _;
 
         let resp = self.inner.http.get(url).header(USER_AGENT, CLIENT_ID).send().await?;
@@ -282,22 +283,31 @@ impl Client {
         let mut resp = resp;
         let mut written = 0u64;
         let mut head = Vec::with_capacity(4096);
+        let mut scratch = Vec::new();
         while let Some(chunk) = resp.chunk().await? {
             if written.saturating_add(chunk.len() as u64) > max {
                 drop(writer);
                 let _ = std::fs::remove_file(path);
                 return Err(Error::Api("response is too large".into()));
             }
+            let plain: &[u8] = if let Some(c) = cipher {
+                scratch.clear();
+                scratch.extend_from_slice(&chunk);
+                c.apply_at(written, &mut scratch);
+                &scratch
+            } else {
+                &chunk
+            };
             if head.len() < 4096 {
-                let take = (4096 - head.len()).min(chunk.len());
-                head.extend_from_slice(&chunk[..take]);
+                let take = (4096 - head.len()).min(plain.len());
+                head.extend_from_slice(&plain[..take]);
             }
-            if let Err(e) = writer.write_all(&chunk) {
+            if let Err(e) = writer.write_all(plain) {
                 drop(writer);
                 let _ = std::fs::remove_file(path);
                 return Err(Error::Api(e.to_string()));
             }
-            written += chunk.len() as u64;
+            written += plain.len() as u64;
         }
         if let Err(e) = writer.flush() {
             let _ = std::fs::remove_file(path);

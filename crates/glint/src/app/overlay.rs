@@ -11,6 +11,7 @@ impl State {
         self.vol_open = false;
         self.vol_button_hover = false;
         self.vol_card_hover = false;
+        self.vol_bridge_hover = false;
         self.vol_close_at = None;
     }
 

@@ -26,13 +26,13 @@ const BASELINE: f32 = 0.5;
 /// `MOVE`, and the screen stays at least `HOLD`. Once the app is ready it waits `SETTLE` more, so
 /// what came in under it has finished moving. It goes after `GIVE_UP` whatever happens, and fades
 /// out over `FADE`.
-const APPEAR: f64 = 0.14;
-const MOVE_AT: f64 = 0.04;
-const MOVE: f64 = 0.28;
-const HOLD: f64 = 0.34;
-const SETTLE: f64 = 0.04;
-const GIVE_UP: f64 = 2.2;
-const FADE: f64 = 0.22;
+const APPEAR: f64 = 0.10;
+const MOVE_AT: f64 = 0.02;
+const MOVE: f64 = 0.20;
+const HOLD: f64 = 0.20;
+const SETTLE: f64 = 0.02;
+const GIVE_UP: f64 = 1.6;
+const FADE: f64 = 0.16;
 
 /// Where the launch screen is, in the app's clock.
 #[derive(Clone, Copy, Debug, Default)]

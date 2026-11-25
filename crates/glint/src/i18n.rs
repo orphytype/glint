@@ -341,7 +341,6 @@ strings! {
     SimilarArtists => "Similar artists", "Похожие исполнители";
     // wave
     WaveTitle => "My Wave", "Моя волна";
-    WaveShort => "Wave", "Волна";
     HistoryShort => "History", "История";
     WaveOnYour => "On your wave", "Моя волна";
     WaveFavorite => "Favorite", "Любимое";
@@ -394,6 +393,7 @@ strings! {
     Effects => "Background effects", "Эффекты фона";
     Shaders => "Shaders", "Шейдеры";
     Butterflies => "Butterflies on Home", "Бабочки на главной";
+    ButterflyCount => "Butterfly count", "Количество бабочек";
     CpuMode => "CPU mode", "Режим процессора";
     CpuModeNote => "Uses less memory, restarts the app", "Меньше памяти, перезапустит приложение";
     ReduceMotion => "Disable animations", "Отключить анимации";
@@ -417,20 +417,7 @@ strings! {
     TrayIcon => "Tray icon", "Значок в трее";
     CloseToTray => "Close to tray", "Закрывать в трей";
     TrayShow => "Open Glint", "Открыть Glint";
-    TrayQuit => "Quit", "Выйти";
-    TrayPlay => "Play", "Воспроизвести";
     TrayPause => "Pause", "Пауза";
-    TrayPrev => "Previous track", "Предыдущий трек";
-    TrayNext => "Next track", "Следующий трек";
-    TrayLike => "Add to Liked", "Добавить в «Мне нравится»";
-    TrayUnlike => "Remove from Liked", "Убрать из «Мне нравится»";
-    TrayShuffleOn => "Shuffle: on", "Вперемешку: вкл.";
-    TrayShuffleOff => "Shuffle: off", "Вперемешку: выкл.";
-    TrayRepeatOff => "Repeat: off", "Повтор: выкл.";
-    TrayRepeatAll => "Repeat: all", "Повтор: весь список";
-    TrayRepeatOne => "Repeat: this track", "Повтор: этот трек";
-    TrayMute => "Mute", "Выключить звук";
-    TrayUnmute => "Unmute", "Включить звук";
     TrayNothing => "Nothing is playing", "Ничего не играет";
     CacheImages => "Cover images", "Обложки";
     CacheAudio => "Downloaded audio", "Скачанное аудио";
@@ -579,4 +566,24 @@ strings! {
     QualitySaverDesc => "AAC · 64 kbps", "AAC · 64 кбит/с";
     QualityBalancedDesc => "AAC or MP3 · 192 kbps", "AAC или MP3 · 192 кбит/с";
     QualityBestDesc => "FLAC or 320 kbps", "FLAC или 320 кбит/с";
+    WaveformBars => "Waveform bars", "Полоски прогресса";
+    FavoriteArtists => "Favorite artists", "Любимые исполнители";
+    MyPlaylists => "My playlists", "Мои плейлисты";
+    PlaylistsCreated => "Created by you", "Вы собрали";
+    PlaylistsLiked => "You liked", "Вам понравилось";
+    FavoriteAlbums => "Favorite albums", "Любимые альбомы";
+    DownloadedTracks => "Downloaded tracks", "Скачанные треки";
+    MyDislikes => "My dislikes", "Мои дизлайки";
+    RemoveDislike => "Remove from dislikes", "Убрать из дизлайков";
+    RemovedFromDislikes => "Removed from dislikes", "Убрано из дизлайков";
+    YandexMusic => "Yandex Music", "Яндекс Музыка";
+    PrivatePlaylist => "Private playlist", "Приватный плейлист";
+    PlaylistMadePrivate => "Playlist is now private", "Плейлист стал приватным";
+    PlaylistMadePublic => "Playlist is now public", "Плейлист стал публичным";
+    TrayHide => "Minimize", "Свернуть";
+    TrayCheckUpdates => "Check for updates", "Проверить обновления";
+    TrayPlayTrack => "Play", "Воспроизведение";
+    TrayPrevTrack => "Previous song", "Предыдущая песня";
+    TrayNextTrack => "Next song", "Следующая песня";
+    TrayQuitApp => "Close app", "Закрыть приложение";
 }

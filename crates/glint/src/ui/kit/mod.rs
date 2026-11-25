@@ -20,7 +20,7 @@ use crate::theme::{self as th, Pal};
 pub use controls::{
     BTN_H, FIELD_R, MENU_ROW, bar_play_btn, bone_fill, btn_primary, btn_select, btn_small, btn_small_disabled, btn_soft, btn_soft_icon, button_bone, button_group, button_width,
     field_icon_btn, field_surface, ibtn, menu_row, more_link, np_play_btn, plus_badge, quiet_btn, quiet_off, quiet_toggle, search_clear, search_field, seg_button,
-    seg_icon, seg_sort, skip_btn, sort_button, sort_button_sm, sort_button_w, swap_glyph, tab_body, tab_pill_w, tab_pill_with_w, tab_track, text_bone,
+    seg_icon, seg_sort, skip_btn, sort_button, sort_button_sm, swap_glyph, tab_body, tab_pill_w, tab_pill_with_w, tab_track, text_bone,
 };
 pub use marquee::{marquee, marquee_hover, marquee_on};
 pub use media::{
@@ -40,7 +40,6 @@ pub const DOCK_ZONE: f32 = BAR_H + BAR_GAP + 48.0;
 pub const PAGE_PAD: f32 = 32.0;
 pub const PAGE_MAX: f32 = 960.0;
 pub const BTN: f32 = 40.0;
-pub const GLYPH: f32 = 22.0;
 
 thread_local! {
     static BAR_ON: Cell<bool> = const { Cell::new(false) };
@@ -275,7 +274,7 @@ pub fn heading(key: impl Into<String>, title: &str, more: Option<El>) -> El {
 }
 
 pub fn list_heading(key: impl Into<String>, title: &str, more: Option<El>) -> El {
-    heading(key, title, more)
+    heading(key, title, more).pl(ROW_PAD)
 }
 
 pub fn scroll_page(key: impl Into<String>, body: El) -> El {

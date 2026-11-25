@@ -14,14 +14,20 @@ use crate::i18n::S;
 use crate::theme::{self as th, veil};
 use crate::ui::{icons, np_icons};
 
-pub const ROW_H: f32 = 52.0;
-/// Horizontal padding inside a track row's plate. Rows stay flush with the column edge so their
-/// borders and active highlights align cleanly with the cover, search field, and dividers.
-pub const ROW_PAD: f32 = 10.0;
-const ROW_GAP: f32 = 12.0;
+pub const ROW_H: f32 = 60.0;
+pub const ROW_COVER: f32 = 46.0;
+pub const ROW_COVER_R: f32 = 8.0;
+/// Left padding equals top/bottom margin around the cover (`(ROW_H - ROW_COVER) / 2`) so the
+/// highlighted row plate wraps the cover evenly on all three sides.
+pub const ROW_PAD: f32 = (ROW_H - ROW_COVER) * 0.5;
+const ROW_PR: f32 = 10.0;
+const ROW_GAP: f32 = 14.0;
+const ROW_TITLE: TextStyle = TextStyle::new(15.5, 520.0).family(th::SANS).lh(21.0);
+const ROW_ARTIST: TextStyle = TextStyle::new(13.5, 420.0).family(th::SANS).lh(18.0);
+const ROW_TIME: TextStyle = TextStyle::new(13.0, 450.0).family(th::SANS).lh(17.0).features("'tnum' 1");
 /// Every slot on the right of a row has the same square, so the icons are evenly spaced.
 const ROW_BTN: f32 = 36.0;
-const ROW_GLYPH: f32 = 16.0;
+const ROW_GLYPH: f32 = 17.0;
 /// The duration, and the More button that takes its place on hover.
 const ROW_TAIL: f32 = ROW_BTN;
 /// Right of the duration, the text ends this far in: the same as a heading's count above.
@@ -31,14 +37,14 @@ pub const ROW_TIME_INSET: f32 = 2.0;
 const ROW_ACTIONS: f32 = ROW_BTN * 2.0 + ROW_TAIL;
 /// The number column of an album's rows, where other lists show a cover. The number sits in its
 /// middle, and the title follows closer than it would a cover.
-const ROW_NUM: f32 = 24.0;
-const ROW_NUM_GAP: f32 = 8.0;
-pub const ROW_COVER: f32 = 40.0;
-pub const ROW_COVER_R: f32 = 6.0;
+const ROW_NUM: f32 = 26.0;
+const ROW_NUM_GAP: f32 = 10.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListSrc {
     Liked,
+    Downloads,
+    Dislikes,
     Detail,
     Search,
     Queue,
@@ -120,6 +126,25 @@ impl State {
                     self.library.shown.borrow().iter().filter_map(|&i| all.get(i).cloned()).collect()
                 }
             }
+            ListSrc::Downloads => {
+                let q = self.library.filter.text.trim().to_owned();
+                let all = self.downloaded_list();
+                if self.library.tab == crate::app::LibTab::Downloads && !q.is_empty() {
+                    match crate::find::Query::new(&q) {
+                        None => all,
+                        Some(qr) => crate::find::best(all.iter().map(|t| {
+                            let f = track_fields(t);
+                            qr.tier(&f.iter().map(String::as_str).collect::<Vec<_>>())
+                        }))
+                        .into_iter()
+                        .filter_map(|i| all.get(i).cloned())
+                        .collect(),
+                    }
+                } else {
+                    all
+                }
+            }
+            ListSrc::Dislikes => self.library.disliked_tracks.get().cloned().unwrap_or_default(),
             ListSrc::Detail => {
                 match self.detail_shown() {
                     None => self.detail.tracks.clone(),
@@ -160,6 +185,8 @@ impl State {
     pub fn list_from(&self, src: ListSrc) -> Option<PlayingFrom> {
         let (kind, name, page) = match src {
             ListSrc::Liked => (S::Liked, FromName::Word(S::LikedTracks), Some(Page::Library)),
+            ListSrc::Downloads => (S::DownloadedTracks, FromName::Word(S::DownloadedTracks), Some(Page::Library)),
+            ListSrc::Dislikes => (S::MyDislikes, FromName::Word(S::MyDislikes), Some(Page::Library)),
             ListSrc::Detail => {
                 let page = self.detail.page.clone()?;
                 let kind = match page {
@@ -280,9 +307,9 @@ fn title_line(s: &State, t: &Track, name: String, ink: Color, width: f32, moving
     let explicit = t.is_explicit();
     let clean = s.clean_tracks.contains(&t.id);
     let badges = 26.0 * (u8::from(explicit) + u8::from(clean)) as f32;
-    let name_w = super::measure_w(&name, th::BODY_M).ceil();
+    let name_w = super::measure_w(&name, ROW_TITLE).ceil();
     let room = if width.is_finite() { (width - badges).max(40.0) } else { width };
-    let line = marquee(format!("tl-{}", t.id), room, name_w, moving, s.settings.reduce_motion, move || label(name.clone(), th::BODY_M, ink));
+    let line = marquee(format!("tl-{}", t.id), room, name_w, moving, s.settings.reduce_motion, move || label(name.clone(), ROW_TITLE, ink));
     let mut r = row().min_w(0.0).gap(6.0).items_center().child(line.shrink());
     if explicit {
         r = r.child(explicit_badge(s));
@@ -446,7 +473,7 @@ fn track_row_at(s: &State, t: &Track, src: ListSrc, qi: Option<usize>, num: Opti
     let hot = format!("row-{}", t.id);
     let moving = marquee_on(s, &hot);
     let room_w = room(&hot);
-    let meta = artists_row_in_width(s, &t.artists, th::SMALL, false, &format!("{hot}-ar"), artist_ink, room_w, moving);
+    let meta = artists_row_in_width(s, &t.artists, ROW_ARTIST, false, &format!("{hot}-ar"), artist_ink, room_w, moving);
     let (id, t2, t3) = (t.id.clone(), t.clone(), t.clone());
     let more_key = format!("more-{}", t.id);
     let more_anchor = more_key.clone();
@@ -460,7 +487,7 @@ fn track_row_at(s: &State, t: &Track, src: ListSrc, qi: Option<usize>, num: Opti
         .items_center()
         .justify_end()
         .pr(ROW_TIME_INSET)
-        .child(label(crate::player::fmt_time(t.duration_ms.unwrap_or(0)), th::TIME, th::text3()).gop(1.0, 0.0));
+        .child(label(crate::player::fmt_time(t.duration_ms.unwrap_or(0)), ROW_TIME, th::text3()).gop(1.0, 0.0));
     let more = row().absolute(0.0, 0.0).w_full().h_full().items_center().justify_end().child(
         row_btn(more_key, &icons::MORE, ROW_GLYPH + 2.0, S::More.get(s.lang)).on_press(move |s: &mut State| open_track_menu(s, &t3, qi, more_anchor.clone())),
     );
@@ -475,18 +502,17 @@ fn track_row_at(s: &State, t: &Track, src: ListSrc, qi: Option<usize>, num: Opti
         .child(heart)
         .child(tail);
 
-    let lead_pad = if queue { (ROW_H - ROW_COVER) * 0.5 } else { ROW_PAD };
     let mut r = row()
         .key(hot.clone())
         .role("button")
         .label(title.as_str())
         .w_full()
         .h(ROW_H)
-        .pl(lead_pad)
-        .pr(ROW_PAD)
+        .pl(ROW_PAD)
+        .pr(ROW_PR)
         .gap(ROW_GAP)
         .items_center()
-        .radius(10.0)
+        .radius(12.0)
         .cursor(Cursor::Pointer)
         .fill(if is_dragging {
             veil(0.12)

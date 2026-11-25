@@ -9,18 +9,41 @@ const NAMES: &[(&str, &str, &str)] = &[
     ("ruspop", "Русская поп-музыка", "Russian pop"),
     ("foreignpop", "Зарубежная поп-музыка", "Foreign pop"),
     ("kpop", "K-pop", "K-pop"),
+    ("k-pop", "K-pop", "K-pop"),
     ("jpop", "J-pop", "J-pop"),
+    ("j-pop", "J-pop", "J-pop"),
     ("hyperpop", "Гиперпоп", "Hyperpop"),
+    ("glitchcore", "Глитчкор", "Glitchcore"),
+    ("digicore", "Диджикор", "Digicore"),
+    ("dreampop", "Дрим-поп", "Dream pop"),
+    ("darkpop", "Дарк-поп", "Dark pop"),
+    ("electropop", "Электропоп", "Electropop"),
+    ("synthpop", "Синти-поп", "Synthpop"),
+    ("dancepop", "Дэнс-поп", "Dance pop"),
+    ("indiepop", "Инди-поп", "Indie pop"),
+    ("bedroompop", "Бедрум-поп", "Bedroom pop"),
+    ("artpop", "Арт-поп", "Art pop"),
     ("allrock", "Рок", "Rock"),
     ("rock", "Рок", "Rock"),
     ("rusrock", "Русский рок", "Russian rock"),
     ("ukrrock", "Украинский рок", "Ukrainian rock"),
+    ("jrock", "J-rock", "J-rock"),
+    ("j-rock", "J-rock", "J-rock"),
     ("rnr", "Рок-н-ролл", "Rock and roll"),
     ("hardrock", "Хард-рок", "Hard rock"),
     ("folkrock", "Фолк-рок", "Folk rock"),
     ("stonerrock", "Стоунер-рок", "Stoner rock"),
     ("prog", "Прогрессив", "Progressive"),
     ("postrock", "Пост-рок", "Post-rock"),
+    ("postpunk", "Пост-панк", "Post-punk"),
+    ("shoegaze", "Шугейз", "Shoegaze"),
+    ("grunge", "Гранж", "Grunge"),
+    ("britpop", "Брит-поп", "Britpop"),
+    ("indierock", "Инди-рок", "Indie rock"),
+    ("altrock", "Альт-рок", "Alt-rock"),
+    ("poprock", "Поп-рок", "Pop rock"),
+    ("poppunk", "Поп-панк", "Pop punk"),
+    ("raprock", "Рэп-рок", "Rap rock"),
     ("newwave", "Новая волна", "New wave"),
     ("alternative", "Альтернатива", "Alternative"),
     ("indie", "Инди", "Indie"),
@@ -31,6 +54,12 @@ const NAMES: &[(&str, &str, &str)] = &[
     ("emo", "Эмо", "Emo"),
     ("metal", "Метал", "Metal"),
     ("numetal", "Ню-метал", "Nu metal"),
+    ("metalcore", "Металкор", "Metalcore"),
+    ("deathcore", "Дэткор", "Deathcore"),
+    ("deathmetal", "Дэт-метал", "Death metal"),
+    ("blackmetal", "Блэк-метал", "Black metal"),
+    ("thrashmetal", "Трэш-метал", "Thrash metal"),
+    ("powermetal", "Пауэр-метал", "Power metal"),
     ("epicmetal", "Эпический метал", "Epic metal"),
     ("folkmetal", "Фолк-метал", "Folk metal"),
     ("gothicmetal", "Готик-метал", "Gothic metal"),
@@ -38,29 +67,65 @@ const NAMES: &[(&str, &str, &str)] = &[
     ("classicmetal", "Классический метал", "Classic metal"),
     ("extrememetal", "Экстремальный метал", "Extreme metal"),
     ("rap", "Рэп и хип-хоп", "Hip-hop and rap"),
+    ("hiphop", "Рэп и хип-хоп", "Hip-hop and rap"),
     ("rusrap", "Русский рэп", "Russian rap"),
     ("foreignrap", "Зарубежный рэп", "Foreign rap"),
+    ("cloudrap", "Клауд-рэп", "Cloud rap"),
+    ("memphisrap", "Мемфис-рэп", "Memphis rap"),
+    ("trap", "Трэп", "Trap"),
+    ("drill", "Дрилл", "Drill"),
+    ("rage", "Рейдж", "Rage"),
+    ("plugg", "Плаг", "Plugg"),
+    ("pluggnb", "Плагнби", "Pluggnb"),
     ("phonk", "Фонк", "Phonk"),
     ("electronics", "Электроника", "Electronic"),
+    ("electronic", "Электроника", "Electronic"),
+    ("edm", "EDM", "EDM"),
     ("edmgenre", "EDM", "EDM"),
     ("dance", "Танцевальная", "Dance"),
     ("eurodance", "Евроданс", "Eurodance"),
     ("house", "Хаус", "House"),
+    ("deephouse", "Дип-хаус", "Deep house"),
+    ("techhouse", "Тек-хаус", "Tech house"),
+    ("slaphouse", "Слэп-хаус", "Slap house"),
+    ("basshouse", "Бейс-хаус", "Bass house"),
+    ("discohouse", "Диско-хаус", "Disco house"),
     ("techno", "Техно", "Techno"),
     ("trance", "Транс", "Trance"),
     ("dnb", "Драм-н-бейс", "Drum and bass"),
+    ("jungle", "Джангл", "Jungle"),
+    ("breakcore", "Брейккор", "Breakcore"),
+    ("ukgarage", "UK-гэридж", "UK garage"),
     ("dubstep", "Дабстеп", "Dubstep"),
+    ("futurebass", "Фьючер-бейс", "Future bass"),
+    ("hardstyle", "Хардстайл", "Hardstyle"),
+    ("synthwave", "Синтвейв", "Synthwave"),
+    ("retrowave", "Ретровейв", "Retrowave"),
+    ("darksynth", "Дарксинт", "Darksynth"),
+    ("vaporwave", "Вейпорвейв", "Vaporwave"),
+    ("witchhouse", "Витч-хаус", "Witch house"),
+    ("chiptune", "Чиптюн", "Chiptune"),
     ("industrial", "Индастриал", "Industrial"),
     ("experimental", "Экспериментальная", "Experimental"),
     ("triphop", "Трип-хоп", "Trip-hop"),
     ("idm", "IDM", "IDM"),
     ("ambient", "Эмбиент", "Ambient"),
     ("lofi", "Лоу-фай", "Lo-fi"),
+    ("chillhop", "Чилл-хоп", "Chillhop"),
+    ("chillout", "Чиллаут", "Chillout"),
+    ("chill", "Чилл", "Chill"),
     ("lounge", "Лаунж", "Lounge"),
     ("relax", "Релакс", "Relax"),
     ("newage", "Нью-эйдж", "New age"),
     ("meditation", "Медитативная", "Meditation"),
     ("naturesounds", "Звуки природы", "Nature sounds"),
+    ("acoustic", "Акустика", "Acoustic"),
+    ("instrumental", "Инструментальная", "Instrumental"),
+    ("neoclassical", "Неоклассика", "Neoclassical"),
+    ("afrobeat", "Афробит", "Afrobeat"),
+    ("reggaeton", "Реггетон", "Reggaeton"),
+    ("anime", "Аниме", "Anime"),
+    ("ost", "Саундтреки", "Soundtracks"),
     ("jazz", "Джаз", "Jazz"),
     ("conjazz", "Современный джаз", "Contemporary jazz"),
     ("tradjazz", "Традиционный джаз", "Traditional jazz"),
@@ -115,10 +180,22 @@ const NAMES: &[(&str, &str, &str)] = &[
     ("other", "Другое", "Other"),
 ];
 
+/// Normalizes a Yandex genre id by lowercasing and stripping trailing `"genre"` suffixes
+/// (`"hyperpopgenre"` -> `"hyperpop"`, `"edmgenre"` -> `"edm"`).
+fn normalize(id: &str) -> String {
+    let key = id.trim().to_ascii_lowercase();
+    if let Some(stem) = key.strip_suffix("genre")
+        && !stem.is_empty()
+    {
+        return stem.trim_end_matches(['-', '_']).to_owned();
+    }
+    key
+}
+
 /// The name of genre `id` in `lang`: a known one in words, any other made readable ("some-genre"
 /// becomes "Some genre").
 pub fn name(id: &str, lang: Lang) -> String {
-    let key = id.trim().to_ascii_lowercase();
+    let key = normalize(id);
     if let Some((_, ru, en)) = NAMES.iter().find(|(k, _, _)| *k == key) {
         return (if lang == Lang::Ru { *ru } else { *en }).to_owned();
     }
@@ -145,23 +222,28 @@ pub fn names(ids: &[String], lang: Lang) -> String {
 /// Groups fine-grained Yandex genre ids into top-level filter categories (matching the pills in
 /// Yandex Music's Liked playlist: "Рэп и хип-хоп", "Поп", "Альтернатива", "Рок", etc.).
 pub fn bucket(id: &str) -> String {
-    let k = id.trim().to_ascii_lowercase();
+    let k = normalize(id);
     match k.as_str() {
-        "rap" | "rusrap" | "foreignrap" | "phonk" => "rap".into(),
-        "pop" | "ruspop" | "foreignpop" | "kpop" | "jpop" | "hyperpop" | "estrada" | "rusestrada" => "pop".into(),
-        "alternative" | "emo" | "hardcore" | "posthardcore" | "numetal" | "alternativemetal" => "alternative".into(),
-        "rock" | "allrock" | "rusrock" | "ukrrock" | "rnr" | "hardrock" | "folkrock" | "stonerrock" | "prog" | "postrock" | "newwave" | "punk" => "rock".into(),
+        "rap" | "hiphop" | "rusrap" | "foreignrap" | "cloudrap" | "memphisrap" | "trap" | "drill" | "rage" | "plugg" | "pluggnb" | "phonk" => "rap".into(),
+        "pop" | "ruspop" | "foreignpop" | "kpop" | "k-pop" | "jpop" | "j-pop" | "hyperpop" | "glitchcore" | "digicore" | "dreampop" | "darkpop" | "electropop"
+        | "synthpop" | "dancepop" | "indiepop" | "bedroompop" | "artpop" | "estrada" | "rusestrada" => "pop".into(),
+        "alternative" | "altrock" | "emo" | "hardcore" | "posthardcore" | "numetal" | "alternativemetal" | "grunge" | "shoegaze" | "postpunk" | "raprock" => "alternative".into(),
+        "rock" | "allrock" | "rusrock" | "ukrrock" | "jrock" | "j-rock" | "rnr" | "hardrock" | "folkrock" | "stonerrock" | "prog" | "postrock" | "newwave" | "punk"
+        | "poprock" | "poppunk" | "britpop" | "indierock" => "rock".into(),
         "indie" | "local-indie" => "indie".into(),
-        "metal" | "epicmetal" | "folkmetal" | "gothicmetal" | "classicmetal" | "extrememetal" => "metal".into(),
-        "electronics" | "electronic" | "edmgenre" | "dance" | "eurodance" | "house" | "techno" | "trance" | "dnb" | "dubstep" | "industrial" | "experimental" | "triphop" | "idm" | "synthwave" => {
-            "electronics".into()
-        }
-        "ambient" | "lofi" | "lounge" | "relax" | "newage" | "meditation" | "chill" => "ambient".into(),
+        "metal" | "metalcore" | "deathcore" | "deathmetal" | "blackmetal" | "thrashmetal" | "powermetal" | "epicmetal" | "folkmetal" | "gothicmetal" | "classicmetal"
+        | "extrememetal" => "metal".into(),
+        "electronics" | "electronic" | "edm" | "dance" | "eurodance" | "house" | "deephouse" | "techhouse" | "slaphouse" | "basshouse" | "discohouse" | "techno"
+        | "trance" | "dnb" | "jungle" | "breakcore" | "ukgarage" | "dubstep" | "futurebass" | "hardstyle" | "industrial" | "experimental" | "triphop" | "idm"
+        | "synthwave" | "retrowave" | "darksynth" | "vaporwave" | "witchhouse" | "chiptune" => "electronics".into(),
+        "ambient" | "lofi" | "chillhop" | "chillout" | "lounge" | "relax" | "newage" | "meditation" | "chill" => "ambient".into(),
         "jazz" | "conjazz" | "tradjazz" | "jazzrock" | "bebop" | "smoothjazz" | "vocaljazz" | "bigbands" => "jazz".into(),
         "rnb" | "soul" | "funk" | "disco" => "rnb".into(),
-        "classical" | "classicalmusic" | "modern" | "opera" | "vocal" => "classical".into(),
-        "soundtrack" | "films" | "tvseries" | "animated" | "videogame" | "musical" => "soundtrack".into(),
-        "folk" | "rusfolk" | "country" | "latin" | "latinfolk" | "celtic" | "balkan" | "caucasian" | "eastern" | "african" | "jewish" => "folk".into(),
+        "classical" | "classicalmusic" | "neoclassical" | "modern" | "opera" | "vocal" => "classical".into(),
+        "soundtrack" | "ost" | "films" | "tvseries" | "animated" | "anime" | "videogame" | "musical" => "soundtrack".into(),
+        "folk" | "rusfolk" | "country" | "latin" | "latinfolk" | "celtic" | "balkan" | "caucasian" | "eastern" | "african" | "jewish" | "afrobeat" | "reggaeton" => {
+            "folk".into()
+        }
         _ => k,
     }
 }

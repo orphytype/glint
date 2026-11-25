@@ -322,6 +322,36 @@ impl Catalog {
         self.liked.iter().filter_map(|id| self.tracks.iter().find(|t| &t.id == id)).cloned().collect()
     }
 
+    pub fn top_artists(&self) -> Vec<ym_api::TopArtist> {
+        let stats: &[(u64, &str)] = &[(25_200, "same"), (23_400, "same"), (16_200, "up"), (16_200, "down"), (14_400, "same")];
+        self.artists
+            .iter()
+            .take(stats.len())
+            .enumerate()
+            .map(|(i, a)| ym_api::TopArtist { artist: a.clone(), seconds: stats[i].0, position: (i + 1) as u32, progress: stats[i].1.to_owned() })
+            .collect()
+    }
+
+    pub fn liked_playlists(&self) -> Vec<Playlist> {
+        self.playlists
+            .iter()
+            .skip(2)
+            .cloned()
+            .map(|mut p| {
+                p.tracks.clear();
+                p
+            })
+            .collect()
+    }
+
+    pub fn disliked_tracks(&self) -> Vec<Track> {
+        self.tracks.iter().skip(2).step_by(9).take(6).cloned().collect()
+    }
+
+    pub fn disliked_artists(&self) -> Vec<Artist> {
+        self.artists.iter().rev().take(3).cloned().collect()
+    }
+
     pub fn home(&self) -> Vec<Shelf> {
         let pl = |ids: &[usize]| ids.iter().filter_map(|i| self.playlists.get(*i)).cloned().map(ShelfItem::Playlist).collect::<Vec<_>>();
         vec![

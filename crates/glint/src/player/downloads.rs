@@ -1,6 +1,7 @@
 //! Offline track downloads, batch deletion and embedded metadata tagging.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 
 use ym_api::Track;
 
@@ -8,8 +9,9 @@ use crate::app::{DownloadActivity, DownloadFail, DownloadState, Load, Page, Stat
 use crate::i18n::S;
 use crate::store::{DownloadedTrack, QualityPref};
 
-/// How many tracks of a batch download at once.
-const DOWNLOAD_PARALLEL: usize = 8;
+/// How many tracks of a batch download at once. Kept small alongside disk-backed streaming so
+/// downloading large playlists (1,000+ FLAC tracks) keeps RAM flat instead of spiking.
+const DOWNLOAD_PARALLEL: usize = 3;
 
 impl State {
     pub fn ask_download(&mut self, tracks: Vec<Track>) {
@@ -169,123 +171,186 @@ impl State {
         } else {
             self.download_activity = Some(DownloadActivity { total: tracks.len(), active: tracks.len(), done: 0, failed: 0, changed_at: self.now });
         }
-        let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(DOWNLOAD_PARALLEL));
-        for track in tracks {
-            let id = track.id.clone();
+        let Some(app) = self.app.clone() else { return };
+        let queue = Arc::new(Mutex::new(VecDeque::from(tracks)));
+        let workers = DOWNLOAD_PARALLEL.min(queue.lock().map_or(1, |q| q.len()).max(1));
+        for _ in 0..workers {
+            let queue = queue.clone();
+            let app = app.clone();
             let job_backend = backend.clone();
             let job_downloads = downloads.clone();
             let job_cache = cache.clone();
             let job_art = self.art.clone();
             let job_fkcensor = fkcensor.clone();
-            let gate = gate.clone();
-            self.job(
-                async move {
-                    if fkcensor_on && let crate::net::Backend::Live(client) = &job_backend {
-                        job_fkcensor.ensure_loaded(client).await;
-                    }
-                    if !track.is_available() && !(fkcensor_on && job_fkcensor.has_track(&track.id)) {
-                        return (id, Err(DownloadFail::Unavailable));
-                    }
-                    let _permit = gate.acquire_owned().await.ok();
-                    let cover_url = State::cover_key(track.cover_template());
-                    let extras = async {
-                        let lyrics = tokio::time::timeout(std::time::Duration::from_secs(8), job_backend.lyrics(&track, &job_fkcensor, fkcensor_on))
-                            .await
-                            .ok()
-                            .and_then(Result::ok)
-                            .unwrap_or_default();
-                        let (cover_png, cover_raw) = match &cover_url {
-                            None => (None, None),
-                            Some(url) => {
-                                let from_ram = job_art.encoded(url);
-                                let disk_cache = job_cache.clone();
-                                let url_disk = url.clone();
-                                let local = tokio::task::spawn_blocking(move || from_ram.or_else(|| disk_cache.as_ref().and_then(|d| d.get(&url_disk)))).await.ok().flatten();
-                                let (raw, from_net) = match local {
-                                    Some(bytes) => (Some(bytes), false),
-                                    None => (job_backend.image_bytes(url).await, true),
-                                };
-                                let png = match &raw {
-                                    Some(bytes) => {
-                                        let bytes = bytes.clone();
-                                        tokio::task::spawn_blocking(move || {
-                                            let img = crate::art::decode(&bytes, crate::art::COVER_PX)?;
-                                            crate::art::encode_png(&img)
-                                        })
-                                        .await
-                                        .ok()
-                                        .flatten()
-                                    }
-                                    None => match job_backend.image(url, crate::art::COVER_PX).await {
-                                        Some(image) => tokio::task::spawn_blocking(move || crate::art::encode_png(&image)).await.ok().flatten(),
-                                        None => None,
-                                    },
-                                };
-                                (png, from_net.then_some(raw).flatten())
-                            }
-                        };
-                        (lyrics, cover_png, cover_raw)
+            crate::net::spawn(async move {
+                if fkcensor_on && let crate::net::Backend::Live(client) = &job_backend {
+                    job_fkcensor.ensure_loaded(client).await;
+                }
+                loop {
+                    let track = {
+                        let mut g = queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        g.pop_front()
                     };
-                    let file = async {
-                        let mut attempt = 0u32;
-                        loop {
-                            match job_backend.audio(&track, quality, Some(job_downloads.clone()), &job_fkcensor, fkcensor_on, true).await {
-                                Err(e) if e.is_transient() && attempt < 2 => {
-                                    attempt += 1;
-                                    tokio::time::sleep(std::time::Duration::from_millis(1000 * u64::from(attempt))).await;
-                                }
-                                other => break other,
+                    let Some(track) = track else { break };
+                    let id = track.id.clone();
+                    let result = if !track.is_available() && !(fkcensor_on && job_fkcensor.has_track(&track.id)) {
+                        Err(DownloadFail::Unavailable)
+                    } else {
+                        download_one_track(
+                            &track,
+                            quality,
+                            &job_backend,
+                            &job_downloads,
+                            job_cache.as_ref(),
+                            &job_art,
+                            &job_fkcensor,
+                            fkcensor_on,
+                        )
+                        .await
+                    };
+                    app.update(move |s, _tx| {
+                        let ok = result.is_ok();
+                        if result == Ok(true) {
+                            s.clean_tracks.insert(id.clone());
+                        }
+                        match result {
+                            Ok(_) => {
+                                s.download_errors.remove(&id);
+                            }
+                            Err(why) => {
+                                s.download_errors.insert(id.clone(), why);
                             }
                         }
-                    };
-                    let (audio, (lyrics, cover, cover_raw)) = tokio::join!(file, extras);
-                    let audio = match audio {
-                        Ok(audio) => audio,
-                        Err(e) => return (id, Err(DownloadFail::of(&e))),
-                    };
-                    let (put_track, put_downloads, put_cover, put_raw, put_cache, put_cover_url) = (track.clone(), job_downloads, cover, cover_raw, job_cache, cover_url);
-                    let stored = tokio::task::spawn_blocking(move || {
-                        let tagged = crate::audio_tags::embed(&audio.bytes, audio.ext, &put_track, put_cover.as_deref());
-                        let variant = if audio.clean { "replacement" } else { "original" };
-                        let audio_key = format!("{}-{:?}-{variant}", put_track.id, quality);
-                        let audio_ok = put_downloads.put_audio_with_ext(&audio_key, &tagged, audio.ext).is_ok();
-                        let item = DownloadedTrack { track: put_track, lyrics, ext: audio.ext.to_owned() };
-                        let metadata_ok = audio_ok && put_downloads.put(&item).is_ok();
-                        if let (Some(url), Some(bytes), Some(cache)) = (put_cover_url.as_ref(), put_raw.as_deref(), put_cache.as_ref()) {
-                            let _ = cache.put(url, bytes);
+                        s.downloads.insert(id, if ok { DownloadState::Done } else { DownloadState::Failed });
+                        if let Some(activity) = &mut s.download_activity {
+                            activity.active = activity.active.saturating_sub(1);
+                            if ok {
+                                activity.done += 1;
+                            } else {
+                                activity.failed += 1;
+                            }
+                            activity.changed_at = s.now;
                         }
-                        metadata_ok.then_some(audio.clean)
-                    })
-                    .await
-                    .ok()
-                    .flatten();
-                    (id, stored.ok_or(DownloadFail::Storage))
-                },
-                |s, _, (id, result)| {
-                    let ok = result.is_ok();
-                    if result == Ok(true) {
-                        s.clean_tracks.insert(id.clone());
-                    }
-                    match result {
-                        Ok(_) => {
-                            s.download_errors.remove(&id);
-                        }
-                        Err(why) => {
-                            s.download_errors.insert(id.clone(), why);
-                        }
-                    }
-                    s.downloads.insert(id, if ok { DownloadState::Done } else { DownloadState::Failed });
-                    if let Some(activity) = &mut s.download_activity {
-                        activity.active = activity.active.saturating_sub(1);
-                        if ok {
-                            activity.done += 1;
-                        } else {
-                            activity.failed += 1;
-                        }
-                        activity.changed_at = s.now;
-                    }
-                },
-            );
+                    });
+                }
+            });
         }
     }
+}
+
+#[expect(clippy::too_many_arguments, reason = "isolated async download helper per track")]
+async fn download_one_track(
+    track: &Track,
+    quality: ym_api::Quality,
+    backend: &crate::net::Backend,
+    downloads: &Arc<crate::store::DownloadStore>,
+    cache: Option<&Arc<ym_audio::DiskCache>>,
+    art: &crate::art::ArtCache,
+    fkcensor: &crate::fkcensor::FkCensor,
+    fkcensor_on: bool,
+) -> Result<bool, DownloadFail> {
+    let cover_url = State::cover_key(track.cover_template());
+    let raw_tmp = downloads.temp_path(&format!("raw-{}", track.id));
+    let extras = async {
+        let lyrics = tokio::time::timeout(std::time::Duration::from_secs(8), backend.lyrics(track, fkcensor, fkcensor_on))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+        let (cover_png, cover_raw) = match &cover_url {
+            None => (None, None),
+            Some(url) => {
+                let from_ram = art.encoded(url);
+                let disk_cache = cache.cloned();
+                let url_disk = url.clone();
+                let local = tokio::task::spawn_blocking(move || from_ram.or_else(|| disk_cache.as_ref().and_then(|d| d.get(&url_disk)))).await.ok().flatten();
+                let (raw, from_net) = match local {
+                    Some(bytes) => (Some(bytes), false),
+                    None => (backend.image_bytes(url).await, true),
+                };
+                let png = match &raw {
+                    Some(bytes) => {
+                        let bytes = bytes.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let img = crate::art::decode(&bytes, crate::art::COVER_PX)?;
+                            crate::art::encode_png(&img)
+                        })
+                        .await
+                        .ok()
+                        .flatten()
+                    }
+                    None => match backend.image(url, crate::art::COVER_PX).await {
+                        Some(image) => tokio::task::spawn_blocking(move || crate::art::encode_png(&image)).await.ok().flatten(),
+                        None => None,
+                    },
+                };
+                (png, from_net.then_some(raw).flatten())
+            }
+        };
+        (lyrics, cover_png, cover_raw)
+    };
+    let file = async {
+        let mut attempt = 0u32;
+        loop {
+            match backend.download_audio_to_file(track, quality, Some(downloads.clone()), fkcensor, fkcensor_on, true, &raw_tmp).await {
+                Err(e) if e.is_transient() && attempt < 2 => {
+                    let _ = std::fs::remove_file(&raw_tmp);
+                    attempt += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(1000 * u64::from(attempt))).await;
+                }
+                other => break other,
+            }
+        }
+    };
+    let (audio, (lyrics, cover, cover_raw)) = tokio::join!(file, extras);
+    let audio = match audio {
+        Ok(audio) => audio,
+        Err(e) => {
+            let _ = std::fs::remove_file(&raw_tmp);
+            return Err(DownloadFail::of(&e));
+        }
+    };
+    let put_track = track.clone();
+    let put_downloads = downloads.clone();
+    let put_cache = cache.cloned();
+    let stored = tokio::task::spawn_blocking(move || {
+        let variant = if audio.clean { "replacement" } else { "original" };
+        let audio_key = format!("{}-{:?}-{variant}", put_track.id, quality);
+        let tagged_tmp = put_downloads.temp_path(&format!("tag-{}", put_track.id));
+        let (final_path, final_ext, remove_final_on_err) = if audio.is_mp4_flac
+            && crate::audio_tags::remux_flac_from_mp4_file(&audio.path, &tagged_tmp, &put_track, cover.as_deref())
+        {
+            if audio.is_temp {
+                let _ = std::fs::remove_file(&audio.path);
+            }
+            (tagged_tmp, "flac", true)
+        } else if crate::audio_tags::embed_file(&audio.path, &tagged_tmp, audio.ext, &put_track, cover.as_deref()) {
+            if audio.is_temp {
+                let _ = std::fs::remove_file(&audio.path);
+            }
+            (tagged_tmp, audio.ext, true)
+        } else {
+            let _ = std::fs::remove_file(&tagged_tmp);
+            (audio.path.clone(), audio.ext, audio.is_temp)
+        };
+        let audio_ok = if !remove_final_on_err && !audio.is_temp {
+            // Reusing an existing file already in the store.
+            true
+        } else {
+            put_downloads.put_audio_file(&audio_key, &final_path, final_ext).is_ok()
+        };
+        if !audio_ok && remove_final_on_err {
+            let _ = std::fs::remove_file(&final_path);
+        }
+        let item = DownloadedTrack { track: put_track, lyrics, ext: final_ext.to_owned() };
+        let metadata_ok = audio_ok && put_downloads.put(&item).is_ok();
+        if let (Some(url), Some(bytes), Some(cache)) = (cover_url.as_ref(), cover_raw.as_deref(), put_cache.as_ref()) {
+            let _ = cache.put(url, bytes);
+        }
+        metadata_ok.then_some(audio.clean)
+    })
+    .await
+    .ok()
+    .flatten();
+    stored.ok_or(DownloadFail::Storage)
 }

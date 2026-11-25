@@ -16,8 +16,9 @@ use crate::ui::icons;
 use crate::ui::kit::{self, label};
 use crate::ui::shapes::Ill;
 
-/// Where the sung line rests, as a fraction of the window's height.
-pub const REST: f32 = 0.35;
+/// Where the sung line rests, as a fraction of the window's height (slightly below upper third,
+/// above center).
+pub const REST: f32 = 0.42;
 
 /// Unsung word opacity next to sung words.
 const UNSUNG: f32 = 0.46;
@@ -123,41 +124,78 @@ pub fn part_name(part: &str, lang: Lang) -> String {
 
 struct LineCtx {
     style: rune::TextStyle,
+    aside_style: rune::TextStyle,
     pos_ms: u32,
     synced: bool,
     align: u8,
-    font: u8,
     reduce: bool,
     cpu: bool,
     resizing: bool,
     hover: bool,
+    user_scrolling: bool,
 }
 
-/// Computes progressive per-line opacity matching Yandex Music's synced lyrics view:
+/// Computes progressive per-line opacity for synced lyrics:
 /// - active line: full brightness (`1.0`);
-/// - upcoming lines below: progressively dimmer with each step (`+1`, `+2`, `+3`, ...);
-/// - past lines above: hidden normally (`0.0`), and softly visible on hover (`-1`, `-2`, ...).
-fn stepped_opacity(delta: isize, hover: bool) -> f32 {
+/// - upcoming lines below: fade out gradually step by step;
+/// - past lines above: fade out progressively faster than upcoming lines (staying subtly visible
+///   instead of vanishing abruptly), brighten on hover, and become clearly readable when the user
+///   manually scrolls through the lyrics.
+fn stepped_opacity(delta: isize, hover: bool, user_scrolling: bool) -> f32 {
     if delta == 0 {
         1.0
+    } else if user_scrolling {
+        if delta > 0 {
+            match delta {
+                1 => 0.68,
+                2 => 0.56,
+                3 => 0.46,
+                4 => 0.38,
+                _ => 0.32,
+            }
+        } else {
+            match -delta {
+                1 => 0.62,
+                2 => 0.50,
+                3 => 0.40,
+                4 => 0.32,
+                _ => 0.26,
+            }
+        }
     } else if delta > 0 {
-        match delta {
-            1 => 0.42,
-            2 => 0.25,
-            3 => 0.15,
-            4 => 0.09,
-            _ => 0.05,
+        if hover {
+            match delta {
+                1 => 0.50,
+                2 => 0.34,
+                3 => 0.22,
+                4 => 0.14,
+                _ => 0.08,
+            }
+        } else {
+            match delta {
+                1 => 0.44,
+                2 => 0.28,
+                3 => 0.18,
+                4 => 0.11,
+                _ => 0.06,
+            }
         }
     } else if hover {
         match -delta {
-            1 => 0.30,
-            2 => 0.19,
-            3 => 0.11,
-            4 => 0.07,
+            1 => 0.36,
+            2 => 0.23,
+            3 => 0.14,
+            4 => 0.08,
             _ => 0.04,
         }
     } else {
-        0.0
+        match -delta {
+            1 => 0.24,
+            2 => 0.12,
+            3 => 0.06,
+            4 => 0.025,
+            _ => 0.0,
+        }
     }
 }
 
@@ -169,7 +207,7 @@ fn lyric_line(i: usize, line: &LyricLine, active: bool, delta: isize, near: bool
     };
     let timed = !line.words.is_empty();
     let main = if timed { join_words(&line.words) } else { line.text.clone() };
-    let target_opacity = if !ctx.synced { 0.95 } else { stepped_opacity(delta, ctx.hover) };
+    let target_opacity = if !ctx.synced { 0.95 } else { stepped_opacity(delta, ctx.hover, ctx.user_scrolling) };
     // Only animate lines close to the active line on GPU; CPU mode skips scale transforms &
     // spring allocations completely so lyrics stay ultra-lightweight.
     let anim: rune::Anim = if ctx.reduce || ctx.cpu || ctx.resizing || !near {
@@ -197,7 +235,7 @@ fn lyric_line(i: usize, line: &LyricLine, active: bool, delta: isize, near: bool
         block = block.animated_changes().origin(ox, 0.5).scale(target_scale).scale_motion(anim);
     }
     if !line.backing.is_empty() {
-        let mut back = label(line.backing_text(), th::lyric_face(th::ASIDE, ctx.font), th::veil(0.64))
+        let mut back = label(line.backing_text(), ctx.aside_style, th::veil(0.64))
             .w_full()
             .wrap()
             .align(side)
@@ -212,7 +250,10 @@ fn lyric_line(i: usize, line: &LyricLine, active: bool, delta: isize, near: bool
     if ctx.synced
         && let Some(ms) = line.time_ms
     {
-        block = block.cursor(Cursor::Pointer).on_press(move |s: &mut State| s.seek_ms(u64::from(ms)));
+        block = block.cursor(Cursor::Pointer).on_press(move |s: &mut State| {
+            s.lyrics.user_scroll_at = None;
+            s.seek_ms(u64::from(ms));
+        });
     }
     block
 }
@@ -273,17 +314,30 @@ pub(super) fn lyrics_view(s: &State, p: &Pal, x: f32, w: f32, h: f32) -> El {
             let vp_top = h * REST - vp_h * 0.5;
             let pos = s.lyric_ms();
             let look = s.settings.lyric_look;
-            let style = th::lyric_face(
-                match (look.size, w < 480.0) {
-                    (0, _) => th::LYRIC_XS,
-                    (1, _) | (_, true) => th::LYRIC_S,
-                    (_, false) => th::LYRIC,
-                },
-                look.font,
-            );
+            // Scale lyric typography smoothly with the lyrics panel width and window height so
+            // narrow or compact windows stay readable without awkward 2-word wraps, while large
+            // screens keep the full desktop scale.
+            let scale_w = (w / 620.0).clamp(0.56, 1.0);
+            let scale_h = (h / 760.0).clamp(0.68, 1.0);
+            let win_scale = ((scale_w.min(scale_h) * 50.0).round() / 50.0).clamp(0.56, 1.0);
+            let scale_key = (win_scale * 100.0).round() as u16;
+            let scale_text = |mut st: rune::TextStyle| {
+                st.size = (st.size * win_scale).round().max(15.0);
+                st.line_height = (st.line_height * win_scale).round().max(st.size + 4.0);
+                st.tracking *= win_scale;
+                st
+            };
+            let base = match look.size {
+                0 => th::LYRIC_XS,
+                1 => th::LYRIC_S,
+                _ => th::LYRIC,
+            };
+            let style = scale_text(th::lyric_face(base, look.font));
+            let aside_style = scale_text(th::lyric_face(th::ASIDE, look.font));
+            let line_gap = (20.0 * win_scale).round().max(12.0);
             let credit_el = credit(s);
             let block_w = lyrics_block_width(s.lyrics_gen, l, style, look.font, w, credit_el.is_some(), lang);
-            let mut lines = col().w(block_w).gap(20.0).pt(vp_h * 0.5).pb(vp_h * 0.5).motion(rune::Spring::NONE);
+            let mut lines = col().w(block_w).gap(line_gap).pt(vp_h * 0.5).pb(vp_h * 0.5).motion(rune::Spring::NONE);
             if let Some(first) = count_start(l) {
                 let mut empty_before = 0usize;
                 let mut first_line_idx = None;
@@ -295,7 +349,7 @@ pub(super) fn lyrics_view(s: &State, p: &Pal, x: f32, w: f32, h: f32) -> El {
                         break;
                     }
                 }
-                let top_y = 38.0 + 20.0 + empty_before as f32 * 40.0;
+                let top_y = 38.0 + line_gap + empty_before as f32 * (20.0 + line_gap);
                 let (target_text, target_style): (Cow<'_, str>, rune::TextStyle) = match first_line_idx.and_then(|i| l.lines.get(i)) {
                     Some(line) if l.synced && line.part.is_some() => {
                         let name = part_name(line.part.as_deref().unwrap_or_default(), lang);
@@ -312,7 +366,19 @@ pub(super) fn lyrics_view(s: &State, p: &Pal, x: f32, w: f32, h: f32) -> El {
             let cpu = crate::fx::cpu_mode();
             let pos_bucket = pos / if cpu { 80 } else { 55 };
             let hover = s.lyrics.hover;
-            let ctx = LineCtx { style, pos_ms: pos, synced: l.synced, align: look.align, font: look.font, reduce: s.settings.reduce_motion, cpu, resizing: s.is_resizing(), hover };
+            let user_scrolling = s.lyrics.user_scroll_at.is_some_and(|at| s.now - at < 4.0);
+            let ctx = LineCtx {
+                style,
+                aside_style,
+                pos_ms: pos,
+                synced: l.synced,
+                align: look.align,
+                reduce: s.settings.reduce_motion,
+                cpu,
+                resizing: s.is_resizing(),
+                hover,
+                user_scrolling,
+            };
             for (i, line) in l.lines.iter().enumerate() {
                 if line.text.trim().is_empty() && line.words.is_empty() {
                     lines = lines.child(el().key(format!("ly-{i}")).h(20.0));
@@ -326,7 +392,7 @@ pub(super) fn lyrics_view(s: &State, p: &Pal, x: f32, w: f32, h: f32) -> El {
                     && let Some(part) = line.part.as_deref()
                 {
                     let name = part_name(part, lang);
-                    let part_op = stepped_opacity(delta, hover);
+                    let part_op = stepped_opacity(delta, hover, user_scrolling);
                     let caps = kit::caps(name.as_str(), th::text3())
                         .w_full()
                         .opacity(part_op)
@@ -340,19 +406,20 @@ pub(super) fn lyrics_view(s: &State, p: &Pal, x: f32, w: f32, h: f32) -> El {
                 let is_active = l.synced && active == Some(i);
                 let near = active.is_none_or(|a| i.abs_diff(a) <= 6);
                 let row_el = if is_active && !ctx.reduce && (!line.words.is_empty() || !line.backing.is_empty()) {
-                    let version = (s.lyrics_gen, pos_bucket, look.size, look.align, look.font, ctx.cpu, ctx.resizing, th::light());
+                    let version = (s.lyrics_gen, pos_bucket, look.size, look.align, look.font, scale_key, ctx.cpu, ctx.resizing, th::light());
                     rune::memo(format!("ly-memo-{i}"), version, || lyric_line(i, line, true, 0, true, &ctx))
                 } else {
                     let delta_bucket = delta.clamp(-5, 5);
-                    let flags = u8::from(is_active)
-                        | (u8::from(hover) << 1)
-                        | (u8::from(near) << 2)
-                        | (u8::from(l.synced) << 3)
-                        | (u8::from(ctx.reduce) << 4)
-                        | (u8::from(ctx.cpu) << 5)
-                        | (u8::from(ctx.resizing) << 6)
-                        | (u8::from(th::light()) << 7);
-                    let version = (s.lyrics_gen, delta_bucket, flags, look.size, look.align, look.font);
+                    let flags = u16::from(is_active)
+                        | (u16::from(hover) << 1)
+                        | (u16::from(near) << 2)
+                        | (u16::from(l.synced) << 3)
+                        | (u16::from(ctx.reduce) << 4)
+                        | (u16::from(ctx.cpu) << 5)
+                        | (u16::from(ctx.resizing) << 6)
+                        | (u16::from(th::light()) << 7)
+                        | (u16::from(user_scrolling) << 8);
+                    let version = (s.lyrics_gen, delta_bucket, flags, look.size, look.align, look.font, scale_key);
                     rune::memo(format!("ly-memo-{i}"), version, || lyric_line(i, line, is_active, delta, near, &ctx))
                 };
                 lines = lines.child(row_el);
@@ -372,6 +439,15 @@ pub(super) fn lyrics_view(s: &State, p: &Pal, x: f32, w: f32, h: f32) -> El {
                 .h(vp_h)
                 .motion(rune::Spring::NONE)
                 .on_hover_change(|s: &mut State, on: bool, _tx: &mut Tx| s.lyrics.hover = on)
+                .on_wheel(|s: &mut State, e: rune::WheelEvent, tx: &mut Tx| {
+                    if e.dy.abs() > 0.01 {
+                        s.lyrics.user_scroll_at = Some(s.now);
+                        s.scroll_lyrics = false;
+                        tx.wake_after(std::time::Duration::from_secs_f64(4.05));
+                    }
+                    // Let RUNE's scroll container process the wheel delta normally.
+                    false
+                })
                 .scroll(ScrollSpec { stick_bottom: false })
                 .scroll_edge_fade(56.0)
                 .child(lines)

@@ -65,13 +65,15 @@ impl Likeable {
 }
 
 /// Where to fetch a track's audio. One URL per signing salt: try them in order, the CDN answers
-/// 403 to a wrong signature.
+/// 403 to a wrong signature. When Yandex delivers `encraw` (the standard transport for lossless
+/// `flac-mp4`), `key` holds the 16-byte AES-128-CTR decryption key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamInfo {
     pub urls: Vec<String>,
     pub codec: String,
     pub bitrate_kbps: u32,
     pub size_bytes: u64,
+    pub key: Option<[u8; 16]>,
 }
 
 /// What happened, for the Wave's feedback channel.

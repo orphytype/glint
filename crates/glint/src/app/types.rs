@@ -149,9 +149,26 @@ impl DownloadFail {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum LibTab {
     #[default]
+    Overview,
     Tracks,
     Playlists,
     Albums,
+    Artists,
+    Downloads,
+    Dislikes,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PlaylistTab {
+    #[default]
+    Own,
+    Liked,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DislikeTab {
+    #[default]
+    Tracks,
     Artists,
 }
 
@@ -252,6 +269,10 @@ pub struct Detail {
     pub donation: Option<String>,
     /// API release kind (`"single"`, `"compilation"`, or none for an album).
     pub release_kind: Option<String>,
+    /// True when the open playlist belongs to Yandex Music (`yamusic-*` editorial/personal feed).
+    pub yandex_playlist: bool,
+    /// True when the open own playlist has `visibility == "private"`.
+    pub playlist_private: bool,
     /// Track ordering and the original order kept while another sort is active.
     pub sort: TrackSort,
     pub unsorted: Option<Vec<Track>>,

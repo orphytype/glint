@@ -6,7 +6,7 @@ use crate::fx::Slot as _;
 use rune::{Align, Cursor, Drag, El, Phase, TextStyle, Transition, Tx, col, el, icon, row};
 
 use super::shared::{start_wave_with, wave_hue, wave_title};
-use crate::app::{FromName, Page, PlayingFrom, State};
+use crate::app::{FromName, Page, PlayingFrom, Session, State};
 use crate::i18n::S;
 use crate::theme as th;
 use crate::ui::blobs::{self, Fill, Look, Rng};
@@ -95,27 +95,31 @@ fn recede_el(mut e: El, stay: f32, dy: f32) -> El {
     e
 }
 
-/// Builds the sleek frosted top eyebrow pill on Home: golden My Wave badge when playing a My Wave
-/// preset or idle, or a clickable source pill (Album, Single, Playlist, Artist, Liked, History)
-/// when playing outside My Wave. Always housed in a subtle translucent pill so it stays crisp even
-/// over bright yellow/light covers.
+/// Builds the sleek frosted top eyebrow pill on Home:
+/// - Default My Wave (`"onyourwave"`): My Wave glyph + `"Моя волна"`.
+/// - Selected My Wave section/preset (or any wave station): just the section name without
+///   `"Волна · "` and without a left icon, plus a yellow circular `×` button on the right that
+///   resets to regular My Wave and refreshes the wave wheel.
+/// - Non-wave playback (Album, Single, Playlist, Artist, Liked, History): clickable source pill.
 fn stage_eyebrow(s: &State, cur: Option<&ym_api::Track>, wave_on: bool, stage_w: f32, u: f32, colors: (rune::Color, rune::Color, rune::Color)) -> (El, f32) {
     let lang = s.lang;
     let (chip_bg, chip_border, cell_hov) = colors;
     let eyebrow_col = if th::light() { th::rgb(0x9e6300) } else { th::rgb(0xffdc4e) };
+    let close_ink = if th::light() { th::rgb(0xffffff) } else { th::rgb(0x141414) };
     let pill_h = even(28.0 * u, 24.0, 30.0);
-    let pill_px = (16.0 * u).clamp(13.0, 18.0).round();
+    let pill_px = (10.0 * u).clamp(9.0, 12.0).round();
+    let close_sz = even(18.0 * u, 16.0, 20.0);
     let font_sz = (12.5 * u).clamp(11.0, 13.5);
     let glyph_sz = even(13.5 * u, 12.0, 14.0);
     let max_pill = (stage_w - 32.0).clamp(160.0, 300.0);
 
-    let wave_pill = |text: String| {
+    let default_wave_pill = |text: String| {
         row()
             .key("hm-source")
             .h(pill_h)
             .max_w(max_pill)
             .px(pill_px)
-            .gap(7.0)
+            .gap(6.0)
             .radius(pill_h * 0.5)
             .items_center()
             .fill(chip_bg)
@@ -126,18 +130,60 @@ fn stage_eyebrow(s: &State, cur: Option<&ym_api::Track>, wave_on: bool, stage_w:
             .child(label(text, TextStyle::new(font_sz, 600.0).family(th::SANS).tracking(0.1).lh(pill_h - 8.0), eyebrow_col).truncate().min_w(0.0))
     };
 
+    let custom_wave_pill = |text: String| {
+        let reset_btn = row()
+            .key("hm-source-clear")
+            .role("button")
+            .label(S::WaveTitle.get(lang))
+            .help(S::WaveTitle.get(lang))
+            .w(close_sz)
+            .h(close_sz)
+            .radius(close_sz * 0.5)
+            .center()
+            .fill(eyebrow_col)
+            .hov(eyebrow_col.alpha(0.86))
+            .cursor(Cursor::Pointer)
+            .press_scale(0.92)
+            .on_press(|s: &mut State| start_wave_with(s, "onyourwave"))
+            .child(icon(&icons::CLOSE, (close_sz * 0.58).round()).color(close_ink));
+        row()
+            .key("hm-source")
+            .h(pill_h)
+            .max_w(max_pill)
+            .pl(pill_px + 1.0)
+            .pr(((pill_h - close_sz) * 0.5).max(4.0).round())
+            .gap(7.0)
+            .radius(pill_h * 0.5)
+            .items_center()
+            .fill(chip_bg)
+            .border(1.0, chip_border)
+            .animated_changes()
+            .motion(th::SLIDE)
+            .child(label(text, TextStyle::new(font_sz, 620.0).family(th::SANS).tracking(0.05).lh(pill_h - 8.0), eyebrow_col).truncate().min_w(0.0))
+            .child(reset_btn)
+    };
+
     let Some(track) = cur else {
-        return (wave_pill(S::WaveTitle.get(lang).to_owned()), pill_h);
+        if s.wave_choice == "onyourwave" {
+            return (default_wave_pill(S::WaveTitle.get(lang).to_owned()), pill_h);
+        }
+        let name = s
+            .wave_name
+            .clone()
+            .or_else(|| s.wheel_wave(&s.wave_choice).map(|w| w.name.clone()))
+            .unwrap_or_else(|| wave_title(&s.wave_choice).get(lang).to_owned());
+        return (custom_wave_pill(name), pill_h);
     };
     if wave_on && s.playing_from.as_ref().is_none_or(|f| f.kind == S::WaveTitle) {
-        let title = if s.wave_choice == "onyourwave" {
-            S::WaveTitle.get(lang).to_owned()
-        } else if let Some(w) = s.wheel_wave(&s.wave_choice) {
-            format!("{} · {}", S::WaveShort.get(lang), w.name)
-        } else {
-            format!("{} · {}", S::WaveShort.get(lang), wave_title(&s.wave_choice).get(lang))
-        };
-        return (wave_pill(title), pill_h);
+        if s.wave_choice == "onyourwave" {
+            return (default_wave_pill(S::WaveTitle.get(lang).to_owned()), pill_h);
+        }
+        let title = s
+            .wave_name
+            .clone()
+            .or_else(|| s.wheel_wave(&s.wave_choice).map(|w| w.name.clone()))
+            .unwrap_or_else(|| wave_title(&s.wave_choice).get(lang).to_owned());
+        return (custom_wave_pill(title), pill_h);
     }
     let fallback = || match track.albums.first() {
         Some(al) => {
@@ -150,9 +196,12 @@ fn stage_eyebrow(s: &State, cur: Option<&ym_api::Track>, wave_on: bool, stage_w:
         None => PlayingFrom { wave: false, kind: S::Track, name: FromName::Word(S::NowPlaying), page: None },
     };
     let from = s.playing_from.clone().unwrap_or_else(fallback);
+    if from.wave {
+        return (custom_wave_pill(from.line_for_track(lang, Some(track))), pill_h);
+    }
     let text = from.line_for_track(lang, Some(track));
-    let ink = if wave_on { eyebrow_col } else { th::text().alpha(0.90) };
-    let glyph = kit::source_glyph(&from, if wave_on { eyebrow_col } else { th::text().alpha(0.80) }, glyph_sz);
+    let ink = th::text().alpha(0.90);
+    let glyph = kit::source_glyph(&from, th::text().alpha(0.80), glyph_sz);
     let page = from.page;
     let mut pill = row()
         .key("hm-source")
@@ -161,7 +210,7 @@ fn stage_eyebrow(s: &State, cur: Option<&ym_api::Track>, wave_on: bool, stage_w:
         .h(pill_h)
         .max_w(max_pill)
         .px(pill_px)
-        .gap(7.0)
+        .gap(6.0)
         .radius(pill_h * 0.5)
         .items_center()
         .fill(chip_bg)
@@ -664,7 +713,45 @@ pub(super) fn garden(s: &State, cw: f32, h: f32) -> El {
     let item_gap = (16.0 * arc_u).clamp(11.0, 20.0).round();
     let accent_yellow = if light { th::rgb(0xc07a00) } else { th::rgb(0xffdc4e) };
     let total_waves = s.wheel_waves.len();
-    if total_waves > 0 {
+    let show_bones = s.wheel_loading || (total_waves == 0 && s.session == Session::Live);
+    if show_bones {
+        const NAME_FRACS: [f32; 7] = [0.68, 0.56, 0.74, 0.50, 0.64, 0.72, 0.54];
+        const SUB_FRACS: [f32; 7] = [0.0, 0.34, 0.0, 0.38, 0.30, 0.0, 0.36];
+        for (i, offset) in (-3isize..=3).enumerate() {
+            let rel = offset as f32;
+            let norm = (rel / 3.4).clamp(-1.35, 1.35);
+            let x = (pad_l + curve * (1.0 - (norm * norm).min(1.0))).round();
+            let y = (center_y + rel * pitch - item_h * 0.5).round();
+            let focus = (1.0 - (rel.abs() / 3.4).min(1.0)).powf(1.15);
+            let edge_op = (1.0 - (rel.abs() / vis_span).powf(2.4)).clamp(0.0, 1.0);
+            let ic_side = ((ic_box - 6.0) + 6.0 * focus).round().max(42.0);
+            let row_w = (arc_w - x - 10.0).max(120.0);
+            let round = i % 3 == 1;
+            let icon_bone = el()
+                .w(ic_side)
+                .h(ic_side)
+                .radius(if round { ic_side * 0.5 } else { 12.0 })
+                .fill(kit::bone_fill());
+            let mut text_bones = col().grow(1.0).min_w(0.0).gap(7.0).justify_center();
+            if SUB_FRACS[i] > 0.0 {
+                text_bones = text_bones.child(el().w_frac(SUB_FRACS[i]).h(10.0).radius(5.0).fill(kit::bone_fill()));
+            }
+            text_bones = text_bones.child(el().w_frac(NAME_FRACS[i]).h(14.0).radius(7.0).fill(kit::bone_fill()));
+            let bone_row = row()
+                .key(format!("hm-arc-bone-{i}"))
+                .absolute(x, y)
+                .w(row_w)
+                .h(item_h)
+                .px(4.0)
+                .gap(item_gap)
+                .items_center()
+                .opacity(edge_op * stay * 0.85)
+                .transition(Transition::opacity().springs(th::RISE))
+                .child(el().w(ic_box).h(ic_box).center().child(icon_bone))
+                .child(text_bones);
+            arc = arc.child(bone_row);
+        }
+    } else if total_waves > 0 {
         let n = total_waves as isize;
         let base_slot = arc_pos.round() as isize;
         let half = vis_span.ceil() as isize;
@@ -730,7 +817,7 @@ pub(super) fn garden(s: &State, cw: f32, h: f32) -> El {
             let item_op = (if chosen { edge_op.max(0.65) } else { edge_op }) * stay;
             let click_id = key_id;
             let item = row()
-                .key(format!("hm-arc-slot-{slot}"))
+                .key(format!("hm-arc-{}-{slot}", s.wheel_gen))
                 .role("button")
                 .label(w.name.as_str())
                 .checked(chosen)

@@ -223,6 +223,45 @@ pub(super) fn action_entries(s: &State) -> Vec<Entry> {
             let _ = tx.open_url(&url);
         })));
     }
+    if let Some((uid, kind)) = s.open_own_playlist() {
+        group(&mut out);
+        let private = d.playlist_private;
+        let accent = s.pal().accent;
+        let label_text = S::PrivatePlaylist.get(lang);
+        let switch_track = row()
+            .w(34.0)
+            .h(20.0)
+            .px(2.0)
+            .radius(10.0)
+            .items_center()
+            .fill(if private { accent } else { th::veil(0.20) })
+            .child(
+                el().w(16.0)
+                    .h(16.0)
+                    .radius(8.0)
+                    .fill(th::rgb(0xffffff))
+                    .offset(if private { 14.0 } else { 0.0 }, 0.0),
+            );
+        let toggle_row = row()
+            .key("da-private")
+            .role("switch")
+            .label(label_text)
+            .checked(private)
+            .w_full()
+            .h(kit::MENU_ROW)
+            .px(10.0)
+            .gap(10.0)
+            .radius(8.0)
+            .items_center()
+            .cursor(Cursor::Pointer)
+            .hov(th::veil(0.08))
+            .press(th::veil(0.14))
+            .on_press(move |s: &mut State| s.toggle_playlist_visibility(uid, kind))
+            .child(icon(&icons::LOCK, 16.0).color(th::text2()))
+            .child(label(label_text, th::BODY, th::text()).grow(1.0).min_w(0.0).truncate())
+            .child(switch_track);
+        out.push(Entry::Row(toggle_row));
+    }
     out
 }
 
@@ -483,6 +522,7 @@ pub(super) fn lib_sort_entries(s: &State) -> Vec<Entry> {
                 .map(|o| choice_row(format!("larsort-{o:?}"), o.name().get(lang), o == now, move |s: &mut State| s.library.artist_sort = o))
                 .collect()
         }
+        LibTab::Overview | LibTab::Downloads | LibTab::Dislikes => Vec::new(),
     }
 }
 

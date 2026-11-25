@@ -179,23 +179,32 @@ impl Gfx {
                 || st.delete_download_confirm.is_some()
                 || st.np_open
                 || st.np.t > 0.001;
+            let wave_up = gpu.wave_ready(f.format);
+            let want_bars = st.settings.stage.waveform;
             if st.page == Page::Home {
-                if st.settings.butterflies {
-                    gpu.ensure_pipes(device, f.format, &[Pipe::Wave, Pipe::Field, Pipe::Butterfly]);
+                if !wave_up {
+                    // Prioritize compiling ONLY the Home wave shader on startup so it appears
+                    // within ~0.5 s without competing with secondary pipelines for compiler locks.
+                    gpu.ensure_pipe(device, f.format, Pipe::Wave);
+                } else if st.settings.butterflies {
+                    gpu.ensure_pipes(device, f.format, &[Pipe::Field, Pipe::Butterfly]);
                 } else {
-                    gpu.ensure_pipes(device, f.format, &[Pipe::Wave, Pipe::Field]);
+                    gpu.ensure_pipe(device, f.format, Pipe::Field);
                 }
             }
-            // Pre-warm Now Playing & Queue pipelines in the background once a track is loaded and
-            // Home's wave is up so opening Now Playing or Queue for the first time never pops in
-            // the blurred backdrop late or stalls on shader compilation.
-            let np_wanted = st.np_open || st.np.t > 0.001 || (st.current().is_some() && (st.page != Page::Home || gpu.wave_ready(f.format)));
+            // Pre-warm Now Playing & Queue pipelines in the background once Home's wave is up so
+            // opening Now Playing or Queue for the first time never pops in the blurred backdrop late.
+            let np_wanted = st.np_open || st.np.t > 0.001 || (st.current().is_some() && (st.page != Page::Home || wave_up));
             if np_wanted {
-                gpu.ensure_pipes(device, f.format, &[Pipe::Stage, Pipe::Bars, Pipe::Ribbon, Pipe::Morph]);
+                if want_bars {
+                    gpu.ensure_pipes(device, f.format, &[Pipe::Stage, Pipe::Bars, Pipe::Ribbon, Pipe::Morph]);
+                } else {
+                    gpu.ensure_pipes(device, f.format, &[Pipe::Stage, Pipe::Ribbon, Pipe::Morph]);
+                }
             }
-            if !on_home || overlay || gpu.wave_ready(f.format) {
+            if !on_home || overlay || wave_up {
                 gpu.ensure_glass(device, f.format);
-                if st.current().is_some() && !st.np_open && st.np.t <= 0.001 && st.page != Page::Home {
+                if want_bars && st.current().is_some() && !st.np_open && st.np.t <= 0.001 && st.page != Page::Home {
                     gpu.ensure_pipe(device, f.format, Pipe::Bars);
                 }
             }
@@ -273,10 +282,9 @@ impl Gfx {
         let audio_live = !reduced && summary.audio_reactive && (self.smooth.level > 0.002 || self.smooth.beat > 0.01 || self.smooth.stirring());
         let want_tick = summary.moving || summary.ribbon_moving || audio_live || art_fading;
         let ribbon_only = summary.ribbon_moving && !summary.moving && !audio_live && !art_fading;
-        let wave_only = st.page == Page::Home && !st.np_open && st.np.t <= 0.001 && !ribbon_only;
-        // The 3D-texture Home wave takes ~0.1 ms on GPU, so it runs smoothly at 60 Hz; heavy
-        // procedural shaders stay at 30 Hz and ribbon-only frames at 24 Hz.
-        TICK_STEP_US.store(if ribbon_only { 41_667 } else if wave_only { 16_667 } else { 33_333 }, Ordering::Relaxed);
+        // Procedural shaders (including Home's fluid wave) step cleanly at 30 Hz (24 Hz for
+        // ribbon-only frames) to keep GPU utilization low without visible stutter.
+        TICK_STEP_US.store(if ribbon_only { 41_667 } else { 33_333 }, Ordering::Relaxed);
         let armed = TICK_ARMED.swap(false, Ordering::Relaxed);
         WANTS_TICK.store(want_tick, Ordering::Relaxed);
         let need_kick = want_tick && !armed;

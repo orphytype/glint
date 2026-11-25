@@ -21,9 +21,21 @@ impl State {
             return;
         }
         let Some(app) = self.app.clone() else { return };
+        let app_toggle = app.clone();
         self.desktop = Some(Desktop::start(self.lang, self.settings.show_tray, move |command| match command {
             // The window takes the mini player's place, as the mini player's own expand does.
             Command::Show => app.update(|s, _| s.expand_mini_player()),
+            Command::ToggleWindow => {
+                if app_toggle.is_visible() {
+                    app_toggle.hide();
+                    app.update(|s, _| s.sync_desktop());
+                } else {
+                    app.update(|s, _| {
+                        s.expand_mini_player();
+                        s.sync_desktop();
+                    });
+                }
+            }
             Command::Quit => app.quit(),
             other => app.update(move |s, tx| {
                 let was = s.track_mark();
@@ -46,6 +58,7 @@ impl State {
         }
         self.ensure_desktop();
         let p = &self.player;
+        let window_visible = self.app.as_ref().is_none_or(rune::AppHandle::is_visible);
         let view = Playback {
             track: p.index.and_then(|i| p.queue.get(i)),
             playing: p.playing,
@@ -55,10 +68,8 @@ impl State {
             // What `next()` would do: a following track, the queue's start again, or a fresh batch.
             has_next: self.can_next(),
             has_prev: self.can_prev(),
-            liked: p.index.and_then(|i| p.queue.get(i)).is_some_and(|t| self.is_liked(&t.id)),
-            shuffle: p.shuffle,
-            repeat: p.repeat,
-            muted: p.volume < 0.001,
+            window_visible,
+            mini_open: self.mini_open,
         };
         let Some(desktop) = self.desktop.as_mut() else { return };
         if desktop.sync(&view, self.lang, Instant::now()) {
@@ -141,15 +152,11 @@ impl State {
                 }
                 self.seek_ms(0);
             }
-            Command::Like if loaded => {
-                if let Some(t) = self.current().cloned() {
-                    self.toggle_like(&t);
-                }
-            }
-            Command::Shuffle => self.toggle_shuffle(),
-            Command::Repeat => self.cycle_repeat(),
-            Command::Mute => self.toggle_mute(),
             Command::MiniPlayer => self.toggle_mini_player(),
+            Command::CheckUpdates => {
+                self.expand_mini_player();
+                self.check_updates(true);
+            }
             Command::Seek(ms) if loaded => {
                 let end = self.player.dur_ms.saturating_sub(1);
                 self.seek_ms(ms.min(end));

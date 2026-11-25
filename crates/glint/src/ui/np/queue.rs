@@ -107,7 +107,7 @@ fn passing(s: &State, head: El) -> El {
 fn now_heading(s: &State) -> El {
     col().key("q-now-h").w_full().h(ROW_H).px(kit::ROW_PAD).justify_end().pb(6.0).child(passing(
         s,
-        row().w_full().h(26.0).pr(HEAD_END).items_center().child(label(S::NowPlaying.get(s.lang), th::H3, th::text2())),
+        row().w_full().h(26.0).pr(HEAD_END).items_center().child(label(S::NowPlaying.get(s.lang), th::H2, th::text2())),
     ))
 }
 
@@ -148,6 +148,6 @@ fn next_heading(s: &State, after: usize) -> El {
         .pb(6.0)
         .child(passing(
             s,
-            row().w_full().h(26.0).pr(HEAD_END).gap(8.0).items_center().child(label(S::UpNext.get(lang), th::H3, th::text2())).child(el().grow(1.0)).child(morph_clear),
+            row().w_full().h(26.0).pr(HEAD_END).gap(8.0).items_center().child(label(S::UpNext.get(lang), th::H2, th::text2())).child(el().grow(1.0)).child(morph_clear),
         ))
 }

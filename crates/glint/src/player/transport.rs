@@ -13,12 +13,16 @@ impl State {
     pub fn start_wave(&mut self, preset: &str) {
         self.wave_choice = preset.to_owned();
         self.mark_settings_dirty();
-        let label = match self.wheel_wave(preset) {
-            Some(w) => FromName::Text(w.name.clone()),
+        let seeds = self.wave_seeds(preset);
+        let picked_name = if preset == "onyourwave" { None } else { self.wheel_wave(preset).map(|w| w.name.clone()) };
+        self.wave_name = picked_name.clone();
+        let label = match picked_name {
+            Some(name) => FromName::Text(name),
             None => FromName::Word(crate::ui::wave_title(preset)),
         };
         self.wave_label = Some((S::WaveTitle, label, Some(Page::Home)));
         self.run_wave(preset);
+        self.refresh_wheel_waves_for(&seeds, true);
     }
 
     /// Starts a wave seeded by one thing ([`Station`]) rather than one of My Wave's moods.

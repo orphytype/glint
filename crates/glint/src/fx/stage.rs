@@ -8,6 +8,34 @@ use super::gpu::{Gpu, Pipe};
 use super::slots::{FrameCtx, Job, SlotRef, SlotSummary, base, ease_out, rgb4};
 use super::{COVER_MARK, Gfx, WAVE_FRAME};
 
+fn wave_hash32(input: u32) -> u32 {
+    let mut h = (input ^ (input >> 16)).wrapping_mul(0x7feb_352d);
+    h = (h ^ (h >> 15)).wrapping_mul(0x846c_a68b);
+    h ^ (h >> 16)
+}
+
+fn wave_fraction(bits: u32) -> f32 {
+    (bits >> 8) as f32 * (1.0 / 16_777_216.0)
+}
+
+/// Evaluates one non-repeating quadratic B-spline motion lane on CPU once per frame instead of
+/// repeating 65 integer hashes + 11 trig ops for every pixel of the Home backdrop.
+fn wave_phase(seed: u32, block: u32, local_seconds: f32, lane: u32, turns_per_block: f32) -> f32 {
+    let stream = wave_hash32(seed ^ lane.wrapping_add(1).wrapping_mul(0x9e37_79b9));
+    let speed = turns_per_block * (1.04 + 0.20 * wave_fraction(wave_hash32(stream)));
+    let step = (f64::from(speed) * 4_294_967_296.0) as u32;
+    let start = wave_fraction(wave_hash32(stream ^ 0xa511_e9b3).wrapping_add(block.wrapping_mul(step)));
+    let tu = local_seconds * 0.25;
+    let id = stream.wrapping_add(block);
+    let k0 = wave_fraction(wave_hash32(id.wrapping_sub(1)));
+    let k1 = wave_fraction(wave_hash32(id));
+    let k2 = wave_fraction(wave_hash32(id.wrapping_add(1)));
+    let w0 = 0.5 * (1.0 - tu) * (1.0 - tu);
+    let w1 = 0.5 + tu * (1.0 - tu);
+    let w2 = 0.5 * tu * tu;
+    std::f32::consts::TAU * (start + tu * speed + 0.50 * speed * (w0 * k0 + w1 * k1 + w2 * k2))
+}
+
 fn hsl_rgb(h_deg: f32, s: f32, l: f32) -> [f32; 3] {
     let h = h_deg.rem_euclid(360.0) / 60.0;
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
@@ -227,21 +255,44 @@ impl Gfx {
                 }
             }
             let (shadow, wash, crest) = wave_stops(self.wave_rgb, ctx.canvas, crate::theme::light());
-            u.p0[1] = (self.wave_seed & 0x00ff_ffff) as f32;
-            u.p0[2] = (self.wave_block & 0x00ff_ffff) as f32;
-            u.p0[3] = if still { 1.8 } else { self.wave_t };
-            u.p1 = [m[0], m[1], appear, if still { 0.0 } else { self.wave_energy }];
+            let seed = self.wave_seed & 0x00ff_ffff;
+            let block = self.wave_block & 0x00ff_ffff;
+            let local_s = if still { 1.8 } else { self.wave_t.clamp(0.0, 4.0) };
+            let yaw = wave_phase(seed, block, local_s, 0, 0.285);
+            let tilt = 0.55 * wave_phase(seed, block, local_s, 1, 0.133).sin() + 0.24 * wave_phase(seed, block, local_s, 2, 0.202).sin();
+            let drift = [
+                wave_phase(seed, block, local_s, 3, 0.193),
+                wave_phase(seed, block, local_s, 4, 0.247),
+                wave_phase(seed, block, local_s, 5, 0.158),
+                wave_phase(seed, block, local_s, 6, 0.209),
+            ];
+            let shape = [
+                wave_phase(seed, block, local_s, 7, 0.107).sin(),
+                wave_phase(seed, block, local_s, 8, 0.149).sin(),
+                wave_phase(seed, block, local_s, 9, 0.181).sin(),
+                wave_phase(seed, block, local_s, 10, 0.129).sin(),
+            ];
+            let fan0 = wave_phase(seed, block, local_s, 11, 0.34);
+            let fan1 = wave_phase(seed, block, local_s, 12, 0.265);
+            // Clip the right 20% of the quad where `right_fade == 0` so the GPU skips unused pixels.
+            u.bounds[2] = u.bounds[2].min(i.rect[0] + i.rect[2] * 0.805);
+            u.p0 = [yaw.cos(), yaw.sin(), tilt.cos(), tilt.sin()];
+            u.p1 = drift;
+            u.p2 = shape;
+            u.ink = [fan0.cos(), fan0.sin(), fan1.cos(), fan1.sin()];
             u.region = [
                 f32::from_bits(WAVE_FRAME[0].load(Ordering::Relaxed)),
                 f32::from_bits(WAVE_FRAME[1].load(Ordering::Relaxed)),
                 f32::from_bits(WAVE_FRAME[2].load(Ordering::Relaxed)),
                 f32::from_bits(WAVE_FRAME[3].load(Ordering::Relaxed)),
             ];
-            u.p3 = rgb4(shadow, 1.0);
-            u.tint = rgb4(wash, 1.0);
-            u.p4 = rgb4(crest, 1.0);
+            let print_mode = (d[0].fract() * 64.0).floor() as i32 / 8;
+            u.p3 = rgb4(shadow, appear);
+            u.tint = rgb4(wash, print_mode as f32);
+            u.p4 = rgb4(crest, seed as f32);
+        } else {
+            u.ink = rgb4(ctx.ink, 1.0);
         }
-        u.ink = rgb4(ctx.ink, 1.0);
         let u = gpu.stage(ctx.device, &u);
         self.jobs.push((slot_idx, Job { pipe, u, region: None, tag: 0, shared: false }));
         let active_ribbon = pipe == Pipe::Ribbon && (m[0] > 0.0 || m[1] > 0.0);

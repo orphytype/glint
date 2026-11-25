@@ -91,7 +91,7 @@ fn shader_source(pipe: Pipe) -> String {
         src.push_str(BLUR);
         src.push('\n');
     }
-    if matches!(pipe, Pipe::Wave | Pipe::Mood | Pipe::Butterfly | Pipe::Stage) {
+    if matches!(pipe, Pipe::Mood | Pipe::Butterfly | Pipe::Stage) {
         src.push_str(NOISE);
         src.push('\n');
     }

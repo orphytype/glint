@@ -158,9 +158,9 @@ pub struct Swarm {
 }
 
 impl Swarm {
-    pub fn new(seed: u64) -> Swarm {
+    pub fn new(seed: u64, count: usize) -> Swarm {
         let mut rng = Rng::new(seed ^ 0x6275_6773);
-        let n = 3;
+        let n = count.clamp(1, 10);
         // Colours apart from each other around the wheel, from one start.
         let h0 = rng.range(0.0, 360.0);
         let bugs = (0..n)

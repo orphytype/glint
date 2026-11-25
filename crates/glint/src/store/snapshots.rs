@@ -34,8 +34,10 @@ pub struct PlaybackSnapshot {
 pub struct LibrarySnapshot {
     pub liked: Vec<ym_api::Track>,
     pub playlists: Vec<ym_api::Playlist>,
+    pub liked_playlists: Vec<ym_api::Playlist>,
     pub albums: Vec<ym_api::Album>,
     pub artists: Vec<ym_api::Artist>,
+    pub top_artists: Vec<ym_api::TopArtist>,
     pub liked_cover: Option<String>,
 }
 

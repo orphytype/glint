@@ -160,7 +160,7 @@ fn lyrics(s: &State, k: &rune_kit::Kit) -> El {
     let lang = s.lang;
     let word_lyrics = toggle(k, s.settings.word_lyrics, S::WordLyrics.get(lang), |s| s.set_word_lyrics(!s.settings.word_lyrics));
     let font = s.settings.lyric_look.font;
-    let faces = segmented(k, &["Plex Mono", "Commissioner", "Cormorant"], usize::from(font), |s, i| {
+    let faces = segmented(k, &["Commissioner", "Mustica Pro", "Cormorant"], usize::from(font), |s, i| {
         s.settings.lyric_look.font = i as u8;
         s.mark_settings_dirty();
     });

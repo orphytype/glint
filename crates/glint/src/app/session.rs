@@ -86,11 +86,17 @@ impl State {
                 if !matches!(s.library.playlists, Load::Ready(_)) && !snap.playlists.is_empty() {
                     s.library.playlists = Load::Ready(snap.playlists);
                 }
+                if !matches!(s.library.liked_playlists, Load::Ready(_)) && !snap.liked_playlists.is_empty() {
+                    s.library.liked_playlists = Load::Ready(snap.liked_playlists);
+                }
                 if !matches!(s.library.albums, Load::Ready(_)) && !snap.albums.is_empty() {
                     s.library.albums = Load::Ready(snap.albums);
                 }
                 if !matches!(s.library.artists, Load::Ready(_)) && !snap.artists.is_empty() {
                     s.library.artists = Load::Ready(snap.artists);
+                }
+                if !matches!(s.library.top_artists, Load::Ready(_)) && !snap.top_artists.is_empty() {
+                    s.library.top_artists = Load::Ready(snap.top_artists);
                 }
                 if s.library.liked_cover.is_none() {
                     s.library.liked_cover = snap.liked_cover;
@@ -208,10 +214,12 @@ impl State {
             Load::Ready(p) => p.clone(),
             _ => Vec::new(),
         };
+        let liked_playlists = self.library.liked_playlists.get().cloned().unwrap_or_default();
         let albums = self.library.albums.get().cloned().unwrap_or_default();
         let artists = self.library.artists.get().cloned().unwrap_or_default();
+        let top_artists = self.library.top_artists.get().cloned().unwrap_or_default();
         let liked_cover = self.library.liked_cover.clone();
-        self.store.save_snapshot("library.json", LibrarySnapshot { liked, playlists, albums, artists, liked_cover });
+        self.store.save_snapshot("library.json", LibrarySnapshot { liked, playlists, liked_playlists, albums, artists, top_artists, liked_cover });
     }
 
     /// Tries the pasted text as a token; shows an error if it is invalid.
@@ -235,6 +243,9 @@ impl State {
         self.avatar = None;
         self.home = Load::Idle;
         self.wheel_waves.clear();
+        self.wheel_loading = false;
+        self.wheel_seen.clear();
+        self.wave_name = None;
         self.liked.clear();
         self.liked_items.clear();
         self.likes_loaded = false;

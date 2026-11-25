@@ -34,7 +34,7 @@ impl State {
         if self.lyrics.for_track.as_deref() == Some(track.id.as_str()) {
             return;
         }
-        self.lyrics = LyricsUi { for_track: Some(track.id.clone()), lyrics: Load::Loading, active: None, hover: self.lyrics.hover };
+        self.lyrics = LyricsUi { for_track: Some(track.id.clone()), lyrics: Load::Loading, active: None, hover: self.lyrics.hover, user_scroll_at: None };
         self.lyrics_gen = self.lyrics_gen.wrapping_add(1);
         let (b, fc, fc_on) = (self.backend.clone(), self.fkcensor.clone(), self.settings.fkcensor);
         let id = track.id.clone();

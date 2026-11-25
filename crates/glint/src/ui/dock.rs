@@ -42,7 +42,7 @@ pub fn rail(s: &State, w: f32, lead: f32, np_t: f32) -> El {
         (Page::Search, &icons::SEARCH, &icons::SEARCH_ON, S::Search),
         (Page::Home, &icons::HOME, &icons::HOME_ON, S::Home),
         (Page::Explore, &icons::COMPASS, &icons::COMPASS_ON, S::Explore),
-        (Page::Library, &icons::LIBRARY, &icons::LIBRARY_ON, S::Liked),
+        (Page::Library, &icons::LIBRARY, &icons::LIBRARY_ON, S::Collection),
     ];
     let here = s.page.rail();
     let mut places = col().key("rail-places").w_full().gap(4.0).items_center();
@@ -62,7 +62,13 @@ pub fn rail(s: &State, w: f32, lead: f32, np_t: f32) -> El {
             .cursor(Cursor::Pointer)
             .press_scale(th::PRESS)
             .hov_group()
-            .on_press(move |s: &mut State| s.go(target.clone()));
+            .on_press(move |s: &mut State| {
+                if target == Page::Library {
+                    s.open_collection();
+                } else {
+                    s.go(target.clone());
+                }
+            });
         if on {
             // Both the indicator bar and active background plate glide smoothly between destinations.
             b = b
@@ -632,8 +638,17 @@ fn volume_btn(s: &State, size: f32) -> El {
 const BADGE_STYLE: rune::TextStyle = rune::TextStyle::new(11.0, 500.0).family(th::SANS).tracking(0.15).lh(14.0).features("'tnum' 1");
 
 /// Cached maximum audio quality offered by Yandex for the currently playing track.
+/// Prefers the higher of the probed maximum and the live playing stream so lossless streams
+/// never display a stale lower rate.
 pub(super) fn current_track_max_quality(s: &State) -> Option<crate::net::StreamQuality> {
-    s.current().and_then(|t| s.track_max_quality.get(&t.id).copied())
+    let probed = s.current().and_then(|t| s.track_max_quality.get(&t.id).copied());
+    let live = s.player.current_audio;
+    match (probed, live) {
+        (Some(p), Some(l)) if l.is_higher_than(p) => Some(l),
+        (Some(p), _) => Some(p),
+        (None, Some(l)) if s.settings.quality == QualityPref::Best => Some(l),
+        _ => None,
+    }
 }
 
 fn quality_tip(s: &State) -> String {
@@ -745,7 +760,7 @@ pub fn seek_bars_alpha(s: &State, key: &'static str, seed: f32, width: f32, h: f
         }
     };
     let slot = el().key(key).role("slider").w_full().h(h).cursor(Cursor::Pointer).transition(Transition::none()).on_drag(drag);
-    if fx::bars_ready() {
+    if s.settings.stage.waveform && fx::bars_ready() {
         let (pitch, bar) = if h < 24.0 { (5.0, 2.5) } else { (6.0, 3.0) };
         return slot.child(el().key(format!("{key}-bars")).absolute(0.0, 0.0).w_full().h_full().transition(Transition::none()).fx(fx::BARS).fx_data([seed, pitch, bar, 1.0 - a]));
     }

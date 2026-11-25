@@ -41,14 +41,25 @@ impl DownloadStore {
         let mut files = HashSet::new();
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
-                if let Some(name) = entry.file_name().to_str()
-                    && name.starts_with("audio-")
-                {
-                    files.insert(name.to_owned());
+                if let Some(name) = entry.file_name().to_str() {
+                    if name.starts_with("audio-") {
+                        files.insert(name.to_owned());
+                    } else if name.starts_with(".dl-") && name.ends_with(".tmp") {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
                 }
             }
         }
         Ok(Self { dir, write: Arc::new(Mutex::new(())), audio_files: Arc::new(RwLock::new(files)) })
+    }
+
+    /// Allocates a unique temporary file path inside the download directory so finished tracks can
+    /// be moved into place atomically with zero extra copying or RAM buffering.
+    pub fn temp_path(&self, tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(1);
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        self.dir.join(format!(".dl-{}-{}-{seq}.tmp", Self::clean_key(tag), std::process::id()))
     }
 
     fn key(key: &str) -> String {
@@ -172,6 +183,42 @@ impl DownloadStore {
         let hashed = Self::key(key);
         let name = Self::audio_name(&hashed, ext);
         write_atomic_result(&self.dir.join(&name), bytes)?;
+        let mut index = self.audio_files.write().unwrap_or_else(PoisonError::into_inner);
+        index.insert(name);
+        for old_ext in AUDIO_EXTS {
+            if old_ext != ext {
+                let old_name = Self::audio_name(&hashed, old_ext);
+                if index.remove(&old_name) {
+                    let _ = std::fs::remove_file(self.dir.join(old_name));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Moves a finished temporary audio file on disk into the store without loading it into RAM.
+    pub fn put_audio_file(&self, key: &str, src: &Path, ext: &str) -> std::io::Result<()> {
+        if std::fs::metadata(src).is_err_and(|_| true) || std::fs::metadata(src).is_ok_and(|m| m.len() == 0) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "empty audio file"));
+        }
+        let _guard = self.write.lock().unwrap_or_else(PoisonError::into_inner);
+        let ext = match ext {
+            "flac" => "flac",
+            "mp3" => "mp3",
+            "m4a" => "m4a",
+            "wav" => "wav",
+            _ => "bin",
+        };
+        let hashed = Self::key(key);
+        let name = Self::audio_name(&hashed, ext);
+        let dst = self.dir.join(&name);
+        if dst.exists() {
+            let _ = std::fs::remove_file(&dst);
+        }
+        if std::fs::rename(src, &dst).is_err() {
+            std::fs::copy(src, &dst)?;
+            let _ = std::fs::remove_file(src);
+        }
         let mut index = self.audio_files.write().unwrap_or_else(PoisonError::into_inner);
         index.insert(name);
         for old_ext in AUDIO_EXTS {

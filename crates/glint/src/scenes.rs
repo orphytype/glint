@@ -21,11 +21,15 @@ pub const SCENES: &[(&str, Scene)] = &[
     ("explore", explore),
     ("home-ru", home_ru),
     ("home-wheel", home_wheel),
+    ("home-wheel-loading", home_wheel_loading),
     ("home-cloud", home_cloud),
     ("home-pins", home_pins),
     ("search", search),
     ("search-empty", search_empty),
     ("library", library),
+    ("library-ru", library_ru),
+    ("library-liked", library_liked),
+    ("library-dislikes", library_dislikes),
     ("library-albums", library_albums),
     ("album", album),
     ("album-loading", album_loading),
@@ -135,6 +139,17 @@ fn signed_in(s: &mut State) -> Arc<Catalog> {
             .collect(),
     );
     s.library.artists = Load::Ready(c.artists.clone());
+    s.library.top_artists = Load::Ready(c.top_artists());
+    s.library.liked_playlists = Load::Ready(c.liked_playlists());
+    s.library.disliked_tracks = Load::Ready(c.disliked_tracks());
+    s.library.disliked_artists = Load::Ready(c.disliked_artists());
+    for track in c.liked_tracks().into_iter().take(6) {
+        let id = track.id.clone();
+        s.downloads.insert(id.clone(), crate::app::DownloadState::Done);
+        s.download_titles.insert(id.clone(), track.full_title());
+        s.download_order.push(id.clone());
+        s.downloaded_tracks.insert(id, track);
+    }
     c
 }
 
@@ -145,7 +160,7 @@ fn play(s: &mut State, c: &Catalog, at: usize, pos_ms: u64) {
     s.play_queue(tracks, at, Source::Manual);
     s.player.loading = false;
     s.player.pos_ms = pos_ms;
-    s.lyrics = LyricsUi { for_track: Some(track.id.clone()), lyrics: Load::Ready(c.lyrics(&track)), active: None, hover: false };
+    s.lyrics = LyricsUi { for_track: Some(track.id.clone()), lyrics: Load::Ready(c.lyrics(&track)), active: None, hover: false, user_scroll_at: None };
 }
 
 fn ru(s: &mut State) {
@@ -216,6 +231,11 @@ fn home_wheel(s: &mut State) {
     }
 }
 
+fn home_wheel_loading(s: &mut State) {
+    home_ru(s);
+    s.wheel_loading = true;
+}
+
 /// Home in Russian with the dither print mode active on the 3D wave backdrop.
 fn home_cloud(s: &mut State) {
     home_ru(s);
@@ -242,6 +262,21 @@ fn library(s: &mut State) {
     let c = signed_in(s);
     s.page = Page::Library;
     play(s, &c, 1, 95_000);
+}
+
+fn library_ru(s: &mut State) {
+    library(s);
+    s.lang = Lang::Ru;
+}
+
+fn library_liked(s: &mut State) {
+    library_ru(s);
+    s.library.tab = LibTab::Tracks;
+}
+
+fn library_dislikes(s: &mut State) {
+    library_ru(s);
+    s.library.tab = LibTab::Dislikes;
 }
 
 fn library_albums(s: &mut State) {
@@ -429,7 +464,7 @@ fn wave_playing(s: &mut State) {
     s.play_queue(tracks, 6, Source::Wave { preset: "calm".into(), batch: None, session: None, round: 1 });
     s.player.loading = false;
     s.player.pos_ms = 33_000;
-    s.lyrics = LyricsUi { for_track: Some(track.id.clone()), lyrics: Load::Ready(c.lyrics(&track)), active: None, hover: false };
+    s.lyrics = LyricsUi { for_track: Some(track.id.clone()), lyrics: Load::Ready(c.lyrics(&track)), active: None, hover: false, user_scroll_at: None };
 }
 
 fn nowplaying_ru(s: &mut State) {
@@ -441,7 +476,7 @@ fn nowplaying_ru(s: &mut State) {
     s.play_queue(tracks, at, Source::Manual);
     s.player.loading = false;
     s.player.pos_ms = 48_000;
-    s.lyrics = LyricsUi { for_track: Some(track.id.clone()), lyrics: Load::Ready(c.lyrics(&track)), active: None, hover: false };
+    s.lyrics = LyricsUi { for_track: Some(track.id.clone()), lyrics: Load::Ready(c.lyrics(&track)), active: None, hover: false, user_scroll_at: None };
     s.lang = Lang::Ru;
     s.np_open = true;
     // The player as it rests, not on its way in.

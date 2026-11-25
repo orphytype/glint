@@ -90,4 +90,11 @@ icons! {
     SET_ABOUT(24) => r##"<circle cx="12" cy="12" r="8.75" stroke="currentColor" stroke-width="1.65"/> <path d="M12 11.2V16.2" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/> <circle cx="12" cy="8.15" r="1.15" fill="currentColor"/>"##;
     LICENSE(24) => r##"<path d="M7.25 3.25H14.2L18.75 7.8V19.25C18.75 20.08 18.08 20.75 17.25 20.75H7.25C6.42 20.75 5.75 20.08 5.75 19.25V4.75C5.75 3.92 6.42 3.25 7.25 3.25Z" stroke="currentColor" stroke-width="1.65" stroke-linejoin="round"/> <path d="M14 3.5V8H18.5M8.75 12.5H15.25M8.75 16H13.25" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>"##;
     BUG(24) => r##"<rect x="7.75" y="8" width="8.5" height="11" rx="4.25" stroke="currentColor" stroke-width="1.65"/> <path d="M9.5 8V6.75C9.5 5.37 10.62 4.25 12 4.25C13.38 4.25 14.5 5.37 14.5 6.75V8M7.75 11.5H4.25M7.75 15.5H4.75M16.25 11.5H19.75M16.25 15.5H19.25M12 11.5V18.75" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>"##;
+    // Crisp vector glyphs for Explore shelves and Collection artist chart badges.
+    SHELF_NEW(24) => r##"<path d="M12 2.4L14.2 8.2L20.4 8.6L15.6 12.6L17.2 18.8L12 15.3L6.8 18.8L8.4 12.6L3.6 8.6L9.8 8.2Z" fill="currentColor"/>"##;
+    SHELF_CHART(24) => r##"<path d="M3.2 17.4L4.8 7.6L9.2 11.4L12 5.4L14.8 11.4L19.2 7.6L20.8 17.4C20.9 18.2 20.3 18.8 19.5 18.8H4.5C3.7 18.8 3.1 18.2 3.2 17.4Z" fill="currentColor"/>"##;
+    SHELF_EDITORIAL(24) => r##"<rect x="3.5" y="3.5" width="7.2" height="7.2" rx="2.1" fill="currentColor"/><rect x="13.3" y="3.5" width="7.2" height="7.2" rx="2.1" fill="currentColor"/><rect x="3.5" y="13.3" width="7.2" height="7.2" rx="2.1" fill="currentColor"/><rect x="13.3" y="13.3" width="7.2" height="7.2" rx="2.1" fill="currentColor"/>"##;
+    SHELF_PERSONAL(24) => r##"<path d="M12 19.8C12 19.8 3.6 15.1 3.6 9.2C3.6 6.5 5.6 4.5 8.1 4.5C9.8 4.5 11.2 5.4 12 6.9C12.8 5.4 14.2 4.5 15.9 4.5C18.4 4.5 20.4 6.5 20.4 9.2C20.4 15.1 12 19.8 12 19.8Z" fill="currentColor"/>"##;
+    TREND_UP(24) => r##"<path d="M12 6L20 17.5H4L12 6Z" fill="currentColor"/>"##;
+    TREND_DOWN(24) => r##"<path d="M12 18L4 6.5H20L12 18Z" fill="currentColor"/>"##;
 }

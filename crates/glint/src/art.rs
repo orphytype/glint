@@ -76,6 +76,8 @@ struct Entry {
     page: u64,
     /// View pass generation that last mounted this cover.
     seen_view: u64,
+    /// Wall-clock time this cover was last requested by a view pass.
+    seen_at: Instant,
     /// What the decoded picture takes in memory.
     bytes: usize,
     /// The picture melted into its colours (`ArtCache::soft`), made the first time it is asked for.
@@ -184,17 +186,23 @@ pub struct Decoded {
 /// Hard ceiling for offscreen decoded covers while actively scrolling (mounted covers are never
 /// evicted so visible rows never flash or reload).
 fn keep_limits() -> (usize, usize) {
-    if crate::fx::cpu_mode() { (24, 1_800_000) } else { (32, 3_600_000) }
+    if crate::fx::cpu_mode() { (48, 4_500_000) } else { (96, 12_000_000) }
 }
 
-/// Tight offscreen cushion retained after scrolling away or changing page so RAM stays well under
-/// 90 MiB while keeping immediate scroll-back warm.
+/// Warm offscreen cushion retained after scrolling away or changing page so navigating back or
+/// switching tracks never reloads visible covers.
 fn offscreen_limits() -> (usize, usize) {
-    if crate::fx::cpu_mode() { (4, 512 * 1024) } else { (8, 1_024 * 1024) }
+    if crate::fx::cpu_mode() { (16, 1_500_000) } else { (40, 5_000_000) }
 }
 
 fn raw_limits() -> (usize, usize) {
-    if crate::fx::cpu_mode() { (12, 256 * 1024) } else { (32, 512 * 1024) }
+    if crate::fx::cpu_mode() { (64, 1_500_000) } else { (160, 4_000_000) }
+}
+
+/// Protects covers seen in the current or previous view pass (eliminating the race between
+/// `begin_view()` and worker-thread `finish()`), plus covers recently seen on the active page.
+fn is_live(e: &Entry, cur_view: u64, cur_page: u64) -> bool {
+    e.seen_view.saturating_add(1) >= cur_view || (e.page >= cur_page && e.seen_at.elapsed() < Duration::from_secs(10))
 }
 /// Wait before retrying a cover that failed to load, so broken URLs do not spin every frame.
 const FAIL_COOLDOWN: Duration = Duration::from_secs(20);
@@ -282,10 +290,12 @@ impl ArtCache {
         let mut g = self.lock();
         g.tick += 1;
         let (tick, page, view_gen) = (g.tick, g.page, g.view_gen);
+        let now = Instant::now();
         if let Some(e) = g.map.get_mut(key) {
             e.used = tick;
             e.page = page;
             e.seen_view = view_gen;
+            e.seen_at = now;
             return e.pixels.clone();
         }
         if let Some(&at) = g.failed.get(key) {
@@ -297,7 +307,7 @@ impl ArtCache {
         let pixels = Pixels::new();
         g.map.insert(
             key.to_owned(),
-            Entry { pixels: pixels.clone(), palette: None, thumb: None, ready: false, used: tick, page, seen_view: view_gen, bytes: 0, soft: None, stage_bg: None },
+            Entry { pixels: pixels.clone(), palette: None, thumb: None, ready: false, used: tick, page, seen_view: view_gen, seen_at: now, bytes: 0, soft: None, stage_bg: None },
         );
         if g.in_flight.insert(key.to_owned()) {
             g.wanted.push(key.to_owned());
@@ -368,12 +378,12 @@ impl ArtCache {
 
         // 1. Immediately drop any unmounted 600x600 hero cover (>300 KiB RGBA) not in keep_keys.
         let before = g.map.len();
-        g.map.retain(|k, e| !e.ready || e.seen_view == cur_view || keep_keys.contains(&k.as_str()) || e.bytes <= 300_000);
+        g.map.retain(|k, e| !e.ready || is_live(e, cur_view, cur_page) || keep_keys.contains(&k.as_str()) || e.bytes <= 300_000);
         evicted |= g.map.len() < before;
 
         // 2. Drop melted backdrops on unmounted non-kept covers so stale pages release textures.
         for (k, e) in &mut g.map {
-            if e.seen_view < cur_view && !keep_keys.contains(&k.as_str()) {
+            if !is_live(e, cur_view, cur_page) && !keep_keys.contains(&k.as_str()) {
                 if e.soft.take().is_some() {
                     evicted = true;
                 }
@@ -383,12 +393,12 @@ impl ArtCache {
             }
         }
 
-        // 3. Trim remaining unmounted offscreen covers down to a small warm scroll-back cushion,
+        // 3. Trim remaining unmounted offscreen covers down to a warm scroll-back cushion,
         //    evicting previous-page entries first, then oldest LRU.
         let mut offscreen: Vec<(bool, u64, usize, String)> = g
             .map
             .iter()
-            .filter(|(k, e)| e.ready && e.seen_view < cur_view && !keep_keys.contains(&k.as_str()))
+            .filter(|(k, e)| e.ready && !is_live(e, cur_view, cur_page) && !keep_keys.contains(&k.as_str()))
             .map(|(k, e)| (e.page >= cur_page, e.used, e.bytes, k.clone()))
             .collect();
         let (off_keep, off_budget) = offscreen_limits();
@@ -409,6 +419,12 @@ impl ArtCache {
         }
         if evicted && g.map.capacity() > g.map.len() * 2 + 24 {
             g.map.shrink_to_fit();
+        }
+        if !g.failed.is_empty() {
+            g.failed.retain(|_, at| at.elapsed() < FAIL_COOLDOWN);
+            if g.failed.capacity() > g.failed.len() * 2 + 16 {
+                g.failed.shrink_to_fit();
+            }
         }
         evicted
     }
@@ -538,17 +554,17 @@ impl ArtCache {
         if g.watched.remove(key) {
             g.watched_landed += 1;
         }
-        // Keep memory bounded while NEVER evicting covers currently mounted in the active view pass
-        // (`e.seen_view == cur_view`), preventing visible cover flicker during scrolling.
+        // Keep memory bounded while NEVER evicting covers currently or recently mounted on the
+        // active page, preventing visible cover reload/flicker during track switches and scrolling.
         let (keep, budget) = keep_limits();
         let total: usize = g.map.values().map(|e| e.bytes).sum();
-        if g.map.len() > keep + 10 || total > budget {
+        if g.map.len() > keep + 24 || total > budget {
             let cur_page = g.page;
             let cur_view = g.view_gen;
             let mut by_prio: Vec<(bool, u64, String)> = g
                 .map
                 .iter()
-                .filter(|(k, e)| e.ready && k.as_str() != key && e.seen_view < cur_view)
+                .filter(|(k, e)| e.ready && k.as_str() != key && !is_live(e, cur_view, cur_page))
                 .map(|(k, e)| (e.page >= cur_page, e.used, k.clone()))
                 .collect();
             by_prio.sort_unstable();

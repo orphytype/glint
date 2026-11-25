@@ -95,8 +95,9 @@ impl MiniStyle {
     }
 }
 
-/// The look's current default (see [`StageLook::v`]). Version 5 simplified stage effects to on/off.
-const STAGE_V: u8 = 5;
+/// The look's current default (see [`StageLook::v`]). Version 6 turns background effects off by
+/// default.
+const STAGE_V: u8 = 6;
 
 /// How the picture behind the open player looks (`0` off, `1` on).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,6 +105,9 @@ const STAGE_V: u8 = 5;
 pub struct StageLook {
     /// Visual effects behind the cover: 0 off, 1 on.
     pub effects: u8,
+    /// Show animated waveform bars on the seek line instead of a plain progress line.
+    #[serde(default)]
+    pub waveform: bool,
     /// Legacy fields kept for migrating settings saved before `STAGE_V = 4`.
     #[serde(alias = "rays", default, skip_serializing)]
     flash: u8,
@@ -116,7 +120,7 @@ pub struct StageLook {
 
 impl Default for StageLook {
     fn default() -> Self {
-        StageLook { effects: 1, flash: 0, react: 0, v: STAGE_V }
+        StageLook { effects: 0, waveform: false, flash: 0, react: 0, v: STAGE_V }
     }
 }
 
@@ -125,21 +129,20 @@ impl StageLook {
         if self.v < 2 {
             return StageLook::default();
         }
-        let effects = if self.v < 4 {
-            u8::from(self.flash > 0 || self.react > 0)
+        let effects = if self.v < STAGE_V {
+            0
         } else {
             u8::from(self.effects > 0)
         };
-        StageLook { effects, flash: 0, react: 0, v: STAGE_V }
+        StageLook { effects, waveform: self.waveform, flash: 0, react: 0, v: STAGE_V }
     }
 }
 
 /// How many faces the lyrics can be set in.
 const LYRIC_FONTS: u8 = 3;
 
-/// The sizes the lyrics are offered in now: small is new, medium is what "smaller" was and large is
-/// what "normal" was.
-const LYRIC_V: u8 = 1;
+/// Version 2 defaults lyrics to large text centered in the panel.
+const LYRIC_V: u8 = 2;
 
 /// How the lyrics look in the open player (each 0..=2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,24 +153,27 @@ pub struct LyricLook {
     /// Where the lines stand: on the left, in the middle, on the right.
     #[serde(default)]
     pub align: u8,
-    /// The face the words are set in (`theme::lyric_face`): IBM Plex Mono, Commissioner (the
+    /// The face the words are set in (`theme::lyric_face`): Commissioner, Mustica Pro (the
     /// default), Cormorant.
     #[serde(rename = "face")]
     pub font: u8,
-    /// Which sizes `size` was saved against (see [`LYRIC_V`]).
+    /// Which defaults this look was saved against (see [`LYRIC_V`]).
     #[serde(default)]
     pub v: u8,
 }
 
 impl Default for LyricLook {
     fn default() -> Self {
-        LyricLook { size: 1, align: 0, font: 1, v: LYRIC_V }
+        LyricLook { size: 2, align: 1, font: 1, v: LYRIC_V }
     }
 }
 
 impl LyricLook {
     pub fn sanitized(self) -> LyricLook {
-        let size = if self.v < LYRIC_V { [1, 1, 2][usize::from(self.size.min(2))] } else { self.size.min(2) };
+        if self.v < LYRIC_V && (self.size, self.align, self.font) == (1, 0, 1) {
+            return LyricLook::default();
+        }
+        let size = if self.v == 0 { [1, 1, 2][usize::from(self.size.min(2))] } else { self.size.min(2) };
         LyricLook { size, align: self.align.min(2), font: self.font.min(LYRIC_FONTS - 1), v: LYRIC_V }
     }
 }
@@ -240,6 +246,8 @@ pub struct Settings {
     pub autostart_hidden: bool,
     /// The butterflies that fly over Home.
     pub butterflies: bool,
+    /// Number of butterflies flying over Home (`1..=10`).
+    pub butterfly_count: u8,
     /// Ask lrc.red for lyrics timed word by word.
     pub word_lyrics: bool,
     /// Replace censored tracks with community-maintained clean versions when available.
@@ -309,6 +317,7 @@ impl Default for Settings {
             autostart: false,
             autostart_hidden: true,
             butterflies: true,
+            butterfly_count: 3,
             word_lyrics: true,
             fkcensor: true,
             play_on_launch: false,
@@ -334,6 +343,7 @@ impl Settings {
             self.shaders = old != LegacyEffects::Off;
         }
         self.accent = self.accent.min(crate::theme::ACCENTS.len() - 1);
+        self.butterfly_count = self.butterfly_count.clamp(1, 10);
         self.volume = if self.volume.is_finite() { self.volume.clamp(0.0, 1.0) } else { 0.8 };
         self.mini_opacity = if self.mini_opacity.is_finite() { self.mini_opacity.clamp(0.65, 1.0) } else { 0.95 };
         self.eq_preamp = if self.eq_preamp.is_finite() { self.eq_preamp.clamp(-12.0, 12.0) } else { 0.0 };

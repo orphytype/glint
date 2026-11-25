@@ -147,6 +147,30 @@ pub(super) fn general(s: &State, k: &rune_kit::Kit) -> Vec<El> {
         ));
     }
 
+    let mut gfx_rows = vec![
+        item_enabled(S::Shaders.get(lang), None, shaders, !cpu_running),
+        item_enabled(S::Butterflies.get(lang), None, butterflies, bugs_ok),
+    ];
+    if s.settings.butterflies && bugs_ok {
+        let count = s.settings.butterfly_count.clamp(1, 10);
+        let frac = f32::from(count - 1) / 9.0;
+        let ctl = row()
+            .gap(10.0)
+            .items_center()
+            .child(figure(count.to_string()))
+            .child(super::level_w("set-bug-count", frac, 110.0, |s, f| {
+                let next = (1.0 + f.clamp(0.0, 1.0) * 9.0).round() as u8;
+                let next = next.clamp(1, 10);
+                if s.settings.butterfly_count != next {
+                    s.settings.butterfly_count = next;
+                    s.mark_settings_dirty();
+                }
+            }));
+        gfx_rows.push(item(S::ButterflyCount.get(lang), None, ctl));
+    }
+    gfx_rows.push(item(S::CpuMode.get(lang), Some(S::CpuModeNote.get(lang)), cpu));
+    gfx_rows.push(item(S::ReduceMotion.get(lang), None, motion));
+
     vec![
         account_card(s),
         group(
@@ -159,17 +183,7 @@ pub(super) fn general(s: &State, k: &rune_kit::Kit) -> Vec<El> {
             ],
             None,
         ),
-        group(
-            "set-graphics",
-            Some(S::SetGraphics.get(lang)),
-            vec![
-                item_enabled(S::Shaders.get(lang), None, shaders, !cpu_running),
-                item_enabled(S::Butterflies.get(lang), None, butterflies, bugs_ok),
-                item(S::CpuMode.get(lang), Some(S::CpuModeNote.get(lang)), cpu),
-                item(S::ReduceMotion.get(lang), None, motion),
-            ],
-            None,
-        ),
+        group("set-graphics", Some(S::SetGraphics.get(lang)), gfx_rows, None),
         group("set-system", Some(S::SetSystem.get(lang)), sys_rows, None),
     ]
 }
