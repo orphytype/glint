@@ -5,6 +5,20 @@ use ym_api::{Album, ArtistPage, Playlist, Track};
 use super::{Detail, DownloadState, FromName, LibTab, Load, Page, PlayingFrom, Source, State};
 use crate::i18n::S;
 
+/// Deduplicates `/wheel/new` entries by station key while preserving Yandex Music's full list.
+pub(super) fn filter_wheel_waves(items: Vec<ym_api::WheelItem>) -> Vec<ym_api::WheelItem> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for item in items {
+        let key = item.key();
+        if item.name.trim().is_empty() || !seen.insert(key) {
+            continue;
+        }
+        out.push(item);
+    }
+    out
+}
+
 impl State {
     pub fn reload_content(&mut self) {
         if !matches!(self.home, Load::Ready(_)) {
@@ -35,6 +49,16 @@ impl State {
                 s.error_toast(&e);
                 if !matches!(s.home, Load::Ready(_)) {
                     s.home = Load::Failed(e.to_string());
+                }
+            }
+        });
+        let b_wheel = b.clone();
+        self.job(async move { b_wheel.wheel().await }, |s, _, res| {
+            if let Ok(items) = res {
+                let filtered = filter_wheel_waves(items);
+                if filtered != s.wheel_waves {
+                    s.wheel_waves = filtered;
+                    s.save_home_snapshot();
                 }
             }
         });

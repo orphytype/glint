@@ -394,8 +394,9 @@ impl State {
                 if (self.wave_arc_to - self.wave_arc).abs() <= 0.0005 && self.wave_arc_vel.abs() <= 0.005 {
                     self.wave_arc = self.wave_arc_to;
                     self.wave_arc_vel = 0.0;
-                    if self.wave_arc.abs() > 1200.0 {
-                        let shift = (self.wave_arc / 12.0).floor() * 12.0;
+                    let count = self.arc_wave_count().max(1) as f32;
+                    if self.wave_arc.abs() > count * 100.0 {
+                        let shift = (self.wave_arc / count).floor() * count;
                         self.wave_arc -= shift;
                         self.wave_arc_to -= shift;
                     }

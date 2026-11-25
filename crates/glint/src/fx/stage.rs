@@ -6,7 +6,7 @@ use rune::render::{Instance, KIND_EFFECT};
 
 use super::gpu::{Gpu, Pipe};
 use super::slots::{FrameCtx, Job, SlotRef, SlotSummary, base, ease_out, rgb4};
-use super::{COVER_MARK, Gfx, WAVE_FRAME, WAVE_POINTER};
+use super::{COVER_MARK, Gfx, WAVE_FRAME};
 
 fn hsl_rgb(h_deg: f32, s: f32, l: f32) -> [f32; 3] {
     let h = h_deg.rem_euclid(360.0) / 60.0;
@@ -74,20 +74,20 @@ fn wave_stops(rgb: [f32; 3], canvas: [f32; 3], light: bool) -> ([f32; 3], [f32; 
         return (shadow, wash, crest);
     }
     let shadow = [
-        (canvas[0] * 0.92 + rgb[0] * 0.08).clamp(0.0, 1.0),
-        (canvas[1] * 0.92 + rgb[1] * 0.08).clamp(0.0, 1.0),
-        (canvas[2] * 0.92 + rgb[2] * 0.08).clamp(0.0, 1.0),
+        (canvas[0] * 0.97 + rgb[0] * 0.03).clamp(0.0, 1.0),
+        (canvas[1] * 0.97 + rgb[1] * 0.03).clamp(0.0, 1.0),
+        (canvas[2] * 0.97 + rgb[2] * 0.03).clamp(0.0, 1.0),
     ];
-    // Cap perceptual wash luminance in dark mode so bright yellow/lime covers keep velvety depth
-    // (like the reference wave) and white typography stays effortlessly legible on every track.
-    let raw_wash = [rgb[0] * 0.84, rgb[1] * 0.84, rgb[2] * 0.84];
+    // Keep dark-mode wave wash deep and moody so the gradient toward the sidebar stays close to
+    // Yandex Music's black background while sharp ridges still glow vibrantly around the cover.
+    let raw_wash = [rgb[0] * 0.62, rgb[1] * 0.62, rgb[2] * 0.62];
     let luma = 0.2126 * raw_wash[0] + 0.7152 * raw_wash[1] + 0.0722 * raw_wash[2];
-    let scale = if luma > 0.34 { (0.34 / luma).powf(0.72) } else { 1.0 };
+    let scale = if luma > 0.24 { (0.24 / luma).powf(0.76) } else { 1.0 };
     let wash = [(raw_wash[0] * scale).clamp(0.0, 1.0), (raw_wash[1] * scale).clamp(0.0, 1.0), (raw_wash[2] * scale).clamp(0.0, 1.0)];
     let crest = [
-        (0.70 + rgb[0] * 0.30).clamp(0.0, 1.0),
-        (0.68 + rgb[1] * 0.32).clamp(0.0, 1.0),
-        (0.66 + rgb[2] * 0.34).clamp(0.0, 1.0),
+        (0.56 + rgb[0] * 0.44).clamp(0.0, 1.0),
+        (0.54 + rgb[1] * 0.46).clamp(0.0, 1.0),
+        (0.52 + rgb[2] * 0.48).clamp(0.0, 1.0),
     ];
     (shadow, wash, crest)
 }
@@ -227,6 +227,8 @@ impl Gfx {
                 }
             }
             let (shadow, wash, crest) = wave_stops(self.wave_rgb, ctx.canvas, crate::theme::light());
+            u.p0[1] = (self.wave_seed & 0x00ff_ffff) as f32;
+            u.p0[2] = (self.wave_block & 0x00ff_ffff) as f32;
             u.p0[3] = if still { 1.8 } else { self.wave_t };
             u.p1 = [m[0], m[1], appear, if still { 0.0 } else { self.wave_energy }];
             u.region = [
@@ -238,20 +240,6 @@ impl Gfx {
             u.p3 = rgb4(shadow, 1.0);
             u.tint = rgb4(wash, 1.0);
             u.p4 = rgb4(crest, 1.0);
-            if !still {
-                let want = [f32::from_bits(WAVE_POINTER[0].load(Ordering::Relaxed)), f32::from_bits(WAVE_POINTER[1].load(Ordering::Relaxed))];
-                let p = &mut self.wave_ptr;
-                let ease = 1.0 - (-ctx.dt * 5.0).exp();
-                if p[2] < 0.01 {
-                    p[0] = want[0];
-                    p[1] = want[1];
-                } else {
-                    p[0] += (want[0] - p[0]) * ease;
-                    p[1] += (want[1] - p[1]) * ease;
-                }
-                p[2] = m[0];
-                u.p2 = [mix, p[0], p[1], p[2]];
-            }
         }
         u.ink = rgb4(ctx.ink, 1.0);
         let u = gpu.stage(ctx.device, &u);

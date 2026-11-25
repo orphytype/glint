@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use rune::{Cursor, El, GrowthSpec, Tx, col, el, icon, row};
 use ym_api::{Album, Artist, Playlist, ShelfItem, Track};
 
-use crate::app::{Load, Page, Source, State};
+use crate::app::{CardMenu, Load, Page, PinnedItem, Popover, Source, State, Station};
 use crate::i18n::S;
 use crate::theme as th;
 use crate::ui::icons;
@@ -198,6 +198,15 @@ struct CardText {
 
 type OnPlay = Option<Box<dyn Fn(&mut State)>>;
 
+struct CardOverlay {
+    page: Page,
+    title: String,
+    cover: Option<String>,
+    like_key: Option<String>,
+    link: Option<String>,
+    station: Option<Station>,
+}
+
 struct CardSpec<'a> {
     key: String,
     tpl: Option<&'a str>,
@@ -206,56 +215,140 @@ struct CardSpec<'a> {
     size: f32,
     round: bool,
     load_art: bool,
+    overlay: Option<CardOverlay>,
+}
+
+fn card_circle_btn(key: String, ic: &'static rune::Icon, color: rune::Color, tip: &str, size: f32, glyph: f32) -> El {
+    let r = size * 0.5;
+    row()
+        .key(key)
+        .role("button")
+        .label(tip)
+        .help(tip)
+        .w(size)
+        .h(size)
+        .radius(r)
+        .center()
+        .cursor(Cursor::Pointer)
+        .press_scale(0.92)
+        .child(el().absolute(0.0, 0.0).w_full().h_full().radius(r).fill(th::rgba(0x000000, 0.64)).hov(th::rgba(0x000000, 0.82)).gop(0.0, 1.0))
+        .child(icon(ic, glyph).color(color).gop(0.0, 1.0))
 }
 
 fn media_card(s: &State, spec: CardSpec<'_>, play: OnPlay, on: impl Fn(&mut State) + 'static) -> El {
-    let CardSpec { key, tpl, title, text, size, round, load_art } = spec;
+    let CardSpec { key, tpl, title, text, size, round, load_art, overlay } = spec;
+    let lang = s.lang;
     let radius = if round { size * 0.5 } else { CARD_R };
     let cover_el = if load_art { kit::cover(s, tpl, size, radius) } else { kit::cover_placeholder(size, radius) };
     let mut art = el().w(size).h(size).radius(radius).child(cover_el);
-    art = art.child(el().absolute(0.0, 0.0).w_full().h_full().radius(radius).fill(th::rgba(0x000000, 0.18)).gop(0.0, 1.0));
-    if let Some(play) = play {
+    art = art.child(el().absolute(0.0, 0.0).w_full().h_full().radius(radius).fill(th::rgba(0x000000, 0.28)).gop(0.0, 1.0));
+    if let Some(ov) = overlay {
+        let pinned = s.is_page_pinned(&ov.page);
+        let pin_item = PinnedItem { page: ov.page.clone(), title: ov.title.clone(), cover: ov.cover.clone(), artist: false };
+        let pin_btn = card_circle_btn(
+            format!("{key}-pin"),
+            if pinned { &icons::PIN_OFF } else { &icons::PIN },
+            if pinned { th::rgb(0xffdc4e) } else { th::rgb(0xffffff) },
+            if pinned { S::Unpin.get(lang) } else { S::Pin.get(lang) },
+            34.0,
+            16.0,
+        )
+        .absolute(size - 42.0, 8.0)
+        .on_press(move |s: &mut State| s.toggle_pin_item(pin_item.clone()));
+        art = art.child(pin_btn);
+
+        if let Some(play) = play {
+            let own_playing = s.queue_from(&ov.page) && s.player.playing;
+            let page_play = ov.page.clone();
+            let play_tip = if own_playing { S::Pause.get(lang) } else { S::Play.get(lang) };
+            let play_ic = if own_playing { &icons::PAUSE } else { &icons::PLAY };
+            art = art.child(
+                row()
+                    .key(format!("{key}-play"))
+                    .role("button")
+                    .label(play_tip)
+                    .help(play_tip)
+                    .cursor(Cursor::Pointer)
+                    .press_scale(0.92)
+                    .on_press(move |s: &mut State| {
+                        if s.queue_from(&page_play) {
+                            s.toggle_pause();
+                        } else {
+                            play(s);
+                        }
+                    })
+                    .absolute(8.0, size - 50.0)
+                    .w(42.0)
+                    .h(42.0)
+                    .radius(21.0)
+                    .center()
+                    .child(el().absolute(0.0, 0.0).w_full().h_full().radius(21.0).fill(th::rgb(0xededed)).hov(th::rgb(0xffffff)).gop(0.0, 1.0))
+                    .child(icon(play_ic, 18.0).color(th::rgb(0x0a0a0a)).ml(if own_playing { 0.0 } else { 1.5 }).gop(0.0, 1.0)),
+            );
+        }
+
+        let has_like = ov.like_key.is_some();
+        let more_key = format!("{key}-more");
+        let more_anchor = more_key.clone();
+        let card_menu = CardMenu { page: ov.page, title: ov.title, cover: ov.cover, like_key: ov.like_key.clone(), link: ov.link, station: ov.station };
+        let more_x = if has_like { size - 82.0 } else { size - 42.0 };
+        let more_btn = card_circle_btn(more_key, &icons::MORE, th::rgb(0xffffff), S::More.get(lang), 34.0, 17.0)
+            .absolute(more_x, size - 44.0)
+            .on_press(move |s: &mut State| s.open_popover(Popover::Card { item: card_menu.clone(), anchor: more_anchor.clone() }));
+        art = art.child(more_btn);
+
+        if let Some(like_key) = ov.like_key {
+            let liked = s.is_item_liked(&like_key);
+            let heart_col = if liked { s.pal().accent } else { th::rgb(0xffffff) };
+            let heart_ic = if liked { &icons::HEART_FILL } else { &icons::HEART };
+            let heart_tip = if liked { S::RemoveFromCollection.get(lang) } else { S::AddToCollection.get(lang) };
+            let heart_btn = card_circle_btn(format!("{key}-like"), heart_ic, heart_col, heart_tip, 34.0, 16.0)
+                .absolute(size - 42.0, size - 44.0)
+                .on_press(move |s: &mut State| s.toggle_item_like(&like_key));
+            art = art.child(heart_btn);
+        }
+    } else if let Some(play) = play {
         art = art.child(
             row()
                 .key(format!("{key}-play"))
                 .role("button")
-                .label(S::Play.get(s.lang))
-                .help(S::Play.get(s.lang))
+                .label(S::Play.get(lang))
+                .help(S::Play.get(lang))
                 .cursor(Cursor::Pointer)
                 .press_scale(0.92)
                 .on_press(play)
-                .absolute(size - 50.0, size - 50.0)
-                .w(40.0)
-                .h(40.0)
-                .radius(20.0)
+                .absolute(8.0, size - 50.0)
+                .w(42.0)
+                .h(42.0)
+                .radius(21.0)
                 .center()
-                .child(el().absolute(0.0, 0.0).w_full().h_full().radius(20.0).fill(th::rgb(0xffffff)).gop(0.0, 1.0))
-                .child(icon(&icons::PLAY, 17.0).color(th::rgb(0x0a0a0a)).ml(1.0).gop(0.0, 1.0)),
+                .child(el().absolute(0.0, 0.0).w_full().h_full().radius(21.0).fill(th::rgb(0xededed)).hov(th::rgb(0xffffff)).gop(0.0, 1.0))
+                .child(icon(&icons::PLAY, 18.0).color(th::rgb(0x0a0a0a)).ml(1.5).gop(0.0, 1.0)),
         );
     }
     let reduce = s.settings.reduce_motion;
     let moving = kit::marquee_on(s, &key);
+    let badge_w = if text.explicit && !round { 21.0 } else { 0.0 };
+    let title_room = (size - badge_w).max(32.0);
     let name_w = rune::text::measure(&title, &[], th::CARD_NAME, None).0.ceil();
     let name = title.clone();
     let mut lines = col().w(size).min_w(0.0).gap(1.0);
     if round {
         lines = lines.items_center();
     }
-    lines = lines.child(kit::marquee(format!("{key}-name"), size, name_w, moving, reduce, move || label(name.clone(), th::CARD_NAME, th::text())));
+    let title_el = kit::marquee(format!("{key}-name"), title_room, name_w, moving, reduce, move || label(name.clone(), th::CARD_NAME, th::text()));
+    if text.explicit && !round {
+        lines = lines.child(row().w(size).min_w(0.0).gap(6.0).items_center().justify_between().child(title_el).child(kit::explicit_badge(s)));
+    } else {
+        lines = lines.child(title_el);
+    }
     if !text.artists.is_empty() {
         lines = lines.child(kit::artists_row_in_width(s, &text.artists, th::CARD_BY, false, &format!("{key}-ar"), th::text2(), size, moving));
     } else if !text.by.is_empty() {
         lines = lines.child(label(text.by, th::CARD_BY, th::text2()).truncate().max_w(size).min_w(0.0));
     }
-    if !text.facts.is_empty() || text.explicit {
-        let mut facts = row().key(format!("{key}-facts")).max_w(size).min_w(0.0).mt(2.0).gap(6.0).items_center();
-        if text.explicit {
-            facts = facts.child(kit::explicit_badge(s));
-        }
-        if !text.facts.is_empty() {
-            facts = facts.child(label(text.facts, th::TIME, th::text3()).truncate().min_w(0.0).shrink());
-        }
-        lines = lines.child(facts);
+    if !text.facts.is_empty() {
+        lines = lines.child(label(text.facts, th::TIME, th::text3()).truncate().max_w(size).min_w(0.0).mt(2.0));
     }
     let mut card = col()
         .key(key.clone())
@@ -294,31 +387,55 @@ pub(super) fn playlist_card_lazy(s: &State, pl: &Playlist, size: f32, load_art: 
     let name = pl.title.clone();
     let play: OnPlay = Some(Box::new(move |s: &mut State| s.play_playlist(uid, kind, &name)));
     let page = Page::Playlist(uid, kind);
+    let own = s.account.as_ref().is_some_and(|a| a.uid == uid);
+    let owner_slug = pl.owner.as_ref().map(|o| o.login.as_str()).filter(|l| !l.is_empty()).map_or_else(|| uid.to_string(), str::to_owned);
+    let overlay = Some(CardOverlay {
+        page: page.clone(),
+        title: pl.title.clone(),
+        cover: pl.cover_template().map(str::to_owned),
+        like_key: (!own).then(|| format!("playlist:{uid}:{kind}")),
+        link: Some(format!("https://music.yandex.ru/users/{owner_slug}/playlists/{kind}")),
+        station: None,
+    });
     let preview = Preview { title: pl.title.clone(), cover: pl.cover_template().map(str::to_owned), artists: Vec::new(), year: None };
     let text = CardText { by, facts, ..CardText::default() };
-    media_card(s, CardSpec { key: format!("pl-{}", pl.key()), tpl: pl.cover_template(), title: pl.title.clone(), text, size, round: false, load_art }, play, move |s: &mut State| {
-        s.go_preview(page.clone(), &preview)
-    })
+    media_card(
+        s,
+        CardSpec { key: format!("pl-{}", pl.key()), tpl: pl.cover_template(), title: pl.title.clone(), text, size, round: false, load_art, overlay },
+        play,
+        move |s: &mut State| s.go_preview(page.clone(), &preview),
+    )
 }
 
 pub(super) fn album_card_lazy(s: &State, a: &Album, size: f32, load_art: bool) -> El {
     let (id, play_id, name) = (a.id.clone(), a.id.clone(), a.title.clone());
     let kind = crate::app::release_kind_name(a.kind.as_deref()).get(s.lang).to_owned();
-    let facts = facts_line([kind, a.year.map(|y| y.to_string()).unwrap_or_default()]);
+    let facts = facts_line([a.year.map(|y| y.to_string()).unwrap_or_default(), kind]);
     let play: OnPlay = Some(Box::new(move |s: &mut State| s.play_album(&play_id, &name)));
-    let page = Page::Album(id);
+    let page = Page::Album(id.clone());
+    let overlay = Some(CardOverlay {
+        page: page.clone(),
+        title: a.title.clone(),
+        cover: a.cover_template().map(str::to_owned),
+        like_key: Some(format!("album:{id}")),
+        link: Some(format!("https://music.yandex.ru/album/{id}")),
+        station: Some(Station::Album(id)),
+    });
     let preview = Preview { title: a.title.clone(), cover: a.cover_template().map(str::to_owned), artists: a.artists.clone(), year: a.year };
-    let text = CardText { artists: a.artists.clone(), facts, ..CardText::default() };
-    media_card(s, CardSpec { key: format!("al-{}", a.id), tpl: a.cover_template(), title: a.title.clone(), text, size, round: false, load_art }, play, move |s: &mut State| {
-        s.go_preview(page.clone(), &preview)
-    })
+    let text = CardText { artists: a.artists.clone(), facts, explicit: a.is_explicit(), ..CardText::default() };
+    media_card(
+        s,
+        CardSpec { key: format!("al-{}", a.id), tpl: a.cover_template(), title: a.title.clone(), text, size, round: false, load_art, overlay },
+        play,
+        move |s: &mut State| s.go_preview(page.clone(), &preview),
+    )
 }
 
 pub(super) fn artist_card_lazy(s: &State, a: &Artist, size: f32, load_art: bool) -> El {
     let id = a.id.clone();
     let preview = Preview { title: a.name.clone(), cover: a.cover_template().map(str::to_owned), artists: Vec::new(), year: None };
     let text = CardText { by: S::Artist.get(s.lang).to_owned(), ..CardText::default() };
-    media_card(s, CardSpec { key: format!("ar-{}", a.id), tpl: a.cover_template(), title: a.name.clone(), text, size, round: true, load_art }, None, move |s: &mut State| {
+    media_card(s, CardSpec { key: format!("ar-{}", a.id), tpl: a.cover_template(), title: a.name.clone(), text, size, round: true, load_art, overlay: None }, None, move |s: &mut State| {
         s.go_preview(Page::Artist(id.clone()), &preview)
     })
 }
@@ -330,15 +447,18 @@ pub(super) fn track_card_lazy(s: &State, t: &Track, size: f32, shelf: usize, loa
     let year = album.as_ref().and_then(|a| a.year).map(|y| y.to_string()).unwrap_or_default();
     let length = t.duration_ms.filter(|ms| *ms > 0).map(crate::player::fmt_time).unwrap_or_default();
     let text = CardText { artists: t.artists.clone(), facts: facts_line([year, length]), explicit: t.is_explicit(), ..CardText::default() };
-    media_card(s, CardSpec { key: format!("tr-{shelf}-{}", t.id), tpl: t.cover_template(), title: t.full_title(), text, size, round: false, load_art }, play, move |s: &mut State| {
-        match &album {
+    media_card(
+        s,
+        CardSpec { key: format!("tr-{shelf}-{}", t.id), tpl: t.cover_template(), title: t.full_title(), text, size, round: false, load_art, overlay: None },
+        play,
+        move |s: &mut State| match &album {
             Some(al) => {
                 let preview = Preview { title: al.title.clone(), cover: al.cover_template().map(str::to_owned), artists: al.artists.clone(), year: al.year };
                 s.go_preview(Page::Album(al.id.clone()), &preview)
             }
             None => s.play_shelf_track(shelf, &id),
-        }
-    })
+        },
+    )
 }
 
 #[derive(Clone)]
@@ -399,7 +519,7 @@ impl State {
         match src {
             ListSrc::Liked => {
                 let v = self.library.tracks.get()?;
-                if self.library.filter.text.trim().is_empty() && self.library.sort == crate::app::TrackSort::Original {
+                if self.library.filter.text.trim().is_empty() && self.library.track_filter.is_empty() && self.library.sort == crate::app::TrackSort::Original {
                     v.get(i)
                 } else {
                     self.library.shown.borrow().get(i).and_then(|&j| v.get(j))

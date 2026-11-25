@@ -189,7 +189,10 @@ impl State {
             Load::Ready(h) => h.clone(),
             _ => Vec::new(),
         };
-        self.store.save_snapshot("home.json", HomeSnapshot { account: self.account.clone(), avatar: self.avatar.clone(), home });
+        self.store.save_snapshot(
+            "home.json",
+            HomeSnapshot { account: self.account.clone(), avatar: self.avatar.clone(), home, wheel: self.wheel_waves.clone() },
+        );
     }
 
     /// Saves liked tracks, playlists, albums, and artists for the next launch.
@@ -231,6 +234,7 @@ impl State {
         self.account = None;
         self.avatar = None;
         self.home = Load::Idle;
+        self.wheel_waves.clear();
         self.liked.clear();
         self.liked_items.clear();
         self.likes_loaded = false;
@@ -268,6 +272,9 @@ impl State {
             self.avatar = snap.avatar;
             if !snap.home.is_empty() {
                 self.home = Load::Ready(snap.home);
+            }
+            if !snap.wheel.is_empty() {
+                self.wheel_waves = super::content::filter_wheel_waves(snap.wheel);
             }
             self.launch_play = !self.headless && self.settings.play_on_launch;
         }

@@ -320,6 +320,7 @@ fn entries(s: &State) -> Vec<Entry> {
         set(SetTab::General, S::Accent, Some(S::SetAppearance)),
         set(SetTab::General, S::Language, Some(S::SetAppearance)),
         set(SetTab::General, S::Shaders, Some(S::SetGraphics)),
+        set(SetTab::General, S::Butterflies, Some(S::SetGraphics)),
         set(SetTab::General, S::CpuMode, Some(S::CpuModeNote)),
         set(SetTab::General, S::ReduceMotion, Some(S::SetGraphics)),
         set(SetTab::General, S::Autostart, Some(S::SetSystem)),

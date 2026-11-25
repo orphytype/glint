@@ -174,6 +174,7 @@ pub fn rail(s: &State, w: f32, lead: f32, np_t: f32) -> El {
                 .mt(12.0)
                 .mb(8.0)
                 .scroll(rune::ScrollSpec { stick_bottom: false })
+                .scroll_edge_fade(26.0)
                 .child(col().w_full().items_center().py(6.0).child(pinned)),
         )
         .child(downloads)
@@ -209,7 +210,11 @@ fn pinned_strip(s: &State) -> El {
             .on_secondary_press(move |s: &mut State, _press, _tx: &mut Tx| {
                 s.open_popover(Popover::Pinned { item: menu_item.clone(), anchor: format!("pinned-{item_key}") });
             })
-            .child(kit::cover_sm(s, item.cover.as_deref(), PINNED_BTN, radius));
+            .child(if item.page == Page::Library && item.cover.is_none() {
+                row().w(PINNED_BTN).h(PINNED_BTN).radius(radius).center().fill(th::rgb(0x8e1920)).child(icon(&icons::HEART_FILL, 18.0).color(th::rgb(0xffb4a2)))
+            } else {
+                kit::cover_sm(s, item.cover.as_deref(), PINNED_BTN, radius)
+            });
         cover = cover.child(el().absolute(0.0, 0.0).w_full().h_full().radius(radius).fill(th::veil(0.0)).hov(th::veil(0.10)));
         rail = rail.child(cover);
     }
@@ -708,10 +713,10 @@ pub(super) fn quality_btn_at(s: &State, key: &'static str, size: f32, rest: rune
     b.on_press(move |s: &mut State| s.open_popover(Popover::Quality { anchor: key.into() }))
 }
 
-/// Whether My Wave is what is playing.
-/// Whether My Wave (one of its moods, not a wave seeded by a track or an artist) is playing.
+/// Whether My Wave (one of the Home arc wheel waves, not a standalone artist/track/collection wave) is playing.
 pub fn wave_playing(s: &State) -> bool {
-    matches!(&s.player.source, Source::Wave { preset, .. } if !preset.contains(':') && preset != "collection") && s.current().is_some()
+    s.current().is_some()
+        && matches!(&s.player.source, Source::Wave { preset, .. } if (!preset.contains(':') && preset != "collection") || s.wheel_wave(preset).is_some())
 }
 
 // ---- shared with the player page ----------------------------------------------------------------------

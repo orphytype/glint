@@ -116,12 +116,15 @@ impl Gfx {
             let want = if st.player.playing { self.smooth.norm[3] } else { 0.0 };
             self.shape_music += (want - self.shape_music) * (1.0 - (-dt * 3.0).exp());
             self.shape_t += dt * flow * (1.0 + 0.5 * self.shape_music);
-            // Exact music-player-wave cycle clock (8.467 s loop), gently nudged in speed by
-            // filtered live audio energy so playback never jerks or stalls.
-            const WAVE_CYCLE_S: f32 = 254.0 / 30.0;
+            // Continuous non-repeating 4-second block clock (wave.wgsl), gently modulated by
+            // filtered live audio energy so the wave flows smoothly forever with zero loop seam.
             let e_want = if st.player.playing { (0.60 * self.smooth.level + 0.40 * self.smooth.norm[3]).clamp(0.0, 1.0) } else { 0.0 };
             self.wave_energy += (e_want - self.wave_energy) * (1.0 - (-dt * 1.4).exp());
-            self.wave_t = (self.wave_t + dt * (0.90 + 0.42 * self.wave_energy)).rem_euclid(WAVE_CYCLE_S);
+            self.wave_t += dt * (0.92 + 0.36 * self.wave_energy);
+            while self.wave_t >= 4.0 {
+                self.wave_t -= 4.0;
+                self.wave_block = self.wave_block.wrapping_add(1);
+            }
         }
         let stage_fx = st.settings.stage.effects;
         let heard = st.player.playing && self.smooth.level > 0.002;
@@ -177,17 +180,20 @@ impl Gfx {
                 || st.np_open
                 || st.np.t > 0.001;
             if st.page == Page::Home {
-                gpu.ensure_wave_field(device, queue);
                 if st.settings.butterflies {
                     gpu.ensure_pipes(device, f.format, &[Pipe::Wave, Pipe::Field, Pipe::Butterfly]);
                 } else {
                     gpu.ensure_pipes(device, f.format, &[Pipe::Wave, Pipe::Field]);
                 }
             }
-            if st.np_open || st.np.t > 0.001 {
-                gpu.ensure_pipes(device, f.format, &[Pipe::Stage, Pipe::Bars, Pipe::Ribbon]);
+            // Pre-warm Now Playing & Queue pipelines in the background once a track is loaded and
+            // Home's wave is up so opening Now Playing or Queue for the first time never pops in
+            // the blurred backdrop late or stalls on shader compilation.
+            let np_wanted = st.np_open || st.np.t > 0.001 || (st.current().is_some() && (st.page != Page::Home || gpu.wave_ready(f.format)));
+            if np_wanted {
+                gpu.ensure_pipes(device, f.format, &[Pipe::Stage, Pipe::Bars, Pipe::Ribbon, Pipe::Morph]);
             }
-            if !on_home || overlay {
+            if !on_home || overlay || gpu.wave_ready(f.format) {
                 gpu.ensure_glass(device, f.format);
                 if st.current().is_some() && !st.np_open && st.np.t <= 0.001 && st.page != Page::Home {
                     gpu.ensure_pipe(device, f.format, Pipe::Bars);
@@ -199,7 +205,6 @@ impl Gfx {
                 gpu.ensure_pipe(device, f.format, Pipe::Ribbon);
             }
         }
-        gpu.take_wave_field();
         let first_gpu = !GPU_UP.load(Ordering::Relaxed) && !GPU_UP.swap(true, Ordering::Relaxed);
         let ready_up = !READY.load(Ordering::Relaxed) && !READY.swap(true, Ordering::Relaxed);
         let glass_up = !GLASS_READY.load(Ordering::Relaxed) && gpu.glass_ready(f.format) && !GLASS_READY.swap(true, Ordering::Relaxed);

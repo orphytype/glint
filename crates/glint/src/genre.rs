@@ -141,3 +141,27 @@ pub fn names(ids: &[String], lang: Lang) -> String {
     }
     out.join(", ")
 }
+
+/// Groups fine-grained Yandex genre ids into top-level filter categories (matching the pills in
+/// Yandex Music's Liked playlist: "Рэп и хип-хоп", "Поп", "Альтернатива", "Рок", etc.).
+pub fn bucket(id: &str) -> String {
+    let k = id.trim().to_ascii_lowercase();
+    match k.as_str() {
+        "rap" | "rusrap" | "foreignrap" | "phonk" => "rap".into(),
+        "pop" | "ruspop" | "foreignpop" | "kpop" | "jpop" | "hyperpop" | "estrada" | "rusestrada" => "pop".into(),
+        "alternative" | "emo" | "hardcore" | "posthardcore" | "numetal" | "alternativemetal" => "alternative".into(),
+        "rock" | "allrock" | "rusrock" | "ukrrock" | "rnr" | "hardrock" | "folkrock" | "stonerrock" | "prog" | "postrock" | "newwave" | "punk" => "rock".into(),
+        "indie" | "local-indie" => "indie".into(),
+        "metal" | "epicmetal" | "folkmetal" | "gothicmetal" | "classicmetal" | "extrememetal" => "metal".into(),
+        "electronics" | "electronic" | "edmgenre" | "dance" | "eurodance" | "house" | "techno" | "trance" | "dnb" | "dubstep" | "industrial" | "experimental" | "triphop" | "idm" | "synthwave" => {
+            "electronics".into()
+        }
+        "ambient" | "lofi" | "lounge" | "relax" | "newage" | "meditation" | "chill" => "ambient".into(),
+        "jazz" | "conjazz" | "tradjazz" | "jazzrock" | "bebop" | "smoothjazz" | "vocaljazz" | "bigbands" => "jazz".into(),
+        "rnb" | "soul" | "funk" | "disco" => "rnb".into(),
+        "classical" | "classicalmusic" | "modern" | "opera" | "vocal" => "classical".into(),
+        "soundtrack" | "films" | "tvseries" | "animated" | "videogame" | "musical" => "soundtrack".into(),
+        "folk" | "rusfolk" | "country" | "latin" | "latinfolk" | "celtic" | "balkan" | "caucasian" | "eastern" | "african" | "jewish" => "folk".into(),
+        _ => k,
+    }
+}

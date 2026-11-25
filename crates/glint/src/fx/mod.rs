@@ -113,14 +113,6 @@ pub static GPU_UP: AtomicBool = AtomicBool::new(false);
 /// cold DXC/driver compiler heap pages shortly after.
 pub static PIPES_SETTLED_GEN: AtomicU64 = AtomicU64::new(0);
 
-/// Where the pointer is over My Wave's liquid (in liquid units).
-pub(super) static WAVE_POINTER: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
-
-pub fn set_wave_pointer(x: f32, y: f32) {
-    WAVE_POINTER[0].store(x.to_bits(), Ordering::Relaxed);
-    WAVE_POINTER[1].store(y.to_bits(), Ordering::Relaxed);
-}
-
 /// Where the track stage focal center sits inside `hm-wave-shape` (normalized `(fx, fy, min_w_frac, zoom)`).
 pub(super) static WAVE_FRAME: [AtomicU32; 4] = [
     AtomicU32::new(0.65f32.to_bits()),
@@ -305,12 +297,14 @@ pub struct Gfx {
     morph_bars: [f32; 3],
     shape_t: f32,
     shape_music: f32,
-    /// Monotonic fluid clock, smooth audio energy, and crossfaded RGB tint for Home's My Wave orb.
+    /// Continuous 4-second block-indexed fluid clock, session seed, smooth audio energy, and
+    /// crossfaded RGB tint for Home's procedural My Wave backdrop.
     wave_t: f32,
+    wave_block: u32,
+    wave_seed: u32,
     wave_energy: f32,
     wave_rgb: [f32; 3],
     wave_rgb_init: bool,
-    wave_ptr: [f32; 3],
     shapes: HashMap<u32, [f32; 4]>,
     shapes_gone: f32,
     song: Song,
@@ -341,6 +335,15 @@ pub struct Gfx {
 
 impl Gfx {
     pub fn new() -> Gfx {
+        let wave_seed = if crate::app::is_headless() {
+            0x5a3c_1f7bu32
+        } else {
+            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0x1234_5678u64, |d| d.as_nanos() as u64);
+            let mut h = (nanos as u32) ^ ((nanos >> 32) as u32).wrapping_mul(0x9e37_79b9);
+            h = (h ^ (h >> 16)).wrapping_mul(0x7feb_352d);
+            h = (h ^ (h >> 15)).wrapping_mul(0x846c_a68b);
+            h ^ (h >> 16)
+        };
         Gfx {
             fx: None,
             gpu: None,
@@ -356,10 +359,11 @@ impl Gfx {
             shape_t: 0.0,
             shape_music: 0.0,
             wave_t: 0.0,
+            wave_block: 0,
+            wave_seed,
             wave_energy: 0.0,
             wave_rgb: [0.55, 0.38, 0.92],
             wave_rgb_init: false,
-            wave_ptr: [0.0; 3],
             shapes: HashMap::new(),
             shapes_gone: 1.0,
             song: Song::new(),

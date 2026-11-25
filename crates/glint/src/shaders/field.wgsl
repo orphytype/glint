@@ -21,7 +21,7 @@ fn fs_field(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let g2 = exp(-dot(d2, d2) / (0.30 + 0.05 * beat));
     let g = clamp(g1 * 0.55 + g2 * (0.55 + 0.35 * level), 0.0, 1.0);
 
-    let amp = u.p0.x;
+    let amp = select(u.p0.x * 0.35, u.p0.x, u.view.w > 0.5);
     var col = mix(canvas, ink, g * amp);
     col = col + (ign(p) - 0.5) * (1.0 / 255.0);
     return out_px(col, rect_clip(p));

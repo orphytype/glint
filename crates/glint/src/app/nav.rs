@@ -127,7 +127,6 @@ impl State {
         self.log_mem(&format!("nav:{kind}"));
         self.art.bump_page();
         self.art_trim_at = Some(self.now + 0.5);
-        let detail = !page.is_root();
         match page {
             Page::Library => self.load_library_tab(self.library.tab),
             Page::Album(id) => self.open_album(&id),
@@ -135,9 +134,7 @@ impl State {
             Page::Artist(id) => self.open_artist(&id),
             _ => {}
         }
-        if detail {
-            self.ensure_likes();
-        }
+        self.ensure_likes();
     }
 
     /// Fetches liked album, artist, and playlist keys once per session.
@@ -157,9 +154,10 @@ impl State {
         self.liked_items.contains(key)
     }
 
-    /// Toggles the collection like for the currently open album, playlist, or artist.
-    pub fn toggle_detail_like(&mut self) {
-        let Some(key) = self.detail.like_key.clone() else { return };
+    /// Toggles the collection like for an album (`album:{id}`), playlist (`playlist:{uid}:{kind}`),
+    /// or artist (`artist:{id}`).
+    pub fn toggle_item_like(&mut self, key: &str) {
+        let key = key.to_owned();
         let like = !self.liked_items.contains(&key);
         let (what, id) = match key.split_once(':') {
             Some(("album", id)) => (ym_api::Likeable::Album, id.to_owned()),
@@ -192,9 +190,20 @@ impl State {
         });
     }
 
+    /// Toggles the collection like for the currently open album, playlist, or artist.
+    pub fn toggle_detail_like(&mut self) {
+        let Some(key) = self.detail.like_key.clone() else { return };
+        self.toggle_item_like(&key);
+    }
+
+    /// Whether `page` is currently pinned in the navigation rail.
+    pub fn is_page_pinned(&self, page: &Page) -> bool {
+        self.pinned_items.iter().any(|item| item.page == *page)
+    }
+
     /// Whether the open detail page is pinned in the navigation rail.
     pub fn detail_is_pinned(&self) -> bool {
-        self.detail.page.as_ref().is_some_and(|page| self.pinned_items.iter().any(|item| item.page == *page))
+        self.detail.page.as_ref().is_some_and(|page| self.is_page_pinned(page))
     }
 
     /// Sorts the open page's tracks while preserving original order to restore later.
@@ -252,23 +261,32 @@ impl State {
         v
     }
 
-    pub fn toggle_detail_pin(&mut self) {
-        let Some(page) = self.detail.page.clone() else { return };
-        let key = page.key();
-        if let Some(i) = self.pinned_items.iter().position(|item| item.key() == key) {
+    /// Pins `item` in the navigation rail, or removes it if that page is already pinned.
+    pub fn toggle_pin_item(&mut self, item: PinnedItem) {
+        let key = item.key();
+        if let Some(i) = self.pinned_items.iter().position(|it| it.key() == key) {
             self.pinned_items.remove(i);
             let text = self.tr(S::Unpinned);
             self.toast(text);
             self.mark_settings_dirty();
             return;
         }
-        if self.detail.title.is_empty() || self.detail.state.is_loading() {
-            return;
-        }
-        self.pinned_items.push(PinnedItem { page, title: self.detail.title.clone(), cover: self.detail.cover.clone(), artist: self.detail.is_artist });
+        self.pinned_items.push(item);
         let text = self.tr(S::Pinned);
         self.toast(text);
         self.mark_settings_dirty();
+    }
+
+    pub fn toggle_detail_pin(&mut self) {
+        let Some(page) = self.detail.page.clone() else { return };
+        if self.is_page_pinned(&page) {
+            self.toggle_pin_item(PinnedItem { page, title: String::new(), cover: None, artist: false });
+            return;
+        }
+        if self.detail.title.is_empty() || self.detail.state.is_loading() {
+            return;
+        }
+        self.toggle_pin_item(PinnedItem { page, title: self.detail.title.clone(), cover: self.detail.cover.clone(), artist: self.detail.is_artist });
     }
 
     /// Removes a pinned item by its stable page key.

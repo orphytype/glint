@@ -1,19 +1,25 @@
-//! Library page: Liked tracks header, collection tabs, live search filter, and card grids.
+//! Library page: Yandex-style Liked header, genre/mood filter pills, collection tabs, live search
+//! filter, and card grids.
 
-use rune::{El, col, el, icon, row, text_input};
+use std::collections::HashMap;
+
+use rune::{Cursor, El, col, el, icon, row, text_input};
+use ym_api::Track;
 
 use super::detail::{HEAD_COVER_R, HEAD_GAP, HEAD_SIDE, HEAD_SIDE_S, HEAD_STEP_BUTTONS, HEAD_STEP_BY};
-use super::shared::{GRID_GAP, album_card_lazy, artist_card_lazy, card_row_h, column, fit, play_button, playlist_card_lazy, track_list, virtual_grid};
-use crate::app::{AlbumSort, ArtistSort, DiscKind, LibTab, Load, Page, PlaylistSort, Popover, State, Station, TrackSort};
-use crate::i18n::S;
+use super::shared::{GRID_GAP, album_card_lazy, artist_card_lazy, card_row_h, column, fit, playlist_card_lazy, track_list, virtual_grid};
+use crate::app::{AlbumSort, ArtistSort, DiscKind, LibTab, Load, Page, PinnedItem, PlaylistSort, Popover, State, TrackSort};
+use crate::i18n::{Lang, S};
 use crate::theme as th;
 use crate::ui::shapes::Ill;
 use crate::ui::{
     icons,
-    kit::{self, ListSrc, label},
+    kit::{self, Hover as _, ListSrc, label},
 };
 
 const LIB_CTL_H: f32 = 36.0;
+const YANDEX_YELLOW: u32 = 0xffdc4e;
+const YANDEX_YELLOW_HOV: u32 = 0xffe474;
 
 fn liked_playlist_cover(s: &State, side: f32, radius: f32) -> El {
     if let Some(tpl) = s.library.liked_cover.as_deref() {
@@ -43,6 +49,180 @@ fn liked_playlist_cover(s: &State, side: f32, radius: f32) -> El {
             .child(row().absolute(0.0, 0.0).w_full().h_full().center().child(icon(&icons::HEART_FILL, side * 0.34).color(th::text())));
     }
     art.child(el().absolute(0.0, 0.0).w_full().h_full().radius(radius).fill(th::rgba(0x000000, 0.10)).border(1.0, kit::cover_border()))
+}
+
+fn track_genre_bucket(track: &Track) -> Option<String> {
+    let raw = track.albums.iter().find_map(|a| a.genre.as_deref()).filter(|g| !g.trim().is_empty())?;
+    let b = crate::genre::bucket(raw);
+    (!b.is_empty()).then_some(b)
+}
+
+fn track_matches_mood(track: &Track, mood: &str) -> bool {
+    if let Some(p) = track.track_parameters {
+        let energy = p.energy.unwrap_or(0.5);
+        let bpm = p.bpm.unwrap_or(110.0);
+        let hue = p.hue.unwrap_or(120.0);
+        return match mood {
+            "energetic" => energy >= 0.66 || bpm >= 126.0,
+            "fun" => energy >= 0.50 && ((30.0..=150.0).contains(&hue) || bpm >= 112.0),
+            "sad" => energy <= 0.48 && ((185.0..=295.0).contains(&hue) || bpm <= 98.0),
+            "calm" => energy <= 0.42 || bpm <= 90.0,
+            _ => true,
+        };
+    }
+    let g = track.albums.iter().find_map(|a| a.genre.as_deref()).unwrap_or("").to_ascii_lowercase();
+    match mood {
+        "energetic" => matches!(g.as_str(), "dnb" | "dubstep" | "phonk" | "edmgenre" | "dance" | "punk" | "hardcore" | "metal" | "sport" | "techno" | "house"),
+        "fun" => matches!(g.as_str(), "pop" | "ruspop" | "foreignpop" | "dance" | "disco" | "funk" | "kpop" | "hyperpop" | "eurodance"),
+        "sad" => matches!(g.as_str(), "emo" | "indie" | "local-indie" | "postrock" | "blues" | "romances" | "bard" | "alternative"),
+        "calm" => matches!(g.as_str(), "ambient" | "lofi" | "lounge" | "relax" | "classical" | "classicalmusic" | "jazz" | "newage" | "meditation"),
+        _ => true,
+    }
+}
+
+/// Evaluates whether `track` matches the selected Liked filter chip (`""`, `"mood:*"`, or `"genre:*"`).
+pub(super) fn track_matches_filter(track: &Track, filter: &str) -> bool {
+    if filter.is_empty() {
+        return true;
+    }
+    if let Some(mood) = filter.strip_prefix("mood:") {
+        return track_matches_mood(track, mood);
+    }
+    if let Some(genre) = filter.strip_prefix("genre:") {
+        return track_genre_bucket(track).as_deref() == Some(genre);
+    }
+    true
+}
+
+/// Builds the horizontal Liked filter chips matching Yandex Music: `Всё`, `Бодрое`, top genres in
+/// the user's liked tracks (`Рэп и хип-хоп`, `Поп`, `Альтернатива`, ...), plus `Весёлое`,
+/// `Грустное`, `Спокойное`.
+fn liked_filter_chips(tracks: &[Track], lang: Lang) -> Vec<(String, String)> {
+    let mut chips: Vec<(String, String)> = vec![(String::new(), S::KindAll.get(lang).to_owned())];
+    let has_energetic = tracks.iter().any(|t| track_matches_mood(t, "energetic"));
+    if has_energetic {
+        chips.push(("mood:energetic".into(), S::WaveEnergetic.get(lang).to_owned()));
+    }
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for track in tracks {
+        if let Some(bucket) = track_genre_bucket(track) {
+            *counts.entry(bucket).or_insert(0) += 1;
+        }
+    }
+    let mut genres: Vec<(String, usize)> = counts.into_iter().collect();
+    genres.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    // Place the top 3 genres right after "Бодрое" (matching Yandex Music's bar), then the remaining
+    // moods, then additional genres in the user's library.
+    for (g, _) in genres.iter().take(3) {
+        chips.push((format!("genre:{g}"), crate::genre::name(g, lang)));
+    }
+    for (mood, key) in [("fun", S::WaveFun), ("sad", S::WaveSad), ("calm", S::WaveCalm)] {
+        if tracks.iter().any(|t| track_matches_mood(t, mood)) {
+            chips.push((format!("mood:{mood}"), key.get(lang).to_owned()));
+        }
+    }
+    for (g, _) in genres.iter().skip(3).take(6) {
+        chips.push((format!("genre:{g}"), crate::genre::name(g, lang)));
+    }
+    chips
+}
+
+fn filter_bar(s: &State, tracks: &[Track]) -> Option<El> {
+    let chips = liked_filter_chips(tracks, s.lang);
+    if chips.len() <= 1 {
+        return None;
+    }
+    let active = s.library.track_filter.as_str();
+    let pills: Vec<El> = chips
+        .into_iter()
+        .map(|(id, text)| {
+            let on = active == id;
+            let key = if id.is_empty() { "lib-flt-all".to_owned() } else { format!("lib-flt-{id}") };
+            let click_id = id;
+            let mut pill = row()
+                .key(key)
+                .role("radio")
+                .label(text.as_str())
+                .checked(on)
+                .h(36.0)
+                .px(16.0)
+                .radius(18.0)
+                .center()
+                .cursor(Cursor::Pointer)
+                .press_scale(th::PRESS)
+                .on_press(move |s: &mut State| {
+                    if !click_id.is_empty() && s.library.track_filter == click_id {
+                        s.library.track_filter.clear();
+                    } else {
+                        s.library.track_filter.clone_from(&click_id);
+                    }
+                })
+                .child(label(text, th::BODY_M, if on { th::text() } else { th::text().alpha(0.90) }));
+            if on {
+                pill = pill
+                    .fill(if th::light() { th::veil(0.08) } else { th::rgba(0x141414, 0.96) })
+                    .border(2.0, th::rgb(YANDEX_YELLOW));
+            } else {
+                pill = pill.fill(th::veil(0.08)).hov(th::veil(0.14)).press(th::veil(0.18));
+            }
+            pill
+        })
+        .collect();
+    Some(kit::wheel_to_page(row().key("lib-filters").w_full().gap(8.0).py(2.0).scroll_x().scroll_edge_fade(28.0).children(pills)))
+}
+
+fn liked_circle_btn(key: &'static str, ic: &'static rune::Icon, color: rune::Color, tip: &str, active: bool) -> El {
+    row()
+        .key(key)
+        .role("button")
+        .label(tip)
+        .help(tip)
+        .w(40.0)
+        .h(40.0)
+        .radius(20.0)
+        .center()
+        .cursor(Cursor::Pointer)
+        .press_scale(th::PRESS)
+        .checked(active)
+        .fill(th::veil(if active { 0.14 } else { 0.08 }))
+        .hov(th::veil(0.15))
+        .press(th::veil(0.20))
+        .child(icon(ic, 18.0).color(color))
+}
+
+fn liked_play_pill(s: &State) -> El {
+    let own = s.queue_from(&Page::Library);
+    let (name, ic) = match (own, s.player.playing) {
+        (true, true) => (S::Pause, &icons::PAUSE),
+        (true, false) => (S::Resume, &icons::PLAY),
+        (false, _) => (S::Play, &icons::PLAY),
+    };
+    let text = name.get(s.lang);
+    let ink = th::rgb(0x111111);
+    row()
+        .key("lib-play")
+        .role("button")
+        .label(text)
+        .help(text)
+        .h(40.0)
+        .px(22.0)
+        .gap(8.0)
+        .radius(20.0)
+        .center()
+        .cursor(Cursor::Pointer)
+        .press_scale(th::PRESS)
+        .fill(th::rgb(YANDEX_YELLOW))
+        .hov(th::rgb(YANDEX_YELLOW_HOV))
+        .on_press(|s: &mut State| {
+            if s.queue_from(&Page::Library) {
+                s.toggle_pause();
+            } else {
+                let list = s.list(ListSrc::Liked);
+                s.play_all(list, false);
+            }
+        })
+        .child(icon(ic, 15.0).color(ink))
+        .child(label(text, th::BODY_M, ink))
 }
 
 pub(super) fn library(s: &State, w: f32) -> El {
@@ -85,7 +265,7 @@ pub(super) fn library(s: &State, w: f32) -> El {
         .grow(1.0)
         .min_w(0.0)
         .color(th::text())
-        .placeholder(S::SearchCollection.get(lang), th::text3())
+        .placeholder(if tab == LibTab::Tracks { S::SearchTrack } else { S::SearchCollection }.get(lang), th::text3())
         .caret(s.caret_color(s.library.filter.focused, p.accent), p.accent.alpha(0.30))
         .on_edit(|s: &mut State| &mut s.library.filter);
     let clear = (!q.is_empty()).then(|| kit::search_clear("lib-search-clear", lang).on_press(|s: &mut State| s.library.filter.clear()));
@@ -127,50 +307,49 @@ pub(super) fn library(s: &State, w: f32) -> El {
         col().key("lib-bar").w_full().gap(12.0).child(tabs).child(row().w_full().gap(8.0).items_center().child(field.grow(1.0).min_w(0.0)).children(sort_btn).children(new_pl))
     };
 
+    let liked_slice = s.library.tracks.get().filter(|v| !v.is_empty());
     let head = if tab == LibTab::Tracks {
-        let liked = s.library.tracks.get().filter(|v| !v.is_empty());
-        let lead = match liked {
-            Some(v) => {
-                let secs = v.iter().filter_map(|t| t.duration_ms).sum::<u64>() / 1000;
-                format!("{} · {} · {}", S::Playlist.get(lang), lang.tracks(v.len()), lang.duration(secs))
-            }
-            None => S::Playlist.get(lang).to_owned(),
-        };
+        let lead = liked_slice.map(|v| lang.tracks(v.len()));
         let side = if cw >= 640.0 { HEAD_SIDE } else { HEAD_SIDE_S };
         let pic = liked_playlist_cover(s, side, HEAD_COVER_R);
-        let mut meta = col()
-            .key("lib-meta")
-            .grow(1.0)
-            .min_w(0.0)
-            .child(label(S::Liked.get(lang).to_owned(), th::RELEASE, th::text()))
-            .child(label(lead, th::SMALL, th::text3()).mt(HEAD_STEP_BY));
-        if liked.is_some() {
+        let mut meta = col().key("lib-meta").grow(1.0).min_w(0.0).child(label(S::Liked.get(lang).to_owned(), th::RELEASE, th::text()));
+        if let Some(lead) = lead {
+            meta = meta.child(label(lead, th::SMALL, th::text3()).mt(HEAD_STEP_BY));
+        }
+        if let Some(tracks) = liked_slice {
+            let pinned = s.is_page_pinned(&Page::Library);
             let more_on = s.popover_open && matches!(s.popover, Some(Popover::Liked { .. }));
-            let buttons = row()
-                .key("lib-buttons")
-                .gap(8.0)
-                .items_center()
-                .mt(HEAD_STEP_BUTTONS)
-                .child(play_button(s, "lib-play", Some(Page::Library), false, |s| {
-                    let list = s.list(ListSrc::Liked);
-                    s.play_all(list, false);
-                }))
-                .child(kit::button_group(
-                    "lib-group",
-                    vec![
-                        kit::seg_icon("lib-shuffle", &icons::SHUFFLE, S::Shuffle.get(lang)).on_press(|s: &mut State| {
-                            let list = s.list(ListSrc::Liked);
-                            s.play_all(list, true);
-                        }),
-                        kit::seg_wave(s, "lib-wave", S::WaveByCollection.get(lang), S::LikedTracks.get(lang), Station::Collection),
-                        {
-                            let more = kit::seg_icon("lib-more", &icons::MORE, S::More.get(lang))
-                                .checked(more_on)
-                                .on_press(|s: &mut State| s.open_popover(Popover::Liked { anchor: "lib-more".into() }));
-                            if more_on { more.fill(th::veil(0.09)) } else { more }
-                        },
-                    ],
-                ));
+            let downloaded = s.downloads_settled(tracks);
+            let pin_btn = liked_circle_btn(
+                "lib-pin",
+                if pinned { &icons::PIN_OFF } else { &icons::PIN },
+                if pinned { th::rgb(YANDEX_YELLOW) } else { th::text2() },
+                if pinned { S::Unpin.get(lang) } else { S::Pin.get(lang) },
+                pinned,
+            )
+            .on_press(|s: &mut State| {
+                let title = S::Liked.get(s.lang).to_owned();
+                let cover = s.library.liked_cover.clone();
+                s.toggle_pin_item(PinnedItem { page: Page::Library, title, cover, artist: false });
+            });
+            let more_btn = liked_circle_btn("lib-more", &icons::MORE, if more_on { th::text() } else { th::text2() }, S::More.get(lang), more_on)
+                .on_press(|s: &mut State| s.open_popover(Popover::Liked { anchor: "lib-more".into() }));
+            let dl_btn = liked_circle_btn(
+                "lib-dl",
+                if downloaded { &icons::CHECK } else { &icons::DOWNLOAD },
+                if downloaded { th::rgb(0x4bd27e) } else { th::text2() },
+                if downloaded { S::DownloadDone.get(lang) } else { S::DownloadAllLiked.get(lang) },
+                false,
+            )
+            .on_press(move |s: &mut State| {
+                let list = s.library.tracks.get().cloned().unwrap_or_default();
+                if downloaded {
+                    s.ask_delete_downloads(list);
+                } else {
+                    s.ask_download(list);
+                }
+            });
+            let buttons = row().key("lib-buttons").gap(10.0).items_center().mt(HEAD_STEP_BUTTONS).child(liked_play_pill(s)).child(pin_btn).child(more_btn).child(dl_btn);
             meta = meta.child(buttons);
         }
         let hero = if cw < 640.0 {
@@ -182,7 +361,11 @@ pub(super) fn library(s: &State, w: f32) -> El {
     } else {
         kit::page_title(S::Collection.get(lang), "").key("lib-head-compact").mt(8.0)
     };
-    let body = col().gap(if tab == LibTab::Tracks { 32.0 } else { 20.0 }).child(kit::rise(head, 0)).child(kit::rise(bar, 1));
+    let chips = if tab == LibTab::Tracks { liked_slice.and_then(|v| filter_bar(s, v)) } else { None };
+    let mut body = col().gap(if tab == LibTab::Tracks { 22.0 } else { 20.0 }).child(kit::rise(head, 0)).child(kit::rise(bar, 1));
+    if let Some(chips) = chips {
+        body = body.child(kit::rise(chips, 2));
+    }
     let (cols, card) = fit(w, 144.0, GRID_GAP, 8);
     let nothing = |art: Ill| kit::empty(&p, art, S::Nothing.get(lang));
     let content = match tab {
@@ -190,15 +373,20 @@ pub(super) fn library(s: &State, w: f32) -> El {
             Load::Ready(v) if v.is_empty() => nothing(Ill::Shelf),
             Load::Ready(v) => {
                 let sort = s.library.sort;
-                let n = if q.is_empty() && sort == TrackSort::Original {
+                let flt = s.library.track_filter.clone();
+                let n = if q.is_empty() && flt.is_empty() && sort == TrackSort::Original {
                     v.len()
                 } else {
-                    let key = (q, sort, v.as_ptr() as usize, v.len());
+                    let key = (q, flt.clone(), sort, v.as_ptr() as usize, v.len());
                     let mut shown = s.library.shown.borrow_mut();
                     let mut cached_key = s.library.shown_key.borrow_mut();
                     if *cached_key != key {
-                        *shown = pick(v.len(), &|i| kit::track_fields(&v[i]));
-                        sort.sort_indices(v, &mut shown);
+                        let mut matched = pick(v.len(), &|i| kit::track_fields(&v[i]));
+                        if !flt.is_empty() {
+                            matched.retain(|&i| track_matches_filter(&v[i], &flt));
+                        }
+                        sort.sort_indices(v, &mut matched);
+                        *shown = matched;
                         *cached_key = key;
                     }
                     shown.len()

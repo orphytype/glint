@@ -27,7 +27,7 @@ use crate::net::Backend;
 use crate::palette::Palette;
 use crate::store::{DownloadStore, QualityPref, Settings, Store};
 
-pub use model::{DownloadActivity, FromName, Library, Lives, LyricsUi, Player, PlayingFrom, Popover, RowDrag, Sheet, Source, Station, Toast, TrackMenu, WaveChoice};
+pub use model::{CardMenu, DownloadActivity, FromName, Library, Lives, LyricsUi, Player, PlayingFrom, Popover, RowDrag, Sheet, Source, Station, Toast, TrackMenu, WaveChoice};
 pub use motion::{LYRIC_LEAD_MS, PAGE_KEY, Pop, WheelGlide, clear_scroll, page_scroll, report_scroll, scroll_thumb};
 pub use types::{
     AlbumSort, ArtistSort, Detail, DiscKind, DiscSort, DownloadFail, DownloadState, LibTab, Load, LoginUi, NpTab, Page, PinnedItem, PlaylistSort, SearchTab, SearchUi, Session,
@@ -88,8 +88,10 @@ pub struct State {
     pub lives: Lives,
     pub seek_w_dock: Cell<f32>,
     pub seek_w_np: Cell<f32>,
+    pub seek_w_home: Cell<f32>,
     pub seek_px_dock: Cell<u32>,
     pub seek_px_np: Cell<u32>,
+    pub seek_px_home: Cell<u32>,
     pub clock_secs: Cell<u64>,
     pub remaining_secs: Cell<u64>,
     pub clock_text: RefCell<String>,
@@ -115,6 +117,8 @@ pub struct State {
     pub wave_label: Option<(crate::i18n::S, FromName, Option<Page>)>,
     // content
     pub home: Load<Vec<Shelf>>,
+    /// Additional personalized My Waves returned by `/wheel/new` (or rotor dashboard fallback).
+    pub wheel_waves: Vec<ym_api::WheelItem>,
     pub liked: HashSet<String>,
     pub liked_items: HashSet<String>,
     pub likes_loaded: bool,
@@ -291,11 +295,15 @@ impl State {
                 seek_dock_thumb: Live::new([0.0, 0.0, 12.0, 12.0]),
                 seek_np: Live::new([0.0, 0.0, 0.0, 4.0]),
                 seek_np_thumb: Live::new([0.0, 0.0, 12.0, 12.0]),
+                seek_home: Live::new([0.0, 0.0, 0.0, 3.0]),
+                seek_home_thumb: Live::new([0.0, 2.0, 10.0, 10.0]),
             },
             seek_w_dock: Cell::new(0.0),
             seek_w_np: Cell::new(0.0),
+            seek_w_home: Cell::new(0.0),
             seek_px_dock: Cell::new(u32::MAX),
             seek_px_np: Cell::new(u32::MAX),
+            seek_px_home: Cell::new(u32::MAX),
             clock_secs: Cell::new(u64::MAX),
             remaining_secs: Cell::new(u64::MAX),
             clock_text: RefCell::new(String::new()),
@@ -316,6 +324,7 @@ impl State {
             playing_from: None,
             wave_label: None,
             home: Load::Idle,
+            wheel_waves: Vec::new(),
             liked: HashSet::new(),
             library: Library::default(),
             search: SearchUi::default(),
@@ -393,8 +402,8 @@ impl State {
             pop: Pop::default(),
             avatar: None,
             home_seed: if headless { 7 } else { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(7, |d| d.as_nanos() as u64) },
-            wave_arc: 3.0,
-            wave_arc_to: 3.0,
+            wave_arc: 0.0,
+            wave_arc_to: 0.0,
             wave_arc_vel: 0.0,
             swarm: crate::bugs::Swarm::new(0),
             bug_geom: RefCell::new(crate::bugs::Geom::default()),
@@ -506,6 +515,16 @@ impl State {
         self.settings_find.focused = false;
         self.name_edit.focused = false;
         self.login.token.focused = false;
+    }
+
+    /// Looks up an additional Home wheel wave by its station/seed key.
+    pub fn wheel_wave(&self, id: &str) -> Option<&ym_api::WheelItem> {
+        self.wheel_waves.iter().find(|w| w.key() == id)
+    }
+
+    /// Total number of entries in the Home My Wave wheel.
+    pub fn arc_wave_count(&self) -> usize {
+        self.wheel_waves.len().max(1)
     }
 
     /// Returns the blinking caret colour for a focused text input (transparent whenever unfocused).

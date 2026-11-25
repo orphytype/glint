@@ -1,30 +1,27 @@
-Glint gets a redesigned My Wave Home screen, a reworked floating mini player, streamlined six-tab Settings, smoother transitions across the app, and faster startup with lower memory use.
+Glint adds progressive audio streaming, lossless FLAC playback and downloads, personalized My Waves, broader synced lyrics, Liked genre and mood filters, and a non-repeating My Wave shader.
 
 New:
 
-- Home opens on a full-bleed My Wave stage with a 3D fluid wave behind the album cover and an infinitely scrolling Cormorant preset wheel on the right. The stage follows whatever is playing (My Wave, album, single, playlist, artist, liked tracks, or history) with a short clickable source pill above the cover, and a corner button at the bottom right opens the mini player.
-- The Explore page holds catalog shelves (new releases, charts, playlists) next to Home in the sidebar.
-- The floating mini player has cover-tinted backdrops, hover-revealed window controls, interactive seeking in all three layouts (including the compact bar), a full-bleed cover card layout, and keyboard shortcuts (`Space`, arrows, `M`, `L`, `P`, `Tab`, `Esc`).
-- Settings is rebuilt into six tabs (General, Sound, Player, Shortcuts, Storage, About), removing unused toggles and redundant notes, collapsing the equalizer when off, and putting Reset in the header when changed.
-- The Player look popover uses compact single-line rows and a toggle switch for background effects without nested boxes.
-- Opening and closing Now Playing, the bottom dock bar, Settings, dialogs, and navigation pills animate cleanly across the app.
+- Tracks stream progressively over HTTP as they play instead of waiting for the whole file to download. Audio buffers live on disk with HTTP Range seeking and bounded decode-ahead so long lossless tracks use minimal memory.
+- Home loads personalized My Waves from Yandex Music (`/wheel/new` and `/rotor/session`) alongside "Shake My Wave", using Yandex's own wave artwork, bold sans-serif labels, a slim seek bar along the top edge of the control pill, and a quality picker in the Home `"..."` menu.
+- The Home My Wave backdrop uses a continuous block-indexed procedural shader (`wave.wgsl`) that never loops, renders sharply at screen resolution, and fades into a darker `#050505` canvas toward the sidebar and wave wheel.
+- Butterflies return on the new Home screen with zero-allocation simulation and early shader culling, plus a toggle under Settings -> General -> Graphics.
+- Synced lyrics now check lrc.red, Spicy Lyrics, Yandex Music (`LRC` and `TEXT`), Musixmatch (`richsync`, `LRC`, and plain text), and LRCLIB. Upcoming lines dim progressively with distance, while past lines stay hidden until you hover over the lyrics panel.
+- Liked tracks include horizontal genre and mood filter pills ("Everything", "Energetic", top genres from your library, "Fun", "Sad", "Calm") and Yandex-style header controls (yellow Play button, Pin, More menu, and Download/Saved button).
+- Hovering over an album or playlist card reveals Pin, Play/Pause, More, and Like buttons directly on the cover.
 
 Fixed:
 
-- Shaders compile per screen and the wave field builds off the main thread, cutting startup from several seconds to under a second and keeping idle memory below 100 MB on every page.
-- Covers no longer reload or flash while scrolling or when opening and closing Now Playing.
-- Removed the top blur veil that smeared over artist headers and buttons under the title bar.
-- Track rows, lists, and menus now use the same heart and dislike glyphs as the player instead of Phosphor hearts.
-- Singles show as Single instead of Album in source pills and track details, and source pills stay compact so they do not crowd the track title.
-- Artist headers drop the redundant "Artist" label and highlight monthly listeners.
-- Section icons load immediately on Explore, and cover-tinted backdrops show reliably on album, playlist, and artist pages in GPU mode.
-- Queue rows use even padding around the cover on hover, search fields clip long text cleanly, and text inputs only blink a caret when focused.
-- Updated RUNE to the latest commit (`570cac5`).
+- Fixed the HMAC signing key and codec list (`flac-mp4`, `aac-mp4`) for `/get-file-info` and Yandex lyrics so lossless FLAC tracks stream and report their real codec and bitrate instead of falling back to MP3 320 kbps. Downloaded `flac-mp4` tracks remux cleanly into tagged `.flac` files.
+- Dropdown menus and volume cards now blur the backdrop from the first frame of opening instead of flashing dark until the animation settles.
+- Pre-warming Now Playing and Queue pipelines removes first-open stutter and keeps the blurred backdrop visible throughout the opening cover flight.
+- Added soft edge fades to the pinned items strip in the sidebar and removed the redundant "Playlist" prefix from the Liked track count.
+- Updated RUNE to the latest commit (`0d2cad2`).
 
 Which file to download:
 
-- Windows: `Glint-0.10.0-windows-x64-setup.exe` (installs for the current user, no administrator rights needed) or `Glint-0.10.0-windows-x64-portable.zip` (data stays next to the program while a `glint.portable` file sits next to `glint.exe`).
-- macOS 11 and newer: `Glint-0.10.0-macos.dmg`. Open the image and drag Glint to Applications. The app is not signed with an Apple certificate, so on first launch right-click Glint, choose Open and confirm. If there is no Open button, allow it in System Settings -> Privacy & Security.
+- Windows: `Glint-0.11.0-windows-x64-setup.exe` (installs for the current user, no administrator rights needed) or `Glint-0.11.0-windows-x64-portable.zip` (data stays next to the program while a `glint.portable` file sits next to `glint.exe`).
+- macOS 11 and newer: `Glint-0.11.0-macos.dmg`. Open the image and drag Glint to Applications. The app is not signed with an Apple certificate, so on first launch right-click Glint, choose Open and confirm. If there is no Open button, allow it in System Settings -> Privacy & Security.
 - Linux: `.AppImage` (run `chmod +x`, then the file), `.deb`, `.rpm` or `.tar.gz` with `install.sh`. You need a Vulkan driver and glibc 2.31 or newer.
 
 The Windows installer and the AppImage update from inside the app: Settings -> About.

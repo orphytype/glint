@@ -1,23 +1,25 @@
-//! What the mixer actually plays: a decoded track wrapped with the equaliser, the analysis tap
-//! and click-free envelopes for pause, seek, stop and volume — plus a one-slot queue so the next
-//! track follows the current one without a gap.
+//! What the mixer actually plays: a decoded track fed by a small bounded decode-ahead thread,
+//! wrapped with the equaliser, the analysis tap and click-free envelopes for pause, seek, stop,
+//! buffering and volume — plus a one-slot queue so the next track follows without a gap.
 //!
-//! Everything here runs on the audio thread, so it never blocks (the only lock it takes is the
-//! queue slot, which the control thread holds for a pointer swap) and never allocates.
-//! Control comes in through atomics ([`Shared`], [`SourceCtl`]), polled every few frames.
+//! The audio callback thread never blocks on network or disk I/O and never allocates on steady
+//! playback. Control comes in through atomics ([`Shared`], [`SourceCtl`]), polled every few frames.
 
 use std::fs::File;
 use std::io::{self, BufReader, Cursor, Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
 use std::num::NonZero;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::thread::{self, Thread};
 use std::time::Duration;
 
 use rodio::{ChannelCount, Decoder, SampleRate, Source};
 
 use crate::analyzer::{TAP_BLOCK, TapShared};
 use crate::eq::{EqFilter, EqShared};
+use crate::stream::{StreamHandle, StreamReader};
 use crate::{AudioError, LoadHint};
 
 pub(crate) const NO_SEEK: u64 = u64::MAX;
@@ -31,6 +33,12 @@ const FADE_SECS: f32 = 0.012;
 pub(crate) const SWITCH_FADE_SECS: f32 = 0.1;
 /// Volume changes glide with this time constant.
 const VOLUME_SECS: f32 = 0.02;
+/// Read buffer per open local file stream (64 KiB keeps RAM tiny while keeping disk reads fast).
+const STREAM_BUF_BYTES: usize = 64 * 1024;
+/// Approximate samples per decoded ahead chunk (~1024 f32 = 4 KiB).
+const DECODE_CHUNK_SAMPLES: usize = 1024;
+/// Bounded decode-ahead queue depth (16 * 4 KiB = 64 KiB RAM, ~180 ms @ 44.1 kHz stereo).
+const DECODE_QUEUE_CHUNKS: usize = 16;
 
 /// Engine-wide state shared between the control side and whichever source is playing.
 pub(crate) struct Shared {
@@ -98,9 +106,6 @@ impl SourceCtl {
     }
 }
 
-/// Read buffer per open audio stream (64 KiB keeps RAM tiny while keeping disk reads and seeks fast).
-const STREAM_BUF_BYTES: usize = 64 * 1024;
-
 pub(crate) struct FileBacking {
     path: PathBuf,
     len: u64,
@@ -119,11 +124,12 @@ impl Drop for FileBacking {
 enum AudioBacking {
     Bytes(Arc<[u8]>),
     File(Arc<FileBacking>),
+    Stream(Arc<StreamHandle>),
 }
 
-/// Audio payload backing a decoded track: either an in-memory buffer or a seekable file on disk.
-/// Clones share the underlying buffer or file handle; temporary stream files are deleted once the
-/// last clone (and every open decoder reading it) drops.
+/// Audio payload backing a decoded track: an in-memory buffer, a seekable file on disk, or a live
+/// progressive stream buffer. Clones share the underlying buffer/file/stream handle; temporary
+/// files and streams clean up automatically when the last clone drops.
 #[derive(Clone)]
 pub struct AudioData(AudioBacking);
 
@@ -139,17 +145,54 @@ impl AudioData {
         AudioData(AudioBacking::File(Arc::new(FileBacking { path: path.into(), len, delete_on_drop: true })))
     }
 
+    /// Opens a progressive disk-backed stream that plays while downloading.
+    pub fn stream(handle: Arc<StreamHandle>) -> Self {
+        AudioData(AudioBacking::Stream(handle))
+    }
+
     pub fn byte_len(&self) -> u64 {
         match &self.0 {
             AudioBacking::Bytes(b) => b.len() as u64,
             AudioBacking::File(f) => f.len,
+            AudioBacking::Stream(s) => s.byte_len(),
         }
     }
 
     pub fn path(&self) -> Option<&Path> {
         match &self.0 {
-            AudioBacking::Bytes(_) => None,
+            AudioBacking::Bytes(_) | AudioBacking::Stream(_) => None,
             AudioBacking::File(f) => Some(&f.path),
+        }
+    }
+
+    /// True if all bytes are already available on disk or in memory.
+    pub fn is_complete(&self) -> bool {
+        match &self.0 {
+            AudioBacking::Bytes(_) | AudioBacking::File(_) => true,
+            AudioBacking::Stream(s) => s.is_complete(),
+        }
+    }
+
+    /// Blocks until a progressive stream finishes downloading cleanly (returns `false` if cancelled
+    /// or failed). Immediately returns `true` for in-memory or complete local files.
+    pub fn wait_complete(&self) -> bool {
+        match &self.0 {
+            AudioBacking::Bytes(_) | AudioBacking::File(_) => true,
+            AudioBacking::Stream(s) => s.wait_complete(),
+        }
+    }
+
+    /// Cancels an active progressive stream immediately so any blocked reader or downloader stops.
+    pub fn cancel(&self) {
+        if let AudioBacking::Stream(s) = &self.0 {
+            s.cancel();
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        match &self.0 {
+            AudioBacking::Stream(s) => s.is_cancelled(),
+            _ => false,
         }
     }
 }
@@ -163,19 +206,25 @@ impl From<Arc<[u8]>> for AudioData {
 pub(crate) enum AudioReader {
     Bytes(Cursor<Arc<[u8]>>),
     File { _keep: Arc<FileBacking>, reader: BufReader<File> },
+    Stream(StreamReader),
 }
 
 impl AudioReader {
-    fn open(data: AudioData) -> Result<(Self, u64), AudioError> {
+    fn open(data: AudioData) -> Result<(Self, Option<u64>, bool), AudioError> {
         match data.0 {
             AudioBacking::Bytes(bytes) => {
                 let len = bytes.len() as u64;
-                Ok((AudioReader::Bytes(Cursor::new(bytes)), len))
+                Ok((AudioReader::Bytes(Cursor::new(bytes)), Some(len), false))
             }
             AudioBacking::File(keep) => {
                 let file = File::open(&keep.path).map_err(|e| AudioError::Decode(e.to_string()))?;
                 let len = if keep.len > 0 { keep.len } else { file.metadata().map_or(0, |m| m.len()) };
-                Ok((AudioReader::File { _keep: keep, reader: BufReader::with_capacity(STREAM_BUF_BYTES, file) }, len))
+                Ok((AudioReader::File { _keep: keep, reader: BufReader::with_capacity(STREAM_BUF_BYTES, file) }, Some(len), false))
+            }
+            AudioBacking::Stream(handle) => {
+                let len = handle.byte_len();
+                let len = (len > 0).then_some(len);
+                Ok((AudioReader::Stream(StreamReader::new(handle)), len, true))
             }
         }
     }
@@ -186,6 +235,7 @@ impl Read for AudioReader {
         match self {
             AudioReader::Bytes(c) => c.read(buf),
             AudioReader::File { reader, .. } => reader.read(buf),
+            AudioReader::Stream(s) => s.read(buf),
         }
     }
 }
@@ -195,67 +245,243 @@ impl Seek for AudioReader {
         match self {
             AudioReader::Bytes(c) => c.seek(pos),
             AudioReader::File { reader, .. } => reader.seek(pos),
+            AudioReader::Stream(s) => s.seek(pos),
         }
     }
 }
 
 type Pcm = Decoder<AudioReader>;
 
-/// One decoded track with its own equaliser state.
-pub(crate) struct Track {
-    pub token: u64,
+/// Synchronous decoder handle used for offline probing and waveform computation (no worker thread).
+pub(crate) struct SyncTrack {
     dec: Pcm,
     pub channels: usize,
     pub rate: u32,
     pub duration: Option<Duration>,
-    eq: EqFilter,
 }
 
-impl Track {
-    pub fn open(token: u64, audio: AudioData, hint: &LoadHint) -> Result<Track, AudioError> {
-        let (reader, len) = AudioReader::open(audio)?;
-        if len == 0 {
-            return Err(AudioError::Decode("the audio is empty".into()));
-        }
-        let mut builder = Decoder::builder().with_data(reader).with_byte_len(len).with_gapless(true);
-        if let Some(ext) = hint.ext.as_deref() {
-            builder = builder.with_hint(ext);
-        }
-        let dec = builder.build().map_err(|e| AudioError::Decode(e.to_string()))?;
-        let channels = usize::from(dec.channels().get());
-        let rate = dec.sample_rate().get();
-        if channels > MAX_CHANNELS {
-            return Err(AudioError::Unsupported(format!("{channels} channels")));
-        }
-        let duration = dec.total_duration().or(hint.duration);
-        Ok(Track { token, dec, channels, rate, duration, eq: EqFilter::new(channels, rate) })
-    }
-
-    /// The decoded samples, interleaved, without the equaliser (for measuring the track).
+impl SyncTrack {
     pub fn samples(self) -> Pcm {
         self.dec
     }
+}
 
-    /// Positions the decoder; the filters restart so stale state cannot ring.
-    pub fn seek(&mut self, to: Duration) -> bool {
-        let ok = self.dec.try_seek(to).is_ok();
-        if ok {
-            self.eq.reset();
-        }
-        ok
+fn open_decoder(audio: AudioData, hint: &LoadHint) -> Result<(Pcm, usize, u32, Option<Duration>), AudioError> {
+    let (reader, len, is_stream) = AudioReader::open(audio)?;
+    if !is_stream && len == Some(0) {
+        return Err(AudioError::Decode("the audio is empty".into()));
+    }
+    let mut builder = Decoder::builder().with_data(reader).with_gapless(true);
+    if let Some(byte_len) = len.filter(|&n| n > 0) {
+        builder = builder.with_byte_len(byte_len);
+    }
+    if let Some(ext) = hint.ext.as_deref() {
+        builder = builder.with_hint(ext);
+    }
+    let dec = builder.build().map_err(|e| AudioError::Decode(e.to_string()))?;
+    let channels = usize::from(dec.channels().get());
+    let rate = dec.sample_rate().get();
+    if channels > MAX_CHANNELS {
+        return Err(AudioError::Unsupported(format!("{channels} channels")));
+    }
+    let duration = dec.total_duration().or(hint.duration);
+    Ok((dec, channels, rate, duration))
+}
+
+struct DecodeCtl {
+    seek_us: AtomicU64,
+    epoch: AtomicU64,
+    closed: AtomicBool,
+}
+
+enum FrameRead {
+    Ready,
+    Buffering,
+    Eof,
+}
+
+/// Bounded decode-ahead worker so the real-time audio callback never blocks on disk or network I/O.
+struct DecodeAhead {
+    ctl: Arc<DecodeCtl>,
+    rx: Receiver<(u64, Vec<f32>)>,
+    worker: Thread,
+    chunk: Vec<f32>,
+    at: usize,
+    expected_epoch: u64,
+    ended: bool,
+}
+
+impl DecodeAhead {
+    fn spawn(mut dec: Pcm, channels: usize, start: Option<Duration>) -> Result<DecodeAhead, AudioError> {
+        let chunk_samples = (DECODE_CHUNK_SAMPLES / channels.max(1)).max(1) * channels.max(1);
+        let (tx, rx) = mpsc::sync_channel::<(u64, Vec<f32>)>(DECODE_QUEUE_CHUNKS);
+        let init_seek = start.filter(|d| !d.is_zero()).map_or(NO_SEEK, |d| u64::try_from(d.as_micros()).unwrap_or(NO_SEEK - 1).min(NO_SEEK - 1));
+        let ctl = Arc::new(DecodeCtl { seek_us: AtomicU64::new(init_seek), epoch: AtomicU64::new(0), closed: AtomicBool::new(false) });
+        let worker_ctl = ctl.clone();
+        let worker = thread::Builder::new()
+            .name("ym-decode".into())
+            .spawn(move || {
+                loop {
+                    if worker_ctl.closed.load(Ordering::Acquire) {
+                        return;
+                    }
+                    let req = worker_ctl.seek_us.swap(NO_SEEK, Ordering::AcqRel);
+                    if req != NO_SEEK {
+                        let _ = dec.try_seek(Duration::from_micros(req));
+                    }
+                    let cur_epoch = worker_ctl.epoch.load(Ordering::Acquire);
+                    let mut buf = Vec::with_capacity(chunk_samples);
+                    for _ in 0..chunk_samples {
+                        if worker_ctl.closed.load(Ordering::Relaxed) || worker_ctl.epoch.load(Ordering::Relaxed) != cur_epoch {
+                            break;
+                        }
+                        match dec.next() {
+                            Some(s) => buf.push(s),
+                            None => break,
+                        }
+                    }
+                    if worker_ctl.closed.load(Ordering::Acquire) {
+                        return;
+                    }
+                    if worker_ctl.epoch.load(Ordering::Acquire) != cur_epoch {
+                        continue;
+                    }
+                    let eof = buf.is_empty();
+                    if tx.send((cur_epoch, buf)).is_err() {
+                        return;
+                    }
+                    while eof && worker_ctl.epoch.load(Ordering::Acquire) == cur_epoch {
+                        if worker_ctl.closed.load(Ordering::Acquire) {
+                            return;
+                        }
+                        thread::park_timeout(Duration::from_millis(150));
+                    }
+                }
+            })
+            .map_err(|e| AudioError::Decode(e.to_string()))?
+            .thread()
+            .clone();
+        Ok(DecodeAhead { ctl, rx, worker, chunk: Vec::new(), at: 0, expected_epoch: 0, ended: false })
     }
 
-    /// Reads one frame (all channels), EQ applied. `false` only when the track has no audio left;
-    /// a truncated final frame is padded with silence.
-    fn read_frame(&mut self, out: &mut [f32; MAX_CHANNELS]) -> bool {
+    fn request_seek(&mut self, to: Duration) {
+        let us = u64::try_from(to.as_micros()).unwrap_or(NO_SEEK - 1).min(NO_SEEK - 1);
+        self.expected_epoch = self.ctl.epoch.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+        self.ctl.seek_us.store(us, Ordering::Release);
+        self.chunk.clear();
+        self.at = 0;
+        self.ended = false;
+        // Drain queued pre-seek chunks so a worker blocked in `tx.send` wakes immediately.
+        while self.rx.try_recv().is_ok() {}
+        self.worker.unpark();
+    }
+
+    fn poll_chunk(&mut self) -> FrameRead {
+        if self.at < self.chunk.len() {
+            return FrameRead::Ready;
+        }
+        if self.ended {
+            return FrameRead::Eof;
+        }
+        loop {
+            match self.rx.try_recv() {
+                Ok((epoch, chunk)) => {
+                    if epoch != self.expected_epoch {
+                        continue;
+                    }
+                    if chunk.is_empty() {
+                        self.ended = true;
+                        return FrameRead::Eof;
+                    }
+                    self.chunk = chunk;
+                    self.at = 0;
+                    return FrameRead::Ready;
+                }
+                Err(TryRecvError::Empty) => return FrameRead::Buffering,
+                Err(TryRecvError::Disconnected) => {
+                    self.ended = true;
+                    return FrameRead::Eof;
+                }
+            }
+        }
+    }
+
+    fn next_sample(&mut self) -> Option<f32> {
+        let s = *self.chunk.get(self.at)?;
+        self.at += 1;
+        Some(s)
+    }
+}
+
+impl Drop for DecodeAhead {
+    fn drop(&mut self) {
+        self.ctl.closed.store(true, Ordering::Release);
+        // Drain the channel so a worker waiting in `tx.send` can notice `closed` at once.
+        while self.rx.try_recv().is_ok() {}
+        self.worker.unpark();
+    }
+}
+
+/// One decoded track with its own equaliser state and decode-ahead worker.
+pub(crate) struct Track {
+    pub token: u64,
+    ahead: DecodeAhead,
+    pub channels: usize,
+    pub rate: u32,
+    pub duration: Option<Duration>,
+    eq: EqFilter,
+    /// Held so dropping `Track` cancels any underlying progressive stream immediately.
+    audio: AudioData,
+}
+
+impl Track {
+    pub fn open(token: u64, audio: AudioData, hint: &LoadHint, start: Duration) -> Result<Track, AudioError> {
+        let (dec, channels, rate, duration) = open_decoder(audio.clone(), hint)?;
+        let start = if start.is_zero() {
+            None
+        } else {
+            let clamped = duration.map_or(start, |d| start.min(d.saturating_sub(Duration::from_millis(50))));
+            Some(clamped)
+        };
+        let ahead = DecodeAhead::spawn(dec, channels, start)?;
+        Ok(Track { token, ahead, channels, rate, duration, eq: EqFilter::new(channels, rate), audio })
+    }
+
+    pub fn open_sync(_token: u64, audio: AudioData, hint: &LoadHint) -> Result<SyncTrack, AudioError> {
+        let (dec, channels, rate, duration) = open_decoder(audio, hint)?;
+        Ok(SyncTrack { dec, channels, rate, duration })
+    }
+
+    /// Requests a non-blocking seek on the decode-ahead worker; resets EQ state immediately.
+    pub fn seek(&mut self, to: Duration) {
+        self.ahead.request_seek(to);
+        self.eq.reset();
+    }
+
+    fn poll_ready(&mut self) -> FrameRead {
+        self.ahead.poll_chunk()
+    }
+
+    /// Reads one frame (all channels), EQ applied, without blocking the audio callback thread.
+    fn read_frame(&mut self, out: &mut [f32; MAX_CHANNELS]) -> FrameRead {
+        match self.ahead.poll_chunk() {
+            FrameRead::Ready => {}
+            other => return other,
+        }
         for (c, slot) in out.iter_mut().enumerate().take(self.channels) {
-            match self.dec.next() {
+            match self.ahead.next_sample() {
                 Some(s) => *slot = self.eq.process(c, s),
-                None if c == 0 => return false,
+                None if c == 0 => return FrameRead::Eof,
                 None => *slot = 0.0,
             }
         }
-        true
+        FrameRead::Ready
+    }
+}
+
+impl Drop for Track {
+    fn drop(&mut self) {
+        self.audio.cancel();
     }
 }
 
@@ -276,6 +502,7 @@ pub(crate) struct Playback {
     gain_alpha: f32,
     volume_target: f32,
     stopping: bool,
+    buffering: bool,
     pending_seek: Option<u64>,
 
     /// Where the current track's frame counter starts, in microseconds.
@@ -294,6 +521,11 @@ impl Playback {
         let rate = track.rate as f32;
         shared.tap.set_rate(track.rate);
         let volume = f32::from_bits(shared.volume.load(Ordering::Relaxed));
+        let start = if start.is_zero() {
+            Duration::ZERO
+        } else {
+            track.duration.map_or(start, |d| start.min(d.saturating_sub(Duration::from_millis(50))))
+        };
         let mut p = Playback {
             out_idx: track.channels,
             cur: track,
@@ -308,8 +540,9 @@ impl Playback {
             gain_alpha: 1.0 - (-1.0 / (VOLUME_SECS * rate)).exp(),
             volume_target: volume,
             stopping: false,
+            buffering: false,
             pending_seek: None,
-            base_us: 0,
+            base_us: start.as_micros() as u64,
             frames: 0,
             publish_every: (rate as u32 / 100).max(1),
             until_publish: (rate as u32 / 100).max(1),
@@ -317,9 +550,6 @@ impl Playback {
             tap_len: 0,
         };
         p.cur.eq.refresh(&p.shared.eq);
-        if !start.is_zero() {
-            p.do_seek(start.as_micros() as u64);
-        }
         p.publish_position();
         p
     }
@@ -351,7 +581,7 @@ impl Playback {
             }
         }
         let paused = self.shared.paused.load(Ordering::Relaxed);
-        self.fade_target = if self.stopping || paused || self.pending_seek.is_some() { 0.0 } else { 1.0 };
+        self.fade_target = if self.stopping || paused || self.pending_seek.is_some() || self.buffering { 0.0 } else { 1.0 };
     }
 
     fn do_seek(&mut self, us: u64) {
@@ -359,11 +589,11 @@ impl Playback {
         if let Some(d) = self.cur.duration {
             target = target.min(d.saturating_sub(Duration::from_millis(50)));
         }
-        if self.cur.seek(target) {
-            self.base_us = target.as_micros() as u64;
-            self.frames = 0;
-            self.shared.tap.clear();
-        }
+        self.cur.seek(target);
+        self.base_us = target.as_micros() as u64;
+        self.frames = 0;
+        self.buffering = true;
+        self.shared.tap.clear();
         self.publish_position();
     }
 
@@ -376,6 +606,7 @@ impl Playback {
                 self.cur = next;
                 self.base_us = 0;
                 self.frames = 0;
+                self.buffering = false;
                 self.shared.token.store(self.cur.token, Ordering::Release);
                 self.shared.dur_us.store(self.cur.duration.map_or(0, |d| d.as_micros() as u64), Ordering::Relaxed);
                 self.publish_position();
@@ -410,6 +641,27 @@ impl Playback {
             if let Some(us) = self.pending_seek.take() {
                 self.do_seek(us);
             }
+            if self.buffering {
+                match self.cur.poll_ready() {
+                    FrameRead::Ready => {
+                        self.buffering = false;
+                        self.fade_step = 1.0 / (FADE_SECS * self.cur.rate.max(1) as f32);
+                        let paused = self.shared.paused.load(Ordering::Relaxed);
+                        self.fade_target = if self.stopping || paused || self.pending_seek.is_some() { 0.0 } else { 1.0 };
+                    }
+                    FrameRead::Buffering => {
+                        self.frame[..ch].fill(0.0);
+                        return true;
+                    }
+                    FrameRead::Eof => {
+                        if !self.join_next() {
+                            self.ctl.finished.store(true, Ordering::Release);
+                            return false;
+                        }
+                        self.buffering = false;
+                    }
+                }
+            }
             if self.fade_target <= 0.0 {
                 // Paused (or between a seek and its fade-in): silence, decoder untouched.
                 self.frame[..ch].fill(0.0);
@@ -417,10 +669,22 @@ impl Playback {
             }
         }
 
-        while !self.cur.read_frame(&mut self.frame) {
-            if !self.join_next() {
-                self.ctl.finished.store(true, Ordering::Release);
-                return false;
+        loop {
+            match self.cur.read_frame(&mut self.frame) {
+                FrameRead::Ready => break,
+                FrameRead::Buffering => {
+                    self.buffering = true;
+                    self.fade = 0.0;
+                    self.fade_target = 0.0;
+                    self.frame[..ch].fill(0.0);
+                    return true;
+                }
+                FrameRead::Eof => {
+                    if !self.join_next() {
+                        self.ctl.finished.store(true, Ordering::Release);
+                        return false;
+                    }
+                }
             }
         }
 

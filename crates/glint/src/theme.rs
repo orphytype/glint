@@ -156,7 +156,7 @@ mod portal {
     }
 }
 
-const DARK_CANVAS: u32 = 0x0d0d0d;
+const DARK_CANVAS: u32 = 0x050505;
 const DARK_INK: u32 = 0xf2f2f1;
 const LIGHT_CANVAS: u32 = 0xf7f7f5;
 const LIGHT_INK: u32 = 0x1c1c1b;
@@ -200,7 +200,7 @@ pub fn hairline() -> Color {
 }
 /// The card of a menu: flat, a step off the page, with the hairline for its edge.
 pub fn pop() -> Color {
-    rgb(if light() { 0xffffff } else { 0x171717 })
+    rgb(if light() { 0xffffff } else { 0x121212 })
 }
 /// A solid that stands out from the page: the primary button's fill.
 pub fn solid() -> Color {

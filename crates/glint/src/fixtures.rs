@@ -180,8 +180,10 @@ impl Catalog {
                 ..Artist::default()
             };
             for (bi, (album_title, titles)) in spec.albums.iter().enumerate() {
+                const GENRES: [&str; 6] = ["rap", "pop", "alternative", "electronics", "indie", "rock"];
                 let album_seed = (ai * 2 + bi) as u64 + 1;
                 let year = 2021 + ((ai + bi) % 5) as i32;
+                let genre = GENRES[(ai + bi) % GENRES.len()];
                 let mut album = Album {
                     id: format!("db{ai}{bi}"),
                     title: (*album_title).into(),
@@ -189,16 +191,35 @@ impl Catalog {
                     release_date: Some(format!("{year}-08-14")),
                     labels: vec!["Example Records".into()],
                     cover_uri: Some(cover_template(spec.hue + bi as f32 * 24.0, spec.style, album_seed)),
-                    genre: Some(spec.style.name().into()),
+                    genre: Some(genre.into()),
                     track_count: Some(titles.len() as u32),
-                    kind: Some("album".into()),
+                    kind: Some(if bi == 1 { "single" } else { "album" }.into()),
                     artists: vec![artist.clone()],
+                    content_warning: (album_seed % 3 == 1).then(|| "explicit".to_owned()),
                     ..Album::default()
                 };
                 let mut volume = Vec::new();
                 for (ti, title) in titles.iter().enumerate() {
                     let seed = album_seed * 10 + ti as u64 + 3;
                     let secs = 96 + (seed % 5) as u32 * 10;
+                    let energy = match (ai + ti) % 4 {
+                        0 => 0.82,
+                        1 => 0.62,
+                        2 => 0.34,
+                        _ => 0.28,
+                    };
+                    let bpm = match (ai + ti) % 4 {
+                        0 => 136.0,
+                        1 => 118.0,
+                        2 => 92.0,
+                        _ => 80.0,
+                    };
+                    let hue = match (ai + ti) % 4 {
+                        0 => 28.0,
+                        1 => 75.0,
+                        2 => 225.0,
+                        _ => 185.0,
+                    };
                     let mut lite = album.clone();
                     lite.volumes.clear();
                     volume.push(Track {
@@ -211,6 +232,7 @@ impl Catalog {
                         lyrics_info: Some(ym_api::models::LyricsInfo { has_available_sync_lyrics: spec.style != Style::Ambient || spec.russian, has_available_text_lyrics: true }),
                         // Some are marked explicit, so the list shows its "E".
                         content_warning: (seed % 4 == 1).then(|| "explicit".to_owned()),
+                        track_parameters: Some(ym_api::models::TrackParameters { bpm: Some(bpm), energy: Some(energy), hue: Some(hue) }),
                         ..Track::default()
                     });
                 }
@@ -319,6 +341,78 @@ impl Catalog {
             },
             Shelf { kind: ShelfKind::Editorial, items: pl(&[4, 5, 2, 0]) },
             Shelf { kind: ShelfKind::Chart, items: self.tracks.iter().step_by(6).take(10).cloned().map(ShelfItem::Track).collect() },
+        ]
+    }
+
+    /// Sample personalized My Waves for headless Home arc wheel scenes.
+    pub fn wheel(&self) -> Vec<ym_api::WheelItem> {
+        let artist = self.artists.first();
+        let artist2 = self.artists.get(2);
+        let album = self.albums.first();
+        vec![
+            ym_api::WheelItem {
+                name: "Только на русском".into(),
+                description: String::new(),
+                cover: Some(cover_template(348.0, Style::Chill, 900)),
+                round: false,
+                control_accent: false,
+                color: Some([220, 68, 92]),
+                seeds: vec!["language:russian".into()],
+            },
+            ym_api::WheelItem {
+                name: "Здесь так красиво".into(),
+                description: String::new(),
+                cover: Some(cover_template(342.0, Style::Synthwave, 901)),
+                round: false,
+                control_accent: false,
+                color: Some([246, 78, 118]),
+                seeds: vec!["mood:beautiful".into()],
+            },
+            ym_api::WheelItem {
+                name: "Альтернатива, не как у всех".into(),
+                description: String::new(),
+                cover: Some(cover_template(354.0, Style::House, 902)),
+                round: false,
+                control_accent: false,
+                color: Some([240, 64, 96]),
+                seeds: vec!["genre:alternative".into()],
+            },
+            ym_api::WheelItem {
+                name: artist.map_or_else(|| "Nova Kestrel".into(), |a| a.name.clone()),
+                description: "В стиле артиста".into(),
+                cover: artist.and_then(|a| a.cover_template().map(str::to_owned)),
+                round: true,
+                control_accent: false,
+                color: Some([232, 86, 178]),
+                seeds: vec![format!("artist:{}", artist.map_or("da0", |a| a.id.as_str()))],
+            },
+            ym_api::WheelItem {
+                name: album.map_or_else(|| "Nova Kestrel — Chrome Horizon".into(), |a| format!("{} — {}", a.artists_line(), a.title)),
+                description: "Новый релиз".into(),
+                cover: album.and_then(|a| a.cover_template().map(str::to_owned)),
+                round: false,
+                control_accent: false,
+                color: Some([245, 168, 72]),
+                seeds: vec![format!("album:{}", album.map_or("db00", |a| a.id.as_str()))],
+            },
+            ym_api::WheelItem {
+                name: "Встряхнуть Мою волну".into(),
+                description: String::new(),
+                cover: None,
+                round: false,
+                control_accent: true,
+                color: Some([255, 220, 78]),
+                seeds: vec!["user:onyourwave".into()],
+            },
+            ym_api::WheelItem {
+                name: artist2.map_or_else(|| "Mira & the Static".into(), |a| a.name.clone()),
+                description: "В стиле артиста".into(),
+                cover: artist2.and_then(|a| a.cover_template().map(str::to_owned)),
+                round: true,
+                control_accent: false,
+                color: Some([56, 214, 152]),
+                seeds: vec![format!("artist:{}", artist2.map_or("da2", |a| a.id.as_str()))],
+            },
         ]
     }
 

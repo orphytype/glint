@@ -341,3 +341,186 @@ fn read_flac_vorbis(audio: &[u8], title: &mut String, artist: &mut String, album
         }
     }
 }
+
+// ---- MP4 -> FLAC remuxing (for Yandex lossless `flac-mp4`) -------------------------------------------
+
+fn mp4_be32(b: &[u8], at: usize) -> Option<u32> {
+    let s = b.get(at..at + 4)?;
+    Some(u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
+}
+
+fn mp4_be64(b: &[u8], at: usize) -> Option<u64> {
+    Some((u64::from(mp4_be32(b, at)?) << 32) | u64::from(mp4_be32(b, at + 4)?))
+}
+
+fn mp4_children(mut b: &[u8]) -> Vec<([u8; 4], &[u8])> {
+    let mut out = Vec::new();
+    while b.len() >= 8 {
+        let size = u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize;
+        let kind = [b[4], b[5], b[6], b[7]];
+        let (head, size) = match size {
+            0 => (8, b.len()),
+            1 => match mp4_be64(b, 8).and_then(|s| usize::try_from(s).ok()) {
+                Some(s) => (16, s),
+                None => break,
+            },
+            s => (8, s),
+        };
+        if size < head || size > b.len() {
+            break;
+        }
+        out.push((kind, &b[head..size]));
+        b = &b[size..];
+    }
+    out
+}
+
+fn mp4_child(b: &[u8], kind: [u8; 4]) -> Option<&[u8]> {
+    mp4_children(b).into_iter().find(|(k, _)| *k == kind).map(|(_, c)| c)
+}
+
+fn mp4_stbl_has_flac(stbl: &[u8]) -> bool {
+    mp4_child(stbl, *b"stsd").and_then(|s| s.get(8..)).is_some_and(|e| mp4_child(e, *b"fLaC").is_some())
+}
+
+fn mp4_moov_has_flac(moov: &[u8]) -> bool {
+    mp4_children(moov)
+        .into_iter()
+        .filter(|(k, _)| k == b"trak")
+        .any(|(_, t)| mp4_child(t, *b"mdia").and_then(|m| mp4_child(m, *b"minf")).and_then(|m| mp4_child(m, *b"stbl")).is_some_and(mp4_stbl_has_flac))
+}
+
+/// Checks whether a local ISO BMFF (`.m4a`/`.mp4`) file holds a FLAC track (`fLaC` sample entry).
+pub fn mp4_has_flac_path(path: &std::path::Path) -> bool {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let Ok(len) = f.metadata().map(|m| m.len()) else { return false };
+    let mut at = 0u64;
+    while at + 8 <= len {
+        if f.seek(SeekFrom::Start(at)).is_err() {
+            return false;
+        }
+        let mut h = [0u8; 16];
+        if f.read_exact(&mut h[..8]).is_err() {
+            return false;
+        }
+        let (head, size) = match mp4_be32(&h, 0) {
+            Some(0) => (8u64, len - at),
+            Some(1) => {
+                if f.read_exact(&mut h[8..]).is_err() {
+                    return false;
+                }
+                let Some(s) = mp4_be64(&h, 8) else { return false };
+                (16u64, s)
+            }
+            Some(s) => (8u64, u64::from(s)),
+            None => return false,
+        };
+        if size < head || at + size > len {
+            return false;
+        }
+        if &h[4..8] == b"moov" {
+            let body_len = (size - head) as usize;
+            if body_len > 16 << 20 {
+                return false;
+            }
+            let mut moov = vec![0u8; body_len];
+            if f.read_exact(&mut moov).is_err() {
+                return false;
+            }
+            return mp4_moov_has_flac(&moov);
+        }
+        at += size;
+    }
+    false
+}
+
+/// Remuxes an unencrypted `flac-mp4` buffer into a native `.flac` stream without re-encoding.
+/// Returns `None` if the buffer is too large to copy in RAM or does not contain a valid FLAC track.
+pub fn remux_flac_from_mp4(mp4: &[u8]) -> Option<Vec<u8>> {
+    if mp4.len() > MAX_TAG_IN_MEMORY || mp4.len() < 16 || &mp4[4..8] != b"ftyp" {
+        return None;
+    }
+    let moov = mp4_child(mp4, *b"moov")?;
+    let stbl = mp4_children(moov)
+        .into_iter()
+        .filter(|(k, _)| k == b"trak")
+        .find_map(|(_, t)| mp4_child(t, *b"mdia").and_then(|m| mp4_child(m, *b"minf")).and_then(|m| mp4_child(m, *b"stbl")).filter(|s| mp4_stbl_has_flac(s)))?;
+
+    let stsd = mp4_child(stbl, *b"stsd")?;
+    let entry = mp4_child(stsd.get(8..)?, *b"fLaC")?;
+    let dfla = mp4_child(entry.get(28..)?, *b"dfLa")?;
+    let mut blocks: Vec<(u8, &[u8])> = Vec::new();
+    let mut b = dfla.get(4..)?;
+    while b.len() >= 4 {
+        let len = ((b[1] as usize) << 16) | ((b[2] as usize) << 8) | (b[3] as usize);
+        let body = b.get(4..4 + len)?;
+        blocks.push((b[0] & 0x7f, body));
+        if b[0] & 0x80 != 0 {
+            break;
+        }
+        b = &b[4 + len..];
+    }
+    if blocks.first().map(|(kind, _)| *kind) != Some(0) {
+        return None;
+    }
+
+    let stsz = mp4_child(stbl, *b"stsz")?;
+    let fixed = mp4_be32(stsz, 4)?;
+    let count = mp4_be32(stsz, 8)? as usize;
+    let sample_size = |i: usize| -> Option<usize> {
+        if fixed != 0 { Some(fixed as usize) } else { mp4_be32(stsz, 12 + 4 * i).map(|s| s as usize) }
+    };
+
+    let offsets: Vec<usize> = if let Some(co) = mp4_child(stbl, *b"stco") {
+        let n = mp4_be32(co, 4)? as usize;
+        (0..n).map(|i| mp4_be32(co, 8 + 4 * i).map(|o| o as usize)).collect::<Option<_>>()?
+    } else {
+        let co = mp4_child(stbl, *b"co64")?;
+        let n = mp4_be32(co, 4)? as usize;
+        (0..n).map(|i| mp4_be64(co, 8 + 8 * i).and_then(|o| usize::try_from(o).ok())).collect::<Option<_>>()?
+    };
+
+    let stsc = mp4_child(stbl, *b"stsc")?;
+    let run_count = mp4_be32(stsc, 4)? as usize;
+    let runs: Vec<(usize, usize)> = (0..run_count).map(|i| Some((mp4_be32(stsc, 8 + 12 * i)? as usize, mp4_be32(stsc, 12 + 12 * i)? as usize))).collect::<Option<_>>()?;
+
+    let mut parts: Vec<(usize, usize)> = Vec::new();
+    let mut sample = 0usize;
+    let mut total_audio = 0usize;
+    for (chunk_idx, &off) in offsets.iter().enumerate() {
+        let per = runs.iter().take_while(|(first, _)| *first <= chunk_idx + 1).last().map_or(0, |r| r.1);
+        let mut chunk_len = 0usize;
+        for _ in 0..per.min(count.saturating_sub(sample)) {
+            chunk_len = chunk_len.checked_add(sample_size(sample)?)?;
+            sample += 1;
+        }
+        total_audio = total_audio.checked_add(chunk_len)?;
+        match parts.last_mut() {
+            Some((o, l)) if *o + *l == off => *l += chunk_len,
+            _ => parts.push((off, chunk_len)),
+        }
+    }
+    if sample != count {
+        return None;
+    }
+
+    let mut out = Vec::with_capacity(4 + blocks.iter().map(|(_, d)| 4 + d.len()).sum::<usize>() + total_audio);
+    out.extend_from_slice(b"fLaC");
+    for (idx, (kind, body)) in blocks.iter().enumerate() {
+        let last = if idx + 1 == blocks.len() { 0x80 } else { 0 };
+        let len = u32::try_from(body.len()).ok()?;
+        if len >= (1 << 24) {
+            return None;
+        }
+        out.push(last | *kind);
+        out.extend_from_slice(&len.to_be_bytes()[1..]);
+        out.extend_from_slice(body);
+    }
+    for (off, len) in parts {
+        let slice = mp4.get(off..off.checked_add(len)?)?;
+        out.extend_from_slice(slice);
+    }
+    Some(out)
+}

@@ -18,8 +18,8 @@ use crate::{Error, Result};
 /// long-standing one. The downloader tries them in order when the CDN answers 403.
 pub const STREAM_SALTS: [&str; 2] = ["XDXFnebAaaWaytaSession", "XGRlBW9FXlekgbPrRHuSiA"];
 
-/// HMAC key for signed lyrics requests.
-const LYRICS_SIGN_KEY: &[u8] = b"kzqU4XhfCaY6B6JTHODeq5";
+/// HMAC key for signed lyrics and `get-file-info` requests.
+const LYRICS_SIGN_KEY: &[u8] = b"p93jhgh689SBReK6ghtw62";
 
 /// The four fields of a `<download-info>` document.
 #[derive(Debug, Clone, PartialEq, Eq)]

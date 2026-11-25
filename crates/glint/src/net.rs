@@ -165,14 +165,215 @@ pub fn sweep_temp_streams() {
     }
 }
 
-fn next_temp_stream_path(track_id: &str) -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let dir = temp_stream_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    let n = SEQ.fetch_add(1, Ordering::Relaxed);
-    let clean: String = track_id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(24).collect();
-    dir.join(format!("s-{}-{n}-{clean}.bin", std::process::id()))
+/// How many leading bytes to pull before starting playback (enough to sniff the container and
+/// prime the decoder header without waiting for the rest of the file).
+const STREAM_PROBE_BYTES: usize = 32 * 1024;
+/// Maximum consecutive network retries while streaming a track.
+const STREAM_RETRIES: u32 = 4;
+/// Hard byte cap per streamed track (4 GiB, matching `ym_api`).
+const MAX_STREAM_BYTES: u64 = 4 << 30;
+
+#[derive(Clone)]
+enum StreamSource {
+    Yandex { track_id: String, quality: ym_api::Quality, info: ym_api::StreamInfo },
+    FkCensor { url: String },
+}
+
+impl StreamSource {
+    async fn open(&mut self, client: &Client, from: u64, refresh_url: bool) -> Result<ym_api::AudioResponse> {
+        match self {
+            StreamSource::Yandex { track_id, quality, info } => {
+                if refresh_url
+                    && let Ok(fresh) = client.stream(track_id, *quality).await
+                {
+                    *info = fresh;
+                }
+                match client.open_audio(info, from).await {
+                    Ok(resp) => Ok(resp),
+                    Err(ym_api::Error::Http { status: 401 | 403 | 410, .. }) if !refresh_url => {
+                        *info = client.stream(track_id, *quality).await?;
+                        client.open_audio(info, from).await
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            StreamSource::FkCensor { url } => client.open_fkcensor_audio(url, from).await,
+        }
+    }
+}
+
+/// Opens a progressive on-disk stream, pulls the first ~32 KiB so the codec and bitrate can be
+/// identified right away, and spawns a background tokio task to transfer the rest while playing.
+async fn start_progressive_stream(
+    client: Client,
+    mut source: StreamSource,
+    mut resp: ym_api::AudioResponse,
+) -> Result<(ym_audio::AudioData, u64, Vec<u8>)> {
+    let total_hint = resp.total_len;
+    let (handle, writer) = ym_audio::StreamBuf::create(total_hint, resp.accepts_ranges).map_err(|e| ym_api::Error::Api(e.to_string()))?;
+    let mut head = Vec::with_capacity(4096);
+    let mut offset = 0u64;
+    let mut eof = false;
+
+    while offset < STREAM_PROBE_BYTES as u64 {
+        match resp.next_chunk().await? {
+            Some(chunk) => {
+                if offset.saturating_add(chunk.len() as u64) > MAX_STREAM_BYTES {
+                    writer.fail("response is too large".into());
+                    return Err(ym_api::Error::Api("response is too large".into()));
+                }
+                if head.len() < 4096 {
+                    let take = (4096 - head.len()).min(chunk.len());
+                    head.extend_from_slice(&chunk[..take]);
+                }
+                writer.write(offset, &chunk).map_err(|e| ym_api::Error::Api(e.to_string()))?;
+                offset += chunk.len() as u64;
+            }
+            None => {
+                eof = true;
+                break;
+            }
+        }
+    }
+
+    let reported_len = total_hint.unwrap_or(offset);
+    if eof {
+        writer.reached_eof(offset);
+        return Ok((ym_audio::AudioData::stream(handle), offset, head));
+    }
+
+    let notify = Arc::new(tokio::sync::Notify::new());
+    {
+        let n = notify.clone();
+        writer.set_waker(move || n.notify_one());
+    }
+
+    spawn(async move {
+        let mut active: Option<ym_api::AudioResponse> = Some(resp);
+        let mut pos = offset;
+        let mut failures = 0u32;
+
+        loop {
+            if writer.is_aborted() {
+                return;
+            }
+            if let Some(target) = writer.take_seek_request() {
+                active = None;
+                pos = target;
+                failures = 0;
+                match source.open(&client, target, false).await {
+                    Ok(next) => {
+                        if target > 0 && !next.partial {
+                            // Server ignored Range and restarted from byte 0.
+                            writer.set_seekable(false);
+                            pos = 0;
+                        }
+                        if let Some(len) = next.total_len {
+                            writer.set_len(len);
+                        }
+                        active = Some(next);
+                    }
+                    Err(e) => {
+                        if writer.is_aborted() {
+                            return;
+                        }
+                        failures += 1;
+                        if failures > STREAM_RETRIES {
+                            writer.fail(e.to_string());
+                            return;
+                        }
+                    }
+                }
+                continue;
+            }
+
+            let Some(cur) = active.as_mut() else {
+                // Parked after finishing a jumped segment or waiting to retry.
+                if failures > 0 {
+                    let delay = std::time::Duration::from_secs(1u64 << (failures - 1).min(3));
+                    tokio::select! {
+                        () = tokio::time::sleep(delay) => {}
+                        () = notify.notified() => {
+                            if writer.is_aborted() {
+                                return;
+                            }
+                            if writer.has_seek_request() {
+                                continue;
+                            }
+                        }
+                    }
+                    match source.open(&client, pos, true).await {
+                        Ok(next) => {
+                            if pos > 0 && !next.partial {
+                                writer.set_seekable(false);
+                                pos = 0;
+                            }
+                            if let Some(len) = next.total_len {
+                                writer.set_len(len);
+                            }
+                            active = Some(next);
+                        }
+                        Err(e) => {
+                            failures += 1;
+                            if failures > STREAM_RETRIES {
+                                writer.fail(e.to_string());
+                                return;
+                            }
+                        }
+                    }
+                } else {
+                    notify.notified().await;
+                }
+                continue;
+            };
+
+            let chunk = tokio::select! {
+                biased;
+                () = notify.notified() => {
+                    if writer.is_aborted() {
+                        return;
+                    }
+                    continue;
+                }
+                res = cur.next_chunk() => res,
+            };
+
+            match chunk {
+                Ok(Some(bytes)) => {
+                    if pos.saturating_add(bytes.len() as u64) > MAX_STREAM_BYTES {
+                        writer.fail("response is too large".into());
+                        return;
+                    }
+                    if let Err(e) = writer.write(pos, &bytes) {
+                        writer.fail(e.to_string());
+                        return;
+                    }
+                    pos += bytes.len() as u64;
+                    failures = 0;
+                }
+                Ok(None) => {
+                    active = None;
+                    if writer.reached_eof(pos) {
+                        return;
+                    }
+                    // Earlier bytes were skipped by a seek jump; stay parked until needed or cancelled.
+                }
+                Err(e) => {
+                    active = None;
+                    if writer.is_aborted() {
+                        return;
+                    }
+                    failures += 1;
+                    if failures > STREAM_RETRIES {
+                        writer.fail(e.to_string());
+                        return;
+                    }
+                }
+            }
+        }
+    });
+
+    Ok((ym_audio::AudioData::stream(handle), reported_len, head))
 }
 
 fn read_file_head(path: &std::path::Path) -> Vec<u8> {
@@ -215,11 +416,39 @@ fn sniff_ext(bytes: &[u8]) -> &'static str {
         [b'f', b'L', b'a', b'C', ..] => "flac",
         [b'O', b'g', b'g', b'S', ..] => "ogg",
         [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'A', b'V', b'E', ..] => "wav",
-        // ISO base media (`ftyp` at offset 4): M4A/AAC in practice.
+        // ISO base media (`ftyp` at offset 4): MP4 container holding AAC or lossless FLAC (`flac-mp4`).
         [_, _, _, _, b'f', b't', b'y', b'p', ..] => "m4a",
         // ID3 tag, MPEG sync frame, or unknown container: Yandex serves MP3 by default.
         _ => "mp3",
     }
+}
+
+/// Container hint for Symphonia: prefers the actual byte magic so `flac-mp4` gets `"m4a"` instead
+/// of `"flac"`, while falling back to the API codec string if the leading bytes are ambiguous.
+fn container_ext(head: &[u8], codec: &str) -> &'static str {
+    match head {
+        [b'f', b'L', b'a', b'C', ..] => "flac",
+        [b'O', b'g', b'g', b'S', ..] => "ogg",
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'A', b'V', b'E', ..] => "wav",
+        [_, _, _, _, b'f', b't', b'y', b'p', ..] => "m4a",
+        _ => {
+            let c = codec.to_ascii_lowercase();
+            if c.contains("mp4") || c.contains("aac") {
+                "m4a"
+            } else if c.contains("flac") {
+                "flac"
+            } else {
+                "mp3"
+            }
+        }
+    }
+}
+
+fn local_codec(path: &std::path::Path, ext: &str) -> AudioCodec {
+    if ext == "m4a" && crate::audio_tags::mp4_has_flac_path(path) {
+        return AudioCodec::Flac;
+    }
+    AudioCodec::from_ext(ext)
 }
 
 fn limiter() -> &'static Semaphore {
@@ -238,6 +467,23 @@ pub fn decode_limiter() -> &'static Semaphore {
 
 fn no_session() -> ym_api::Error {
     ym_api::Error::Unauthorized
+}
+
+/// Result of fetching one batch of a Wave station or Rotor session.
+pub struct WaveBatch {
+    pub session: Option<String>,
+    pub batch: RotorBatch,
+}
+
+fn parse_hex_rgb(hex: &str) -> Option<[u8; 3]> {
+    let hex = hex.trim().trim_start_matches('#');
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some([r, g, b])
 }
 
 /// The rotor station and seeds a wave id asks for (see [`Backend::wave`]).
@@ -269,6 +515,37 @@ impl Backend {
             #[cfg(feature = "tooling")]
             Backend::Fixture(c) => Ok(c.home()),
             Backend::Live(c) => c.home().await,
+            Backend::None => Err(no_session()),
+        }
+    }
+
+    /// Additional personalized My Waves for the Home arc wheel (`POST /wheel/new`, falling back to
+    /// `/rotor/stations/dashboard` if the wheel endpoint returns nothing).
+    pub async fn wheel(&self) -> Result<Vec<ym_api::WheelItem>> {
+        match self {
+            #[cfg(feature = "tooling")]
+            Backend::Fixture(c) => Ok(c.wheel()),
+            Backend::Live(c) => {
+                if let Ok(items) = c.wheel().await
+                    && !items.is_empty()
+                {
+                    return Ok(items);
+                }
+                let stations = c.stations_dashboard().await?;
+                Ok(stations
+                    .into_iter()
+                    .filter(|st| !st.id.is_empty() && !st.name.is_empty())
+                    .map(|st| ym_api::WheelItem {
+                        name: st.name,
+                        description: String::new(),
+                        cover: st.icon,
+                        round: st.id.starts_with("artist:"),
+                        control_accent: st.id == "user:onyourwave",
+                        color: st.color.as_deref().and_then(parse_hex_rgb),
+                        seeds: vec![st.id],
+                    })
+                    .collect())
+            }
             Backend::None => Err(no_session()),
         }
     }
@@ -469,39 +746,75 @@ impl Backend {
         Ok(out)
     }
 
-    /// The next batch of a wave station. `after` is the track the previous batch ended on.
-    /// A batch of a wave: one of My Wave's presets by its id, a station seeded by one thing
-    /// (`"track:ID"`, `"artist:ID"`, `"album:ID"`), or `"collection"` (My Wave on what one likes).
-    ///
-    /// `knobs` are the wave's own settings, for one of My Wave's (`WaveTune::applies`). My Wave's
-    /// station plays as the account's knobs are set, whatever seeds it is asked with: a wave
-    /// that named only its own knob ("Favorite") played on in the mood the last one left there
-    /// ("Sad"). So its first batch sets all three on the account first, as the service's own
-    /// apps do, and asks with all three.
+    /// Fetches the next batch of a Wave station or Rotor session. Uses modern `/rotor/session/*`
+    /// first (matching the desktop app and supporting all `/wheel/new` vibes), falling back to the
+    /// legacy `/rotor/station/{id}/tracks` endpoint when needed.
+    #[expect(clippy::too_many_arguments, reason = "wave session parameters for new/next batch resolution")]
     #[cfg_attr(not(feature = "tooling"), allow(unused_variables))]
-    pub async fn wave(&self, preset: &str, knobs: Option<ym_api::WaveSettings>, after: Option<&str>, round: u64) -> Result<RotorBatch> {
+    pub async fn wave(
+        &self,
+        preset: &str,
+        extra_seeds: &[String],
+        knobs: Option<ym_api::WaveSettings>,
+        session: Option<&str>,
+        queue: &[String],
+        after: Option<&str>,
+        round: u64,
+    ) -> Result<WaveBatch> {
         match self {
             #[cfg(feature = "tooling")]
-            Backend::Fixture(c) => Ok(RotorBatch { batch_id: Some(format!("fixture-{round}")), tracks: c.wave(preset, round) }),
+            Backend::Fixture(c) => Ok(WaveBatch { session: None, batch: RotorBatch { batch_id: Some(format!("fixture-{round}")), tracks: c.wave(preset, round) } }),
             Backend::Live(c) => {
-                if let Some(k) = knobs {
+                if let Some(sid) = session.filter(|s| !s.is_empty())
+                    && !queue.is_empty()
+                    && let Ok(rs) = c.rotor_session_tracks(sid, queue).await
+                    && !rs.tracks.is_empty()
+                {
+                    let next_sid = if rs.id.is_empty() { Some(sid.to_owned()) } else { Some(rs.id) };
+                    return Ok(WaveBatch { session: next_sid, batch: RotorBatch { batch_id: rs.batch_id, tracks: rs.tracks } });
+                }
+
+                let seeds: Vec<String> = if let Some(k) = knobs {
                     if after.is_none() {
-                        // Best-effort: the seeds below still ask for the same.
                         let _ = c.set_wave_settings(k).await;
                     }
-                    let seeds: Vec<String> = k.seeds().into_iter().skip(1).collect();
-                    let seeds: Vec<&str> = seeds.iter().map(String::as_str).collect();
-                    return c.wave_tracks("user:onyourwave", &seeds, after).await;
+                    k.seeds()
+                } else if !extra_seeds.is_empty() {
+                    extra_seeds.to_vec()
+                } else {
+                    let (station, st_seeds) = station_of(preset);
+                    std::iter::once(station.to_owned()).chain(st_seeds.iter().map(|s| (*s).to_owned())).collect()
+                };
+
+                if let Ok(rs) = c.rotor_session_new(&seeds, queue).await
+                    && !rs.tracks.is_empty()
+                {
+                    return Ok(WaveBatch {
+                        session: (!rs.id.is_empty()).then_some(rs.id),
+                        batch: RotorBatch { batch_id: rs.batch_id, tracks: rs.tracks },
+                    });
                 }
-                let (station, seeds) = station_of(preset);
-                c.wave_tracks(station, seeds, after).await
+
+                if let Some(k) = knobs {
+                    let tail: Vec<String> = k.seeds().into_iter().skip(1).collect();
+                    let tail_ref: Vec<&str> = tail.iter().map(String::as_str).collect();
+                    let batch = c.wave_tracks("user:onyourwave", &tail_ref, after).await?;
+                    return Ok(WaveBatch { session: None, batch });
+                }
+                let (station, st_seeds) = station_of(preset);
+                let batch = c.wave_tracks(station, st_seeds, after).await?;
+                Ok(WaveBatch { session: None, batch })
             }
             Backend::None => Err(no_session()),
         }
     }
 
-    pub async fn wave_feedback(&self, preset: &str, event: WaveEvent, track_id: &str, batch_id: Option<&str>, played_secs: f64) {
+    pub async fn wave_feedback(&self, preset: &str, session: Option<&str>, event: WaveEvent, track_id: &str, batch_id: Option<&str>, played_secs: f64) {
         if let Backend::Live(c) = self {
+            if let Some(sid) = session.filter(|s| !s.is_empty()) {
+                let _ = c.rotor_session_feedback(sid, batch_id, event, Some(track_id), Some(played_secs)).await;
+                return;
+            }
             let (station, _) = station_of(preset);
             let _ = c.wave_feedback(station, event, Some(track_id), batch_id, Some(played_secs)).await;
         }
@@ -712,17 +1025,17 @@ impl Backend {
                 }
                 let info = c.stream(&track.id, quality).await?;
                 let data = c.fetch_audio(&info, |_, _| {}).await?;
-                let bytes: Arc<[u8]> = data.into();
-                // The codec id is usually right; the bytes catch a server that names MP3 but
-                // serves FLAC or AAC.
-                let ext = if info.codec.contains("flac") {
-                    "flac"
-                } else if info.codec.contains("aac") {
-                    "m4a"
-                } else {
-                    sniff_ext(&bytes)
-                };
-                Ok(Audio { bytes, ext, clean: false })
+                // Yandex serves lossless as FLAC wrapped in MP4 (`flac-mp4`). Remux it into a
+                // native `.flac` stream so downloads are tagged with Vorbis comments and cover art
+                // and work in every player.
+                if info.codec.to_ascii_lowercase().contains("flac")
+                    && sniff_ext(&data) == "m4a"
+                    && let Some(flac) = crate::audio_tags::remux_flac_from_mp4(&data)
+                {
+                    return Ok(Audio { bytes: flac.into(), ext: "flac", clean: false });
+                }
+                let ext = container_ext(&data, &info.codec);
+                Ok(Audio { bytes: data.into(), ext, clean: false })
             }
             Backend::None => Err(no_session()),
         }
@@ -757,7 +1070,8 @@ impl Backend {
                 {
                     let head = read_file_head(&path);
                     let ext = sniff_ext(&head);
-                    let quality = StreamQuality { codec: AudioCodec::from_ext(ext), bitrate_kbps: estimate_bitrate_from_head(&head, len, ext, track.duration_ms) };
+                    let codec = local_codec(&path, ext);
+                    let quality = StreamQuality { codec, bitrate_kbps: estimate_bitrate_from_head(&head, len, ext, track.duration_ms) };
                     return Ok(StreamAudio { data: ym_audio::AudioData::file(path, len), ext, quality, from_disk: true, clean: true });
                 }
                 let local = find_path("original");
@@ -766,51 +1080,52 @@ impl Backend {
                 {
                     let head = read_file_head(&path);
                     let ext = sniff_ext(&head);
-                    let quality = StreamQuality { codec: AudioCodec::from_ext(ext), bitrate_kbps: estimate_bitrate_from_head(&head, len, ext, track.duration_ms) };
+                    let codec = local_codec(&path, ext);
+                    let quality = StreamQuality { codec, bitrate_kbps: estimate_bitrate_from_head(&head, len, ext, track.duration_ms) };
                     return Ok(StreamAudio { data: ym_audio::AudioData::file(path, len), ext, quality, from_disk: true, clean: false });
                 }
                 if let Some(replacement) = replacement {
-                    let tmp = next_temp_stream_path(&track.id);
-                    let fetched = if local.is_some() {
-                        tokio::time::timeout(std::time::Duration::from_secs(4), c.fetch_fkcensor_audio_to_file(&replacement.url, &tmp)).await.ok().and_then(Result::ok)
+                    let opened = if local.is_some() {
+                        tokio::time::timeout(std::time::Duration::from_secs(4), c.open_fkcensor_audio(&replacement.url, 0)).await.ok().and_then(Result::ok)
                     } else {
-                        c.fetch_fkcensor_audio_to_file(&replacement.url, &tmp).await.ok()
+                        c.open_fkcensor_audio(&replacement.url, 0).await.ok()
                     };
-                    if let Some((len, head)) = fetched {
+                    if let Some(resp) = opened
+                        && let Ok((data, len, head)) = start_progressive_stream(c.clone(), StreamSource::FkCensor { url: replacement.url }, resp).await
+                    {
                         let ext = sniff_ext(&head);
                         let quality = StreamQuality { codec: AudioCodec::from_ext(ext), bitrate_kbps: estimate_bitrate_from_head(&head, len, ext, track.duration_ms) };
-                        return Ok(StreamAudio { data: ym_audio::AudioData::temp_file(tmp, len), ext, quality, from_disk: false, clean: true });
+                        return Ok(StreamAudio { data, ext, quality, from_disk: false, clean: true });
                     }
-                    let _ = std::fs::remove_file(&tmp);
                 }
                 if let Some((path, len)) = local {
                     let head = read_file_head(&path);
                     let ext = sniff_ext(&head);
-                    let quality = StreamQuality { codec: AudioCodec::from_ext(ext), bitrate_kbps: estimate_bitrate_from_head(&head, len, ext, track.duration_ms) };
+                    let codec = local_codec(&path, ext);
+                    let quality = StreamQuality { codec, bitrate_kbps: estimate_bitrate_from_head(&head, len, ext, track.duration_ms) };
                     return Ok(StreamAudio { data: ym_audio::AudioData::file(path, len), ext, quality, from_disk: true, clean: false });
                 }
                 let info = c.stream(&track.id, quality).await?;
-                let tmp = next_temp_stream_path(&track.id);
-                let (len, head) = match c.fetch_audio_to_file(&info, &tmp).await {
-                    Ok(out) => out,
-                    Err(e) => {
-                        let _ = std::fs::remove_file(&tmp);
-                        return Err(e);
-                    }
-                };
-                let ext = if info.codec.contains("flac") {
-                    "flac"
-                } else if info.codec.contains("aac") {
-                    "m4a"
-                } else {
-                    sniff_ext(&head)
-                };
-                let codec = match AudioCodec::from_ext(ext) {
-                    AudioCodec::Other => AudioCodec::from_codec(&info.codec),
+                let resp = c.open_audio(&info, 0).await?;
+                let source = StreamSource::Yandex { track_id: track.id.clone(), quality, info: info.clone() };
+                let (data, len, head) = start_progressive_stream(c.clone(), source, resp).await?;
+                // Container hint for Symphonia must match the actual byte wrapper (`m4a` for
+                // `flac-mp4` / `aac-mp4`, `flac` for raw FLAC), while display codec reflects the
+                // audio stream inside (`flac-mp4` -> FLAC).
+                let ext = container_ext(&head, &info.codec);
+                let codec = match AudioCodec::from_codec(&info.codec) {
+                    AudioCodec::Other => AudioCodec::from_ext(ext),
                     c => c,
                 };
-                let bitrate_kbps = if info.bitrate_kbps > 0 { info.bitrate_kbps } else { estimate_bitrate_from_head(&head, len, ext, track.duration_ms) };
-                Ok(StreamAudio { data: ym_audio::AudioData::temp_file(tmp, len), ext, quality: StreamQuality { codec, bitrate_kbps }, from_disk: false, clean: false })
+                let est_kbps = estimate_bitrate_from_head(&head, len, ext, track.duration_ms);
+                let bitrate_kbps = if codec == AudioCodec::Flac && est_kbps > 320 {
+                    est_kbps
+                } else if info.bitrate_kbps > 0 {
+                    info.bitrate_kbps
+                } else {
+                    est_kbps
+                };
+                Ok(StreamAudio { data, ext, quality: StreamQuality { codec, bitrate_kbps }, from_disk: false, clean: false })
             }
             Backend::None => Err(no_session()),
         }
@@ -824,7 +1139,13 @@ impl Backend {
             Backend::Live(c) => {
                 let info = c.stream(&track.id, ym_api::Quality::Best).await.ok()?;
                 let codec = AudioCodec::from_codec(&info.codec);
-                let bitrate_kbps = if info.bitrate_kbps > 0 {
+                let bitrate_kbps = if codec == AudioCodec::Flac && (info.bitrate_kbps == 0 || info.bitrate_kbps <= 320) {
+                    if let Some(dur_ms) = track.duration_ms.filter(|&d| d > 0) {
+                        c.audio_size(&info).await.map_or(info.bitrate_kbps, |sz| ((sz * 8 + dur_ms / 2) / dur_ms) as u32)
+                    } else {
+                        info.bitrate_kbps
+                    }
+                } else if info.bitrate_kbps > 0 {
                     info.bitrate_kbps
                 } else if let Some(dur_ms) = track.duration_ms.filter(|&d| d > 0) {
                     c.audio_size(&info).await.map_or(0, |sz| ((sz * 8 + dur_ms / 2) / dur_ms) as u32)

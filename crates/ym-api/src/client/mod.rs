@@ -33,6 +33,7 @@ use crate::lrc::Lyrics;
 use crate::lrcred;
 use crate::{Error, Result, cover};
 
+pub use media::AudioResponse;
 pub use types::{Likeable, Quality, SearchKind, StreamInfo, WaveEvent};
 
 pub(crate) use parse::{as_id, from_value, https, iso8601, seg, unix_millis};
@@ -40,8 +41,9 @@ pub(crate) use parse::{as_id, from_value, https, iso8601, seg, unix_millis};
 const API: &str = "https://api.music.yandex.net";
 /// What the service expects its desktop client to call itself; every open-source client sends it.
 const CLIENT_ID: &str = "YandexMusicDesktopAppWindows/5.29.1";
-/// What the signed file-info endpoint expects to be talking to.
-pub(crate) const FILE_INFO_CLIENT: &str = "YandexMusicDesktopAppWindows/5.95.0";
+/// What the signed file-info and desktop wheel/rotor-session endpoints expect to be talking to.
+pub(crate) const FILE_INFO_CLIENT: &str = "YandexMusicDesktopAppWindows/5.126.1";
+const DESKTOP_DEVICE: &str = "manufacturer=; model=; uuid=7f2c9a10-4b8d-4e3a-9c5f-1a2b3c4d5e6f; os=win32; os_version=; device_id=7f2c9a104b8d4e3a9c5f1a2b3c4d5e6f; clid=0";
 pub(super) const APP_UA: &str = concat!("Glint/", env!("CARGO_PKG_VERSION"), " (unofficial client)");
 
 const MAX_JSON_BYTES: u64 = 64 << 20;
@@ -62,6 +64,10 @@ pub(super) struct Inner {
     pub(super) lrcred_ua: RwLock<Option<String>>,
     /// What lrc.red said for a track id this session, so a track is asked about once.
     pub(super) lrcred_seen: Mutex<HashMap<String, Option<Lyrics>>>,
+    /// Optional Bearer key for `api.spicylyrics.org/v1/*` (`SPICY_LYRICS_API_KEY`).
+    pub(super) spicy_key: RwLock<Option<String>>,
+    /// Cached Musixmatch desktop usertoken and expiry instant.
+    pub(super) mxm_token: Mutex<Option<(String, std::time::Instant)>>,
 }
 
 /// Cheap to clone; clones share the connection pool, the token and the language.
@@ -86,7 +92,11 @@ impl Client {
             .pool_idle_timeout(Duration::from_secs(60))
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
                 let next = attempt.url();
-                let trusted = cover::is_trusted_host(next.as_str()) || matches!(next.host_str(), Some("lrclib.net" | "lrc.red" | "raw.githubusercontent.com"));
+                let trusted = cover::is_trusted_host(next.as_str())
+                    || matches!(
+                        next.host_str(),
+                        Some("lrclib.net" | "lrc.red" | "api.spicylyrics.org" | "apic-desktop.musixmatch.com" | "api.musixmatch.com" | "raw.githubusercontent.com")
+                    );
                 if attempt.previous().len() >= 5 {
                     attempt.error("too many redirects")
                 } else if trusted {
@@ -96,8 +106,17 @@ impl Client {
                 }
             }))
             .build()?;
+        let spicy_key = std::env::var("SPICY_LYRICS_API_KEY").ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
         Ok(Client {
-            inner: Arc::new(Inner { http, auth_header: RwLock::new(None), lang: RwLock::new("ru".into()), lrcred_ua: RwLock::new(None), lrcred_seen: Mutex::new(HashMap::new()) }),
+            inner: Arc::new(Inner {
+                http,
+                auth_header: RwLock::new(None),
+                lang: RwLock::new("ru".into()),
+                lrcred_ua: RwLock::new(None),
+                lrcred_seen: Mutex::new(HashMap::new()),
+                spicy_key: RwLock::new(spicy_key),
+                mxm_token: Mutex::new(None),
+            }),
         })
     }
 
@@ -152,6 +171,49 @@ impl Client {
             rb = rb.header(AUTHORIZATION, value);
         }
         rb
+    }
+
+    /// A request to the desktop-only music endpoints (`/wheel/new`, `/rotor/session/*`), carrying
+    /// the desktop client and device headers the service expects.
+    pub(crate) fn desktop_api(&self, method: Method, path: &str) -> RequestBuilder {
+        let lang = self.inner.lang.read().unwrap_or_else(PoisonError::into_inner).clone();
+        let mut rb = self
+            .inner
+            .http
+            .request(method, format!("{API}{path}"))
+            .header(USER_AGENT, FILE_INFO_CLIENT)
+            .header("X-Yandex-Music-Client", FILE_INFO_CLIENT)
+            .header("X-Yandex-Music-Device", DESKTOP_DEVICE)
+            .header("X-Yandex-Music-Without-Invocation-Info", "1")
+            .header(ACCEPT_LANGUAGE, lang)
+            .timeout(Duration::from_secs(25));
+        if let Some(value) = self.auth_header() {
+            rb = rb.header(AUTHORIZATION, value);
+        }
+        rb
+    }
+
+    async fn call_flex_once(&self, rb: RequestBuilder) -> Result<Value> {
+        let resp = rb.send().await?;
+        let status = resp.status().as_u16();
+        let body = read_limited(resp, MAX_JSON_BYTES, |_, _| {}).await?;
+        parse::parse_maybe_envelope(status, &String::from_utf8_lossy(&body))
+    }
+
+    /// Sends a request to an endpoint that may omit the outer `result` envelope; transient
+    /// failures get one retry.
+    pub(crate) async fn call_flex(&self, rb: RequestBuilder) -> Result<Value> {
+        let again = rb.try_clone();
+        match self.call_flex_once(rb).await {
+            Err(e) if e.is_transient() => match again {
+                Some(rb) => {
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    self.call_flex_once(rb).await
+                }
+                None => Err(e),
+            },
+            other => other,
+        }
     }
 
     async fn call_once(&self, rb: RequestBuilder) -> Result<Value> {

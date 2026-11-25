@@ -66,10 +66,6 @@ impl Page {
         }
     }
 
-    pub fn is_root(&self) -> bool {
-        matches!(self, Page::Home | Page::Explore | Page::Search | Page::Library)
-    }
-
     /// Which rail item lights up.
     pub fn rail(&self) -> Page {
         match self {

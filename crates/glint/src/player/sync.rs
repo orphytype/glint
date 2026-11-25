@@ -60,6 +60,25 @@ impl State {
         if wn > 0.0 {
             self.update_seek_live(false, wn, frac);
         }
+        let wh = self.seek_w_home.get();
+        if wh > 0.0 {
+            self.update_home_seek_live(wh, frac);
+        }
+    }
+
+    /// Updates Home's slim inline seek bar `Live` fill and thumb rects when its 0.5 pt quantized
+    /// width changes.
+    pub fn update_home_seek_live(&self, width: f32, frac: f32) -> (&rune::Live<[f32; 4]>, &rune::Live<[f32; 4]>) {
+        let w = (width * frac).max(if frac > 0.002 { 2.5 } else { 0.0 });
+        let q = (w * 2.0).round() as u32;
+        let fill_w = q as f32 * 0.5;
+        let thumb_x = (width * frac - 4.0).clamp(0.0, (width - 8.0).max(0.0));
+        self.seek_w_home.set(width);
+        if self.seek_px_home.replace(q) != q {
+            self.lives.seek_home.set([0.0, 0.0, fill_w, 2.5]);
+            self.lives.seek_home_thumb.set([thumb_x, 1.25, 8.0, 8.0]);
+        }
+        (&self.lives.seek_home, &self.lives.seek_home_thumb)
     }
 
     /// Updates a native seek bar's `Live` fill and hover-thumb rects only when its 0.5 pt
@@ -133,7 +152,7 @@ impl State {
         self.player.queue = snap.queue;
         self.player.index = Some(snap.index);
         self.player.source = match snap.wave {
-            Some(preset) => Source::Wave { preset, batch: None, round: 0 },
+            Some(preset) => Source::Wave { preset, batch: None, session: None, round: 0 },
             None => Source::Manual,
         };
         self.player.playing = false;
@@ -190,10 +209,9 @@ impl State {
             } else {
                 self.level = 0.0;
             }
-            // In CPU mode, defer prefetching the next track until the final 18 s so two full
-            // lossless tracks do not sit in RAM for the whole song.
-            if crate::fx::cpu_mode()
-                && playing
+            // Defer prefetching the next track until the final 18 s so two live streams never
+            // compete for bandwidth or hold extra temporary files for the whole track.
+            if playing
                 && self.player.next.is_none()
                 && self.player.next_loading.is_none()
                 && (self.player.dur_ms == 0 || self.player.dur_ms.saturating_sub(self.player.pos_ms) <= 18_000)

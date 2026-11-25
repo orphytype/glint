@@ -32,13 +32,15 @@ fn fs_butterfly(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let R = min(u.rect.z, u.rect.w) * 0.30;
     let a = heading + 1.5707963;
     let qb = sh_rot((p - c) / R, a);
+    let off = vec2<f32>(0.3, 0.75) * R * (0.12 + 0.6 * alt);
+    let qs = sh_rot((p - off - c) / R, a);
+    if (dot(qb, qb) > 2.6 && dot(qs, qs) > 2.6) { discard; }
+
     let o = select(open * (1.0 - 0.45 * bank), open * (1.0 + 0.45 * bank), qb.x < 0.0);
     let f = sh_butterfly(qb, seed, clamp(o, 0.06, 1.0));
     let g = length(vec2<f32>(dpdx(f), dpdy(f)));
     let dpx = f / max(g, 1e-5);
     let cov = clamp(0.5 - dpx, 0.0, 1.0);
-    let off = vec2<f32>(0.3, 0.75) * R * (0.12 + 0.6 * alt);
-    let qs = sh_rot((p - off - c) / R, a);
     let os = select(open * (1.0 - 0.45 * bank), open * (1.0 + 0.45 * bank), qs.x < 0.0);
     let fs = sh_butterfly(qs, seed, clamp(os, 0.06, 1.0));
     let gs = length(vec2<f32>(dpdx(fs), dpdy(fs)));
@@ -46,8 +48,14 @@ fn fs_butterfly(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let sh = (1.0 - smoothstep(-soft, soft, fs / max(gs, 1e-5))) * mix(0.30, 0.12, alt);
     if (cov <= 0.0 && sh <= 0.002) { discard; }
 
+    let ink = select(vec3<f32>(0.0), vec3<f32>(0.10, 0.08, 0.12), light);
+    let clip = rect_clip(p);
+    if (cov <= 0.0) {
+        return vec4<f32>(work(ink) * sh * clip, sh * clip);
+    }
+
     let qa = vec2<f32>(abs(qb.x) / max(o, 0.08), qb.y);
-    var tone = 0.30 + 0.55 * o + 0.18 * (fbm(qa * 2.2 + vec2<f32>(seed), 3) - 0.5);
+    var tone = 0.30 + 0.55 * o + 0.16 * (fbm(qa * 2.2 + vec2<f32>(seed), 2) - 0.5);
     let e = length(qa - vec2<f32>(0.50, -0.24));
     tone = tone + 0.5 * smoothstep(0.13, 0.10, e) - 0.6 * smoothstep(0.075, 0.055, e);
     tone = tone - 0.35 * smoothstep(-0.10 * R, -0.03 * R, dpx);
@@ -66,9 +74,7 @@ fn fs_butterfly(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let x = tone * 1.999;
     let lvl = floor(x) + step(thr, fract(x));
     let col = select(select(hi, mid, lvl < 1.5), dark, lvl < 0.5);
-    let ink = select(vec3<f32>(0.0), vec3<f32>(0.10, 0.08, 0.12), light);
     let rgb = work(col) * cov + work(ink) * sh * (1.0 - cov);
     let alpha = max(cov, sh);
-    let clip = rect_clip(p);
     return vec4<f32>(rgb * clip, alpha * clip);
 }

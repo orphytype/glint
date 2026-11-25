@@ -5,6 +5,7 @@
 //! next batch. Feedback events teach the Wave what was liked or skipped.
 
 use reqwest::Method;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::client::{as_id, iso8601, seg, unix_millis};
@@ -13,6 +14,40 @@ use crate::{Client, Result, WaveEvent};
 
 /// Where feedback says playback came from.
 const FROM: &str = "desktop_win-radio-web-glint";
+
+/// One wave entry returned by the desktop My Wave wheel (`POST /wheel/new`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WheelItem {
+    pub name: String,
+    pub description: String,
+    /// Cover artwork template (`avatars.mds.yandex.net/.../%%`).
+    pub cover: Option<String>,
+    /// True when the wave is seeded by an artist (render circular avatar).
+    pub round: bool,
+    /// True for the primary "My Wave" accent entry.
+    pub control_accent: bool,
+    /// Dominant RGB tint reported by the service (`[r, g, b]`).
+    pub color: Option<[u8; 3]>,
+    /// Rotor seeds that start this wave (e.g. `["activity:driving"]`, `["artist-tracks:123"]`).
+    pub seeds: Vec<String>,
+}
+
+impl WheelItem {
+    /// Primary rotor station seed for this wheel entry; `None` means the main `user:onyourwave`.
+    pub fn station(&self) -> Option<String> {
+        let seed = self.seeds.first().filter(|s| s.as_str() != "user:onyourwave")?;
+        Some(match seed.split_once(':') {
+            Some(("artist-tracks", id)) => format!("artist:{id}"),
+            _ => seed.clone(),
+        })
+    }
+
+    /// Stable wave identifier (`"onyourwave"` for the base wave, or the primary station seed).
+    pub fn key(&self) -> String {
+        self.station().unwrap_or_else(|| "onyourwave".to_owned())
+    }
+}
 
 /// One running Wave session.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -69,6 +104,13 @@ impl WaveSettings {
 }
 
 impl Client {
+    /// Personalized waves for the Home wheel (`POST /wheel/new`), as shown in the official desktop
+    /// app: mood/activity/editorial vibes, waves by favorite artists, genres, and eras.
+    pub async fn wheel(&self) -> Result<Vec<WheelItem>> {
+        let v = self.call_flex(self.desktop_api(Method::POST, "/wheel/new").json(&json!({}))).await?;
+        Ok(parse_wheel(&v))
+    }
+
     /// Starts a Wave session from `seeds`. `queue` are track ids already playing, so the
     /// first batch continues from them.
     pub async fn rotor_session_new(&self, seeds: &[String], queue: &[String]) -> Result<RotorSession> {
@@ -81,14 +123,14 @@ impl Client {
         if !queue.is_empty() {
             body["queue"] = json!(queue);
         }
-        let v = self.call(self.api(Method::POST, "/rotor/session/new").json(&body)).await?;
+        let v = self.call_flex(self.desktop_api(Method::POST, "/rotor/session/new").json(&body)).await?;
         Ok(parse_session(v, None))
     }
 
     /// The next batch of a running session. `queue` is what has been played (most recent last).
     pub async fn rotor_session_tracks(&self, session: &str, queue: &[String]) -> Result<RotorSession> {
         let body = json!({ "queue": queue });
-        let v = self.call(self.api(Method::POST, &format!("/rotor/session/{}/tracks", seg(session)?)).json(&body)).await?;
+        let v = self.call_flex(self.desktop_api(Method::POST, &format!("/rotor/session/{}/tracks", seg(session)?)).json(&body)).await?;
         Ok(parse_session(v, Some(session)))
     }
 
@@ -107,7 +149,7 @@ impl Client {
         if let Some(b) = batch_id {
             body["batchId"] = json!(b);
         }
-        self.call(self.api(Method::POST, &format!("/rotor/session/{}/feedback", seg(session)?)).json(&body)).await.map(drop)
+        self.call_flex(self.desktop_api(Method::POST, &format!("/rotor/session/{}/feedback/", seg(session)?)).json(&body)).await.map(drop)
     }
 
     /// Stations picked for the account.
@@ -162,6 +204,49 @@ pub(crate) fn parse_session(mut v: Value, known_id: Option<&str>) -> RotorSessio
         _ => Vec::new(),
     };
     RotorSession { id, batch_id, tracks, accepted_seeds, description, terminated }
+}
+
+fn parse_hex_color(v: Option<&Value>) -> Option<[u8; 3]> {
+    let hex = v?.as_str()?.trim().trim_start_matches('#');
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some([r, g, b])
+}
+
+fn parse_wheel(v: &Value) -> Vec<WheelItem> {
+    v.get("items")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|it| {
+            let d = it.get("data")?;
+            let name = d.pointer("/wave/name").and_then(Value::as_str)?.trim().to_owned();
+            if name.is_empty() {
+                return None;
+            }
+            let description = it
+                .get("description")
+                .or_else(|| d.pointer("/wave/description"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
+            let cover = d.pointer("/agent/cover/uri").and_then(Value::as_str).filter(|u| !u.is_empty()).map(str::to_owned);
+            let round = d.pointer("/agent/entity/type").and_then(Value::as_str) == Some("artist");
+            let control_accent = it.get("style").and_then(Value::as_str) == Some("CONTROL_ACCENT");
+            let color = parse_hex_color(d.pointer("/agent/cover/color"));
+            let seeds = d
+                .pointer("/wave/seeds")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                .unwrap_or_default();
+            Some(WheelItem { name, description, cover, round, control_accent, color, seeds })
+        })
+        .collect()
 }
 
 fn parse_stations(v: &Value) -> Vec<Station> {

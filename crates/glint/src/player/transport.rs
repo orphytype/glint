@@ -13,8 +13,11 @@ impl State {
     pub fn start_wave(&mut self, preset: &str) {
         self.wave_choice = preset.to_owned();
         self.mark_settings_dirty();
-        let name = crate::ui::wave_title(preset);
-        self.wave_label = Some((S::WaveTitle, FromName::Word(name), Some(Page::Home)));
+        let label = match self.wheel_wave(preset) {
+            Some(w) => FromName::Text(w.name.clone()),
+            None => FromName::Word(crate::ui::wave_title(preset)),
+        };
+        self.wave_label = Some((S::WaveTitle, label, Some(Page::Home)));
         self.run_wave(preset);
     }
 
@@ -39,6 +42,10 @@ impl State {
         WaveTune::applies(id).then(|| self.wave_tune(id).knobs())
     }
 
+    fn wave_seeds(&self, id: &str) -> Vec<String> {
+        self.wheel_wave(id).map(|w| w.seeds.clone()).unwrap_or_default()
+    }
+
     fn run_wave(&mut self, preset: &str) {
         self.player.wave_gen += 1;
         let wave = self.player.wave_gen;
@@ -46,14 +53,15 @@ impl State {
         let (b, p) = (self.backend.clone(), preset.to_owned());
         let p2 = p.clone();
         let knobs = self.wave_knobs(preset);
-        self.job(async move { b.wave(&p2, knobs, None, 0).await }, move |s, _, res| {
+        let seeds = self.wave_seeds(preset);
+        self.job(async move { b.wave(&p2, &seeds, knobs, None, &[], None, 0).await }, move |s, _, res| {
             if s.player.wave_gen != wave {
                 return;
             }
             s.player.wave_fetching = false;
             match res {
-                Ok(batch) if !batch.tracks.is_empty() => {
-                    s.play_queue(batch.tracks, 0, Source::Wave { preset: p, batch: batch.batch_id, round: 1 });
+                Ok(wb) if !wb.batch.tracks.is_empty() => {
+                    s.play_queue(wb.batch.tracks, 0, Source::Wave { preset: p, batch: wb.batch.batch_id, session: wb.session, round: 1 });
                     if let Some((kind, name, page)) = s.wave_label.take() {
                         s.playing_from = Some(PlayingFrom { wave: true, kind, name, page });
                     }
@@ -69,7 +77,7 @@ impl State {
     }
 
     pub(super) fn top_up_wave(&mut self) {
-        let Source::Wave { preset, round, .. } = self.player.source.clone() else { return };
+        let Source::Wave { preset, session, round, .. } = self.player.source.clone() else { return };
         let remaining = self.player.queue.len().saturating_sub(self.player.index.map_or(0, |i| i + 1));
         if remaining > 2 || self.player.wave_fetching {
             return;
@@ -77,40 +85,49 @@ impl State {
         self.player.wave_fetching = true;
         let wave = self.player.wave_gen;
         let after = self.player.queue.last().map(|t| t.id.clone());
+        let tail_start = self.player.queue.len().saturating_sub(10);
+        let recent: Vec<String> = self.player.queue[tail_start..].iter().map(|t| t.id.clone()).collect();
         let b = self.backend.clone();
         let knobs = self.wave_knobs(&preset);
+        let seeds = self.wave_seeds(&preset);
         let asked = preset.clone();
-        self.job(async move { b.wave(&preset, knobs, after.as_deref(), round).await }, move |s, _, res| {
-            if s.player.wave_gen != wave {
-                return;
-            }
-            s.player.wave_fetching = false;
-            if !matches!(&s.player.source, Source::Wave { preset, .. } if *preset == asked) {
-                return;
-            }
-            let Ok(batch) = res else { return };
-            let known: std::collections::HashSet<&str> = s.player.queue.iter().map(|t| t.id.as_str()).collect();
-            let fresh: Vec<Track> = batch.tracks.into_iter().filter(|t| s.track_playable(t) && !known.contains(t.id.as_str())).collect();
-            if let Source::Wave { batch: b, round, .. } = &mut s.player.source {
-                *b = batch.batch_id;
-                *round += 1;
-            }
-            let was_idle = !s.player.playing && s.player.index.is_some_and(|i| i + 1 >= s.player.queue.len());
-            s.player.queue.extend(fresh.iter().cloned());
-            s.player.original.extend(fresh);
-            if was_idle && s.player.queue.len() > s.player.index.unwrap_or(0) + 1 {
-                s.play_index(s.player.index.unwrap_or(0) + 1);
-            } else {
-                s.prefetch_next();
-            }
-        });
+        self.job(
+            async move { b.wave(&preset, &seeds, knobs, session.as_deref(), &recent, after.as_deref(), round).await },
+            move |s, _, res| {
+                if s.player.wave_gen != wave {
+                    return;
+                }
+                s.player.wave_fetching = false;
+                if !matches!(&s.player.source, Source::Wave { preset, .. } if *preset == asked) {
+                    return;
+                }
+                let Ok(wb) = res else { return };
+                let known: std::collections::HashSet<&str> = s.player.queue.iter().map(|t| t.id.as_str()).collect();
+                let fresh: Vec<Track> = wb.batch.tracks.into_iter().filter(|t| s.track_playable(t) && !known.contains(t.id.as_str())).collect();
+                if let Source::Wave { batch: b, session: sid, round, .. } = &mut s.player.source {
+                    *b = wb.batch.batch_id;
+                    if wb.session.is_some() {
+                        *sid = wb.session;
+                    }
+                    *round += 1;
+                }
+                let was_idle = !s.player.playing && s.player.index.is_some_and(|i| i + 1 >= s.player.queue.len());
+                s.player.queue.extend(fresh.iter().cloned());
+                s.player.original.extend(fresh);
+                if was_idle && s.player.queue.len() > s.player.index.unwrap_or(0) + 1 {
+                    s.play_index(s.player.index.unwrap_or(0) + 1);
+                } else {
+                    s.prefetch_next();
+                }
+            },
+        );
     }
 
     pub(super) fn wave_event(&mut self, event: WaveEvent, played_secs: f64) {
-        let Source::Wave { preset, batch, .. } = self.player.source.clone() else { return };
+        let Source::Wave { preset, batch, session, .. } = self.player.source.clone() else { return };
         let Some(id) = self.current().map(|t| t.id.clone()) else { return };
         let b = self.backend.clone();
-        self.job(async move { b.wave_feedback(&preset, event, &id, batch.as_deref(), played_secs).await }, |_, _, _| {});
+        self.job(async move { b.wave_feedback(&preset, session.as_deref(), event, &id, batch.as_deref(), played_secs).await }, |_, _, _| {});
     }
 
     pub fn toggle_pause(&mut self) {

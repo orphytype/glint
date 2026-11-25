@@ -93,11 +93,13 @@ pub struct Library {
     pub album_sort: AlbumSort,
     pub album_kind: DiscKind,
     pub artist_sort: ArtistSort,
-    /// Collection search query and cached matching/sorted indices for liked tracks.
+    /// Collection search query, active genre/mood chip (`""` = all), and cached matching/sorted
+    /// indices for liked tracks.
     pub filter: TextEdit,
+    pub track_filter: String,
     pub shown: RefCell<Vec<usize>>,
-    /// Cache key for `shown`: trimmed lowercase query, active sort, track slice pointer, and length.
-    pub shown_key: RefCell<(String, TrackSort, usize, usize)>,
+    /// Cache key for `shown`: trimmed query, genre/mood chip, active sort, track slice pointer, and length.
+    pub shown_key: RefCell<(String, String, TrackSort, usize, usize)>,
     pub tracks: Load<Vec<Track>>,
     pub playlists: Load<Vec<Playlist>>,
     pub albums: Load<Vec<Album>>,
@@ -112,7 +114,7 @@ pub struct Library {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Source {
     Manual,
-    Wave { preset: String, batch: Option<String>, round: u64 },
+    Wave { preset: String, batch: Option<String>, session: Option<String>, round: u64 },
 }
 
 pub struct Player {
@@ -156,6 +158,8 @@ pub struct LyricsUi {
     pub for_track: Option<String>,
     pub lyrics: Load<Lyrics>,
     pub active: Option<usize>,
+    /// True while the pointer hovers over the lyrics panel, softly revealing past lines.
+    pub hover: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -189,6 +193,21 @@ pub struct Lives {
     pub seek_np: Live<[f32; 4]>,
     /// Native seek-bar thumb rect `[x, y, w, h]` for Now Playing when shaders are off.
     pub seek_np_thumb: Live<[f32; 4]>,
+    /// Native seek-bar fill rect `[x, y, w, h]` for Home's inline progress bar.
+    pub seek_home: Live<[f32; 4]>,
+    /// Native seek-bar thumb rect `[x, y, w, h]` for Home's inline progress bar.
+    pub seek_home_thumb: Live<[f32; 4]>,
+}
+
+/// Context menu metadata for an album or playlist card's hover `"..."` button.
+#[derive(Clone, Debug)]
+pub struct CardMenu {
+    pub page: Page,
+    pub title: String,
+    pub cover: Option<String>,
+    pub like_key: Option<String>,
+    pub link: Option<String>,
+    pub station: Option<Station>,
 }
 
 /// What a popover lists.
@@ -196,6 +215,8 @@ pub struct Lives {
 pub enum Popover {
     /// Actions for the open album, playlist or artist ("..." beside its buttons).
     Actions { anchor: String },
+    /// Actions for a media card's hover `"..."` button.
+    Card { item: CardMenu, anchor: String },
     /// Waves offered by a wave card's arrow: by track, by artist, by release.
     Waves { choices: Vec<WaveChoice>, anchor: String },
     /// Audio quality for the next track load.
@@ -232,6 +253,7 @@ impl Popover {
     pub fn anchor(&self) -> &str {
         match self {
             Popover::Actions { anchor }
+            | Popover::Card { anchor, .. }
             | Popover::Waves { anchor, .. }
             | Popover::Quality { anchor }
             | Popover::Stage { anchor }

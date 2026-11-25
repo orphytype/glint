@@ -268,9 +268,14 @@ pub fn page(s: &State, w: f32, h: f32, come: f32, front: bool, settled: bool) ->
     };
     let panel_toggle = |key: &'static str, ic: &'static rune::Icon, name: &str, which: NpTab| {
         let on = tab == which;
-        kit::quiet_toggle(key, ic, MODE_GLYPH, MODE_BTN, on, name).on_press(move |s: &mut State| {
+        kit::quiet_toggle(key, ic, MODE_GLYPH, MODE_BTN, on, name).on_press_tx(move |s: &mut State, tx: &mut rune::Tx| {
             let next = if s.np_panel() == which { NpTab::Closed } else { which };
             s.set_np_tab(next);
+            if next == NpTab::Queue && !s.player.queue.is_empty() {
+                let cur = s.player.index.unwrap_or(0);
+                tx.scroll_to_y("np-queue", queue_offset(cur));
+                s.queue_placed = Some(cur);
+            }
         })
     };
     let lyrics_btn = if s.lyrics_missing() {
@@ -367,9 +372,6 @@ pub fn page(s: &State, w: f32, h: f32, come: f32, front: bool, settled: bool) ->
             .transition(if settled { Transition::asymmetric(enter, exit).springs(springs) } else { Transition::none() });
         if p_anim < 0.999 {
             pane = pane.opacity(p_anim);
-        }
-        if settled && !switching {
-            pane = pane.enter_delay(0.04);
         }
         root = root.child(pane.child(body.instant_changes()));
     }

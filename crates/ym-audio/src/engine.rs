@@ -29,10 +29,17 @@ enum Cmd {
     Shutdown,
 }
 
+#[derive(Default)]
+struct ActiveStreams {
+    current: Option<(u64, AudioData)>,
+    next: Option<(u64, AudioData)>,
+}
+
 pub struct Engine {
     tx: Sender<Cmd>,
     shared: Arc<Shared>,
     analyzer: Mutex<Analyzer>,
+    streams: Arc<Mutex<ActiveStreams>>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -41,6 +48,7 @@ impl Engine {
     /// hand the event over (to a channel, an `AppHandle`, ...) and return quickly.
     pub fn new(on_event: impl Fn(Event) + Send + Sync + 'static) -> Result<Engine, AudioError> {
         let shared = Arc::new(Shared::default());
+        let streams = Arc::new(Mutex::new(ActiveStreams::default()));
         let (tx, rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let on_event: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(on_event);
@@ -48,11 +56,12 @@ impl Engine {
             .name("ym-audio".into())
             .spawn({
                 let shared = shared.clone();
-                move || run(rx, shared, on_event, ready_tx)
+                let streams = streams.clone();
+                move || run(rx, shared, streams, on_event, ready_tx)
             })
             .map_err(|e| AudioError::Device(e.to_string()))?;
         match ready_rx.recv() {
-            Ok(Ok(())) => Ok(Engine { tx, shared, analyzer: Mutex::new(Analyzer::new()), thread: Mutex::new(Some(thread)) }),
+            Ok(Ok(())) => Ok(Engine { tx, shared, analyzer: Mutex::new(Analyzer::new()), streams, thread: Mutex::new(Some(thread)) }),
             Ok(Err(e)) => {
                 let _ = thread.join();
                 Err(e)
@@ -69,25 +78,63 @@ impl Engine {
         let _ = self.tx.send(cmd);
     }
 
-    /// Starts `audio` (in memory or on disk) as the current track, replacing the previous one
-    /// with a short fade. Returns at once; a decode failure arrives as [`Event::Error`].
+    /// Starts `audio` (in memory, on disk, or streaming) as the current track, replacing the
+    /// previous one with a short fade. Returns at once; a decode failure arrives as [`Event::Error`].
     /// `token` names the track in every later event and in [`PlaybackState`] (use any non-zero id).
     pub fn load(&self, token: u64, audio: impl Into<AudioData>, hint: LoadHint, play: bool, start: Duration) {
-        self.send(Cmd::Load { token: token.max(1), audio: audio.into(), hint, play, start });
+        let token = token.max(1);
+        let audio = audio.into();
+        {
+            let mut st = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some((_, prev)) = st.current.replace((token, audio.clone())) {
+                prev.cancel();
+            }
+            if let Some((_, prev_next)) = st.next.take() {
+                prev_next.cancel();
+            }
+        }
+        self.send(Cmd::Load { token, audio, hint, play, start });
     }
 
     /// Queues the track that should follow the current one without a gap. At most one is kept;
     /// queueing again replaces it. The engine announces the hand-over with [`Event::Advanced`].
     pub fn enqueue(&self, token: u64, audio: impl Into<AudioData>, hint: LoadHint) {
-        self.send(Cmd::Enqueue { token: token.max(1), audio: audio.into(), hint });
+        let token = token.max(1);
+        let audio = audio.into();
+        {
+            let mut st = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some((prev_tok, prev)) = st.next.replace((token, audio.clone()))
+                && self.shared.token.load(Ordering::Acquire) != prev_tok
+            {
+                prev.cancel();
+            }
+        }
+        self.send(Cmd::Enqueue { token, audio, hint });
     }
 
     /// Forgets the queued track (the user changed the queue).
     pub fn unqueue(&self) {
+        {
+            let mut st = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some((prev_tok, prev)) = st.next.take()
+                && self.shared.token.load(Ordering::Acquire) != prev_tok
+            {
+                prev.cancel();
+            }
+        }
         self.send(Cmd::Unqueue);
     }
 
     pub fn stop(&self) {
+        {
+            let mut st = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some((_, prev)) = st.current.take() {
+                prev.cancel();
+            }
+            if let Some((_, prev)) = st.next.take() {
+                prev.cancel();
+            }
+        }
         self.send(Cmd::Stop);
     }
 
@@ -209,7 +256,13 @@ fn start_playback(sink: &MixerDeviceSink, shared: &Arc<Shared>, live: &mut Optio
     *live = Some(Live { ctl, token, seen_joins: 0 });
 }
 
-fn run(rx: mpsc::Receiver<Cmd>, shared: Arc<Shared>, on_event: Arc<dyn Fn(Event) + Send + Sync>, ready: mpsc::SyncSender<Result<(), AudioError>>) {
+fn run(
+    rx: mpsc::Receiver<Cmd>,
+    shared: Arc<Shared>,
+    streams: Arc<Mutex<ActiveStreams>>,
+    on_event: Arc<dyn Fn(Event) + Send + Sync>,
+    ready: mpsc::SyncSender<Result<(), AudioError>>,
+) {
     let sink = match open_sink(&on_event) {
         Ok(sink) => sink,
         Err(e) => {
@@ -240,25 +293,39 @@ fn run(rx: mpsc::Receiver<Cmd>, shared: Arc<Shared>, on_event: Arc<dyn Fn(Event)
         match cmd {
             Some(Cmd::Shutdown) => break,
             None => {}
-            Some(Cmd::Load { token, audio, hint, play, start }) => match Track::open(token, audio, &hint) {
-                Ok(track) => start_playback(&sink, &shared, &mut live, track, start, play),
-                Err(e) => {
-                    // The old track must not keep playing under the name of the one that failed.
-                    if let Some(old) = live.take() {
-                        old.ctl.stop_with_fade(0.012);
-                    }
-                    shared.token.store(0, Ordering::Release);
-                    shared.pos_us.store(0, Ordering::Relaxed);
-                    emit(Event::Error { token, message: e.to_string() });
+            Some(Cmd::Load { token, audio, hint, play, start }) => {
+                if audio.is_cancelled() {
+                    continue;
                 }
-            },
-            Some(Cmd::Enqueue { token, audio, hint }) => match &live {
-                None => emit(Event::Error { token, message: "nothing is playing to queue a track after".into() }),
-                Some(l) => match Track::open(token, audio, &hint) {
-                    Ok(track) => *l.ctl.lock_next() = Some(track),
-                    Err(e) => emit(Event::Error { token, message: e.to_string() }),
-                },
-            },
+                let check = audio.clone();
+                match Track::open(token, audio, &hint, start) {
+                    Ok(track) => start_playback(&sink, &shared, &mut live, track, start, play),
+                    Err(_) if check.is_cancelled() => {}
+                    Err(e) => {
+                        // The old track must not keep playing under the name of the one that failed.
+                        if let Some(old) = live.take() {
+                            old.ctl.stop_with_fade(0.012);
+                        }
+                        shared.token.store(0, Ordering::Release);
+                        shared.pos_us.store(0, Ordering::Relaxed);
+                        emit(Event::Error { token, message: e.to_string() });
+                    }
+                }
+            }
+            Some(Cmd::Enqueue { token, audio, hint }) => {
+                if audio.is_cancelled() {
+                    continue;
+                }
+                let check = audio.clone();
+                match &live {
+                    None => emit(Event::Error { token, message: "nothing is playing to queue a track after".into() }),
+                    Some(l) => match Track::open(token, audio, &hint, Duration::ZERO) {
+                        Ok(track) => *l.ctl.lock_next() = Some(track),
+                        Err(_) if check.is_cancelled() => {}
+                        Err(e) => emit(Event::Error { token, message: e.to_string() }),
+                    },
+                }
+            }
             Some(Cmd::Unqueue) => {
                 if let Some(l) = &live {
                     l.ctl.lock_next().take();
@@ -279,6 +346,12 @@ fn run(rx: mpsc::Receiver<Cmd>, shared: Arc<Shared>, on_event: Arc<dyn Fn(Event)
         if joins != l.seen_joins {
             l.seen_joins = joins;
             l.token = shared.token.load(Ordering::Acquire);
+            {
+                let mut st = streams.lock().unwrap_or_else(PoisonError::into_inner);
+                if st.next.as_ref().is_some_and(|(t, _)| *t == l.token) {
+                    st.current = st.next.take();
+                }
+            }
             emit(Event::Advanced { token: l.token });
         }
         if l.ctl.finished.load(Ordering::Acquire) {
@@ -291,10 +364,22 @@ fn run(rx: mpsc::Receiver<Cmd>, shared: Arc<Shared>, on_event: Arc<dyn Fn(Event)
                 Some(track) => {
                     let token = track.token;
                     let play = !shared.paused.load(Ordering::Relaxed);
+                    {
+                        let mut st = streams.lock().unwrap_or_else(PoisonError::into_inner);
+                        if st.next.as_ref().is_some_and(|(t, _)| *t == token) {
+                            st.current = st.next.take();
+                        }
+                    }
                     start_playback(&sink, &shared, &mut live, track, Duration::ZERO, play);
                     emit(Event::Advanced { token });
                 }
                 None => {
+                    {
+                        let mut st = streams.lock().unwrap_or_else(PoisonError::into_inner);
+                        if st.current.as_ref().is_some_and(|(t, _)| *t == ended) {
+                            st.current = None;
+                        }
+                    }
                     shared.token.store(0, Ordering::Release);
                     emit(Event::Ended { token: ended });
                 }

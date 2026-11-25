@@ -20,6 +20,7 @@ pub const SCENES: &[(&str, Scene)] = &[
     ("home", home),
     ("explore", explore),
     ("home-ru", home_ru),
+    ("home-wheel", home_wheel),
     ("home-cloud", home_cloud),
     ("home-pins", home_pins),
     ("search", search),
@@ -108,6 +109,7 @@ fn signed_in(s: &mut State) -> Arc<Catalog> {
     // A measuring tool: `GLINT_SEED=n` draws another garden.
     s.home_seed = std::env::var("GLINT_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(7);
     s.home = Load::Ready(c.home());
+    s.wheel_waves = c.wheel();
     let liked = c.liked_tracks();
     s.liked = liked.iter().map(|t| t.id.clone()).collect();
     s.library.tracks = Load::Ready(liked);
@@ -143,7 +145,7 @@ fn play(s: &mut State, c: &Catalog, at: usize, pos_ms: u64) {
     s.play_queue(tracks, at, Source::Manual);
     s.player.loading = false;
     s.player.pos_ms = pos_ms;
-    s.lyrics = LyricsUi { for_track: Some(track.id.clone()), lyrics: Load::Ready(c.lyrics(&track)), active: None };
+    s.lyrics = LyricsUi { for_track: Some(track.id.clone()), lyrics: Load::Ready(c.lyrics(&track)), active: None, hover: false };
 }
 
 fn ru(s: &mut State) {
@@ -197,6 +199,21 @@ fn home_next(s: &mut State) {
 fn home_ru(s: &mut State) {
     home(s);
     s.lang = Lang::Ru;
+}
+
+/// Home in Russian scrolled to the personalized My Waves on the arc wheel.
+fn home_wheel(s: &mut State) {
+    home_ru(s);
+    let slot = 3.0;
+    s.wave_arc = slot;
+    s.wave_arc_to = slot;
+    if let Some(w) = s.wheel_waves.get(3) {
+        let key = w.key();
+        let name = w.name.clone();
+        s.wave_choice = key.clone();
+        s.player.source = Source::Wave { preset: key, batch: None, session: None, round: 1 };
+        s.playing_from = Some(crate::app::PlayingFrom { wave: true, kind: S::WaveTitle, name: crate::app::FromName::Text(name), page: Some(Page::Home) });
+    }
 }
 
 /// Home in Russian with the dither print mode active on the 3D wave backdrop.
@@ -409,10 +426,10 @@ fn wave_playing(s: &mut State) {
     s.wave_choice = "calm".into();
     let tracks: Vec<Track> = c.tracks.iter().take(14).cloned().collect();
     let track = tracks[6].clone();
-    s.play_queue(tracks, 6, Source::Wave { preset: "calm".into(), batch: None, round: 1 });
+    s.play_queue(tracks, 6, Source::Wave { preset: "calm".into(), batch: None, session: None, round: 1 });
     s.player.loading = false;
     s.player.pos_ms = 33_000;
-    s.lyrics = LyricsUi { for_track: Some(track.id.clone()), lyrics: Load::Ready(c.lyrics(&track)), active: None };
+    s.lyrics = LyricsUi { for_track: Some(track.id.clone()), lyrics: Load::Ready(c.lyrics(&track)), active: None, hover: false };
 }
 
 fn nowplaying_ru(s: &mut State) {
@@ -424,7 +441,7 @@ fn nowplaying_ru(s: &mut State) {
     s.play_queue(tracks, at, Source::Manual);
     s.player.loading = false;
     s.player.pos_ms = 48_000;
-    s.lyrics = LyricsUi { for_track: Some(track.id.clone()), lyrics: Load::Ready(c.lyrics(&track)), active: None };
+    s.lyrics = LyricsUi { for_track: Some(track.id.clone()), lyrics: Load::Ready(c.lyrics(&track)), active: None, hover: false };
     s.lang = Lang::Ru;
     s.np_open = true;
     // The player as it rests, not on its way in.
@@ -544,10 +561,10 @@ fn update_popover(s: &mut State) {
     home_ru(s);
     s.update_method = glint_update::Method::WindowsInstaller;
     s.update = crate::update::Ui::Available(glint_update::Release {
-        version: "0.10.0".into(),
-        page_url: "https://github.com/orphytype/glint/releases/tag/v0.10.0".into(),
+        version: "0.11.0".into(),
+        page_url: "https://github.com/orphytype/glint/releases/tag/v0.11.0".into(),
         notes: "Audio quality gets a pill in the mini player and a picker for batch downloads.\n• The quality menu shows each tier with its bitrate.\n• Covers load at the size each view needs, with the large Now Playing cover showing the cached one first.".into(),
-        asset: Some(glint_update::Asset { name: "Glint-0.10.0-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
+        asset: Some(glint_update::Asset { name: "Glint-0.11.0-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
     });
     s.open_popover(crate::app::Popover::Update { anchor: "update-pill".into() });
     s.pop.t = 1.0;
@@ -699,10 +716,10 @@ fn settings_update(s: &mut State) {
     settings(s);
     s.update_method = glint_update::Method::WindowsInstaller;
     s.update = crate::update::Ui::Available(glint_update::Release {
-        version: "0.10.0".into(),
-        page_url: "https://github.com/orphytype/glint/releases/tag/v0.10.0".into(),
+        version: "0.11.0".into(),
+        page_url: "https://github.com/orphytype/glint/releases/tag/v0.11.0".into(),
         notes: "Audio quality gets a pill in the mini player and a picker for batch downloads.\n• The quality menu shows each tier with its bitrate.".into(),
-        asset: Some(glint_update::Asset { name: "Glint-0.10.0-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
+        asset: Some(glint_update::Asset { name: "Glint-0.11.0-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
     });
 }
 

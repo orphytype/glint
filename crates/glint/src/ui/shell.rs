@@ -115,7 +115,9 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
             app = app.child(dock::bar(s, w, np_open, np_t));
             kit::set_under(on_surface);
         }
-        if np_full || np_moving {
+        // Mount Now Playing on the very same commit `np_open` flips true so `hm-cover`/`bar-cover`
+        // leaves and `np-cover` enters together, letting `matched("np-cover")` fly smoothly on open.
+        if np_open || np_moving {
             app = app.child(np::page(s, w, h, if np_full { 1.0 } else { np_t }, np_open, np_full));
         }
         // Take a post-Now-Playing backdrop snapshot only when a glass overlay (menu/popover/sheet)
@@ -136,7 +138,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     }
     kit::set_under(false);
     app = app.child(titlebar(s, ins.leading, ins.trailing, logged_in, np_open, np_t));
-    if logged_in && (np_full || np_moving) {
+    if logged_in && (np_open || np_moving) {
         let smooth = |x: f32| {
             let x = x.clamp(0.0, 1.0);
             x * x * (3.0 - 2.0 * x)

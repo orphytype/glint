@@ -10,12 +10,14 @@ use reqwest::Method;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::client::{FILE_INFO_CLIENT, from_value, https, seg};
+use crate::client::{from_value, https, seg};
 use crate::{Client, Error, Quality, Result, StreamInfo, cover, sign};
 
-/// Codecs this player decodes, best first. FLAC in an MP4 box is left out: not every decoder build
-/// reads it, and the service always offers raw FLAC alongside it.
-const CODECS: [&str; 3] = ["flac", "aac", "mp3"];
+/// Codecs requested for lossless playback, best first. Unencrypted lossless on Yandex Music is
+/// served primarily as `flac-mp4` (FLAC frames inside an ISO BMFF container), with raw `flac` and
+/// lossy formats as fallbacks.
+const CODECS_BEST: [&str; 5] = ["flac-mp4", "flac", "aac-mp4", "aac", "mp3"];
+const CODECS_LOSSY: [&str; 3] = ["aac-mp4", "aac", "mp3"];
 const TRANSPORT: &str = "raw";
 
 #[derive(Debug, Default, Deserialize)]
@@ -23,6 +25,7 @@ const TRANSPORT: &str = "raw";
 struct FileInfo {
     quality: String,
     codec: String,
+    #[serde(alias = "bitrateInKbps")]
     bitrate: u32,
     size: u64,
     transport: String,
@@ -31,13 +34,13 @@ struct FileInfo {
 }
 
 impl Client {
-    /// A playable URL for `track_id` from the signed file-info endpoint, the new path first and
-    /// the old one when that fails. Encrypted renditions (`encraw`) are refused; we ask for `raw`
-    /// only.
+    /// A playable URL for `track_id` from the signed file-info endpoint. Encrypted renditions
+    /// (`encraw`) are refused; we ask for `raw` only.
     pub async fn file_info(&self, track_id: &str, quality: Quality) -> Result<StreamInfo> {
-        match self.file_info_at("/resources/v2/file-info", track_id, quality).await {
+        match self.file_info_at("/get-file-info", track_id, quality).await {
             Ok(info) => Ok(info),
-            Err(_) => self.file_info_at("/get-file-info", track_id, quality).await,
+            Err(Error::Unauthorized) => Err(Error::Unauthorized),
+            Err(_) => self.file_info_at("/resources/v2/file-info", track_id, quality).await,
         }
     }
 
@@ -45,10 +48,11 @@ impl Client {
         let id = seg(track_id)?.split(':').next().unwrap_or(track_id).to_owned();
         let ts = crate::client::unix_millis() / 1000;
         let q = quality.file_info_name();
-        let sign = sign::file_info_sign(ts, &id, q, &CODECS, TRANSPORT);
+        let codecs_list: &[&str] = if quality == Quality::Best { &CODECS_BEST } else { &CODECS_LOSSY };
+        let sign = sign::file_info_sign(ts, &id, q, codecs_list, TRANSPORT);
         let ts = ts.to_string();
-        let codecs = CODECS.join(",");
-        let rb = self.api(Method::GET, path).header("X-Yandex-Music-Client", FILE_INFO_CLIENT).query(&[
+        let codecs = codecs_list.join(",");
+        let rb = self.desktop_api(Method::GET, path).query(&[
             ("ts", ts.as_str()),
             ("trackId", id.as_str()),
             ("quality", q),

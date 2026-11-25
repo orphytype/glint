@@ -110,6 +110,42 @@ pub(super) fn parse_envelope(status: u16, body: &str) -> Result<Value> {
     }
 }
 
+/// Unwraps `{"result": …}` when present, or returns the root JSON value directly for modern
+/// desktop endpoints (such as `/wheel/new` and `/rotor/session/*`) that omit the envelope.
+pub(super) fn parse_maybe_envelope(status: u16, body: &str) -> Result<Value> {
+    let mut parsed: Option<Value> = serde_json::from_str(body).ok();
+    let (name, message) = match parsed.as_ref().and_then(|v| v.get("error")).filter(|e| !e.is_null()) {
+        Some(e) => {
+            let get = |k: &str| e.get(k).and_then(Value::as_str).unwrap_or("").to_owned();
+            if let Some(s) = e.as_str() { (String::new(), s.to_owned()) } else { (get("name").to_lowercase(), get("message")) }
+        }
+        None => (String::new(), String::new()),
+    };
+    let has_error = !name.is_empty() || !message.is_empty();
+
+    let authy = ["session-expired", "unauthorized", "not-auth", "no-auth", "oauth", "token"].iter().any(|k| name.contains(k));
+    if status == 401 || authy {
+        return Err(Error::Unauthorized);
+    }
+    if status == 451 || ["region", "geo", "country"].iter().any(|k| name.contains(k)) {
+        return Err(Error::RegionRestricted);
+    }
+    if !(200..300).contains(&status) {
+        let detail = if message.is_empty() { body } else { message.as_str() };
+        return Err(Error::Http { status, body: truncate(detail.trim(), 200) });
+    }
+    if has_error {
+        return Err(Error::Api(if message.is_empty() { name } else { message }));
+    }
+    let mut v = parsed.take().ok_or_else(|| Error::Parse("the response is not JSON".into()))?;
+    let mut out = match v.get_mut("result") {
+        Some(result) => result.take(),
+        None => v,
+    };
+    strip_nulls(&mut out);
+    Ok(out)
+}
+
 /// `"2023-11-14T22:13:20.000Z"` for a Unix time in milliseconds.
 pub(crate) fn iso8601(unix_ms: u64) -> String {
     let secs = unix_ms / 1000;

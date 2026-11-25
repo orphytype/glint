@@ -257,7 +257,9 @@ impl State {
                 }
                 self.player.sim_started = true;
                 self.wave_event(WaveEvent::TrackStarted, 0.0);
-                if !crate::fx::cpu_mode() {
+                // Short tracks prefetch immediately; longer tracks defer until the final 18 s in
+                // `tick_player` so two streams do not compete for bandwidth.
+                if self.player.dur_ms == 0 || self.player.dur_ms.saturating_sub(start_ms) <= 18_000 {
                     self.prefetch_next();
                 }
             }
@@ -275,20 +277,39 @@ impl State {
     }
 
     fn measure_waveform(&mut self, data: ym_audio::AudioData, ext: &'static str, dur: Option<u64>) {
+        // Skip whole-file waveform decode for very long mixes or huge lossless files (> 20 min or > 128 MiB).
+        const MAX_WAVE_DURATION_MS: u64 = 20 * 60 * 1000;
+        const MAX_WAVE_BYTES: u64 = 128 << 20;
+        if dur.is_some_and(|ms| ms > MAX_WAVE_DURATION_MS) || data.byte_len() > MAX_WAVE_BYTES {
+            return;
+        }
         let Some(id) = self.current().map(|t| t.id.clone()) else { return };
         if self.waveforms.contains_key(&id) || !self.waveform_jobs.insert(id.clone()) {
             return;
         }
         let h = hint(ext, dur);
-        self.job(async move { tokio::task::spawn_blocking(move || ym_audio::waveform(data, &h, crate::fx::WAVE_N).ok()).await.ok().flatten() }, move |s, _, wave| {
-            s.waveform_jobs.remove(&id);
-            let Some(wave) = wave else { return };
-            if s.waveforms.len() >= 64 {
-                let cur = s.current().map(|t| t.id.clone());
-                s.waveforms.retain(|k, _| Some(k) == cur.as_ref());
-            }
-            s.waveforms.insert(id, wave.into());
-        });
+        self.job(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    if !data.wait_complete() || data.byte_len() > MAX_WAVE_BYTES {
+                        return None;
+                    }
+                    ym_audio::waveform(data, &h, crate::fx::WAVE_N).ok()
+                })
+                .await
+                .ok()
+                .flatten()
+            },
+            move |s, _, wave| {
+                s.waveform_jobs.remove(&id);
+                let Some(wave) = wave else { return };
+                if s.waveforms.len() >= 64 {
+                    let cur = s.current().map(|t| t.id.clone());
+                    s.waveforms.retain(|k, _| Some(k) == cur.as_ref());
+                }
+                s.waveforms.insert(id, wave.into());
+            },
+        );
     }
 
     fn next_downloaded(&self) -> Option<usize> {
@@ -328,6 +349,9 @@ impl State {
 
     pub(super) fn prefetch_next(&mut self) {
         if self.player.engine.is_none() || self.player.next.is_some() || self.player.next_loading.is_some() || !self.player.sim_started {
+            return;
+        }
+        if self.player.dur_ms > 0 && self.player.dur_ms.saturating_sub(self.player.pos_ms) > 18_000 {
             return;
         }
         self.top_up_wave();

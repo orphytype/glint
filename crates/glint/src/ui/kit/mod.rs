@@ -25,7 +25,7 @@ pub use controls::{
 pub use marquee::{marquee, marquee_hover, marquee_on};
 pub use media::{
     artist_line_width, artists_row_in_width, cover, cover_border, cover_placeholder, cover_sm, cover_tile, picture_url, playing_cover, playing_cover_lg, roll, seg_wave,
-    source_glyph, track_title, wave_card_alpha, wave_glyph,
+    source_glyph, track_title, wave_card_alpha, wave_glyph, wheel_art,
 };
 pub use rows::{ListSrc, ROW_COVER, ROW_COVER_R, ROW_H, ROW_PAD, ROW_TIME_INSET, bleed, explicit_badge, np_like_button, track_bones, track_fields, queue_row, track_row, track_row_lazy};
 

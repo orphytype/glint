@@ -308,7 +308,7 @@ impl Default for Settings {
             close_to_tray: false,
             autostart: false,
             autostart_hidden: true,
-            butterflies: false,
+            butterflies: true,
             word_lyrics: true,
             fkcensor: true,
             play_on_launch: false,

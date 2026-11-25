@@ -7,7 +7,7 @@ use std::rc::Rc;
 use rune::{Cursor, El, Transition, col, el, icon, row};
 
 use super::{Entry, HEAD};
-use crate::app::{AlbumSort, ArtistSort, DiscKind, DiscSort, DownloadState, LibTab, Page, PinnedItem, PlaylistSort, Sheet, Source, State, Station, TrackSort, WaveChoice};
+use crate::app::{AlbumSort, ArtistSort, CardMenu, DiscKind, DiscSort, DownloadState, LibTab, Page, PinnedItem, PlaylistSort, Sheet, Source, State, Station, TrackSort, WaveChoice};
 use crate::i18n::S;
 use crate::store::QualityPref;
 use crate::theme as th;
@@ -23,7 +23,25 @@ pub(super) fn liked_entries(s: &State) -> Vec<Entry> {
     let lang = s.lang;
     let tracks = s.library.tracks.get().map_or(&[][..], Vec::as_slice);
     let mut out: Vec<Entry> = Vec::new();
+    let pinned = s.is_page_pinned(&Page::Library);
+    let (pin_ic, pin_lbl) = if pinned { (&icons::PIN_OFF, S::Unpin) } else { (&icons::PIN, S::Pin) };
+    out.push(Entry::Row(menu_row("la-pin", pin_ic, pin_lbl.get(lang), pinned).on_press(|s: &mut State| {
+        s.close_popover();
+        let title = S::Liked.get(s.lang).to_owned();
+        let cover = s.library.liked_cover.clone();
+        s.toggle_pin_item(PinnedItem { page: Page::Library, title, cover, artist: false });
+    })));
     if !tracks.is_empty() {
+        out.push(Entry::Row(menu_row("la-wave", &icons::SPARKLE, S::WaveByPlaylist.get(lang), false).on_press(|s: &mut State| {
+            s.close_popover();
+            let title = S::LikedTracks.get(s.lang).to_owned();
+            s.start_station(&Station::Collection, &title);
+        })));
+        out.push(Entry::Row(menu_row("la-shuffle", &icons::SHUFFLE, S::Shuffle.get(lang), false).on_press(|s: &mut State| {
+            s.close_popover();
+            let list = s.list(ListSrc::Liked);
+            s.play_all(list, true);
+        })));
         out.push(Entry::Row(menu_row("la-next", &icons::QUEUE_NEXT, S::PlayAllNext.get(lang), false).on_press(|s: &mut State| {
             s.close_popover();
             let list = s.list(ListSrc::Liked);
@@ -58,6 +76,49 @@ pub(super) fn liked_entries(s: &State) -> Vec<Entry> {
             out.push(Entry::Divider);
         }
         out.push(Entry::Row(menu_row("la-share", &icons::COPY, S::CopyLink.get(lang), false).on_press_tx(move |s: &mut State, tx: &mut rune::Tx| {
+            s.close_popover();
+            tx.copy(link.clone());
+            let text = s.tr(S::LinkCopied);
+            s.toast(text);
+        })));
+    }
+    out
+}
+
+pub(super) fn card_entries(s: &State, item: &CardMenu) -> Vec<Entry> {
+    let lang = s.lang;
+    let mut out: Vec<Entry> = Vec::new();
+    let open_page = item.page.clone();
+    out.push(Entry::Row(menu_row("card-open", &icons::CHEVRON_RIGHT, S::Open.get(lang), false).on_press(move |s: &mut State| {
+        s.close_popover();
+        s.go(open_page.clone());
+    })));
+    if let Some(station) = item.station.clone() {
+        let name = item.title.clone();
+        out.push(Entry::Row(menu_row("card-wave", &icons::SPARKLE, S::WaveByRelease.get(lang), false).on_press(move |s: &mut State| {
+            s.close_popover();
+            s.start_station(&station, &name);
+        })));
+    }
+    out.push(Entry::Divider);
+    let pinned = s.is_page_pinned(&item.page);
+    let pin_item = PinnedItem { page: item.page.clone(), title: item.title.clone(), cover: item.cover.clone(), artist: false };
+    let (pin_ic, pin_lbl) = if pinned { (&icons::PIN_OFF, S::Unpin) } else { (&icons::PIN, S::Pin) };
+    out.push(Entry::Row(menu_row("card-pin", pin_ic, pin_lbl.get(lang), pinned).on_press(move |s: &mut State| {
+        s.close_popover();
+        s.toggle_pin_item(pin_item.clone());
+    })));
+    if let Some(like_key) = item.like_key.clone() {
+        let liked = s.is_item_liked(&like_key);
+        let (ic, lbl) = if liked { (&icons::HEART_FILL, S::RemoveFromCollection) } else { (&icons::HEART, S::AddToCollection) };
+        out.push(Entry::Row(menu_row("card-like", ic, lbl.get(lang), false).on_press(move |s: &mut State| {
+            s.close_popover();
+            s.toggle_item_like(&like_key);
+        })));
+    }
+    if let Some(link) = item.link.clone() {
+        out.push(Entry::Divider);
+        out.push(Entry::Row(menu_row("card-share", &icons::COPY, S::CopyLink.get(lang), false).on_press_tx(move |s: &mut State, tx: &mut rune::Tx| {
             s.close_popover();
             tx.copy(link.clone());
             let text = s.tr(S::LinkCopied);

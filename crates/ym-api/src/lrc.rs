@@ -77,6 +77,8 @@ pub fn join_words(words: &[LyricWord]) -> String {
 pub enum LyricsSource {
     #[default]
     Yandex,
+    SpicyLyrics,
+    Musixmatch,
     Lrclib,
     /// lrc.red: word-synced, and its terms ask for a visible credit.
     LrcRed,

@@ -111,6 +111,11 @@ pub(super) fn general(s: &State, k: &rune_kit::Kit) -> Vec<El> {
             s.mark_settings_dirty();
         }
     });
+    let bugs_ok = shaders_on && !s.settings.reduce_motion;
+    let butterflies = toggle_enabled(k, s.settings.butterflies && bugs_ok, bugs_ok, S::Butterflies.get(lang), |s| {
+        s.settings.butterflies = !s.settings.butterflies;
+        s.mark_settings_dirty();
+    });
     let cpu = toggle(k, s.settings.cpu_mode, S::CpuMode.get(lang), |s| {
         s.settings.cpu_mode = !s.settings.cpu_mode;
         s.restart_now();
@@ -159,6 +164,7 @@ pub(super) fn general(s: &State, k: &rune_kit::Kit) -> Vec<El> {
             Some(S::SetGraphics.get(lang)),
             vec![
                 item_enabled(S::Shaders.get(lang), None, shaders, !cpu_running),
+                item_enabled(S::Butterflies.get(lang), None, butterflies, bugs_ok),
                 item(S::CpuMode.get(lang), Some(S::CpuModeNote.get(lang)), cpu),
                 item(S::ReduceMotion.get(lang), None, motion),
             ],

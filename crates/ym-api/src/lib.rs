@@ -29,11 +29,11 @@ pub mod rotor;
 pub mod sign;
 pub mod wave;
 
-pub use client::{Client, Likeable, Quality, SearchKind, StreamInfo, WaveEvent};
+pub use client::{AudioResponse, Client, Likeable, Quality, SearchKind, StreamInfo, WaveEvent};
 pub use discover::{Chart, ChartEntry};
 pub use error::{Error, Result};
 pub use library::{PlayReport, QueueInfo, Visibility, device_header};
 pub use lrc::{LyricLine, LyricWord, Lyrics, LyricsSource, join_words};
 pub use models::*;
-pub use rotor::{RotorSession, Station, WaveSettings};
+pub use rotor::{RotorSession, Station, WaveSettings, WheelItem};
 pub use wave::{WAVE_PRESETS, WaveGroup, WavePreset};

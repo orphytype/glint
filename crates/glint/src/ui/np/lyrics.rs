@@ -123,7 +123,6 @@ pub fn part_name(part: &str, lang: Lang) -> String {
 
 struct LineCtx {
     style: rune::TextStyle,
-    back: f32,
     pos_ms: u32,
     synced: bool,
     align: u8,
@@ -131,9 +130,38 @@ struct LineCtx {
     reduce: bool,
     cpu: bool,
     resizing: bool,
+    hover: bool,
 }
 
-fn lyric_line(i: usize, line: &LyricLine, active: bool, near: bool, ctx: &LineCtx) -> El {
+/// Computes progressive per-line opacity matching Yandex Music's synced lyrics view:
+/// - active line: full brightness (`1.0`);
+/// - upcoming lines below: progressively dimmer with each step (`+1`, `+2`, `+3`, ...);
+/// - past lines above: hidden normally (`0.0`), and softly visible on hover (`-1`, `-2`, ...).
+fn stepped_opacity(delta: isize, hover: bool) -> f32 {
+    if delta == 0 {
+        1.0
+    } else if delta > 0 {
+        match delta {
+            1 => 0.42,
+            2 => 0.25,
+            3 => 0.15,
+            4 => 0.09,
+            _ => 0.05,
+        }
+    } else if hover {
+        match -delta {
+            1 => 0.30,
+            2 => 0.19,
+            3 => 0.11,
+            4 => 0.07,
+            _ => 0.04,
+        }
+    } else {
+        0.0
+    }
+}
+
+fn lyric_line(i: usize, line: &LyricLine, active: bool, delta: isize, near: bool, ctx: &LineCtx) -> El {
     let (side, ox) = match ctx.align {
         1 => (rune::Align::Center, 0.5),
         2 => (rune::Align::End, 1.0),
@@ -141,7 +169,7 @@ fn lyric_line(i: usize, line: &LyricLine, active: bool, near: bool, ctx: &LineCt
     };
     let timed = !line.words.is_empty();
     let main = if timed { join_words(&line.words) } else { line.text.clone() };
-    let target_opacity = if !ctx.synced { 0.95 } else if active { 1.0 } else { ctx.back };
+    let target_opacity = if !ctx.synced { 0.95 } else { stepped_opacity(delta, ctx.hover) };
     // Only animate lines close to the active line on GPU; CPU mode skips scale transforms &
     // spring allocations completely so lyrics stay ultra-lightweight.
     let anim: rune::Anim = if ctx.reduce || ctx.cpu || ctx.resizing || !near {
@@ -283,31 +311,49 @@ pub(super) fn lyrics_view(s: &State, p: &Pal, x: f32, w: f32, h: f32) -> El {
             }
             let cpu = crate::fx::cpu_mode();
             let pos_bucket = pos / if cpu { 80 } else { 55 };
-            let ctx = LineCtx { style, back: 0.30, pos_ms: pos, synced: l.synced, align: look.align, font: look.font, reduce: s.settings.reduce_motion, cpu, resizing: s.is_resizing() };
+            let hover = s.lyrics.hover;
+            let ctx = LineCtx { style, pos_ms: pos, synced: l.synced, align: look.align, font: look.font, reduce: s.settings.reduce_motion, cpu, resizing: s.is_resizing(), hover };
             for (i, line) in l.lines.iter().enumerate() {
                 if line.text.trim().is_empty() && line.words.is_empty() {
                     lines = lines.child(el().key(format!("ly-{i}")).h(20.0));
                     continue;
                 }
+                let delta: isize = match active {
+                    Some(a) => i as isize - a as isize,
+                    None => i as isize + 1,
+                };
                 if l.synced
                     && let Some(part) = line.part.as_deref()
                 {
                     let name = part_name(part, lang);
-                    let caps = kit::caps(name.as_str(), th::text3()).w_full().align(match look.align {
-                        1 => rune::Align::Center,
-                        2 => rune::Align::End,
-                        _ => rune::Align::Start,
-                    });
+                    let part_op = stepped_opacity(delta, hover);
+                    let caps = kit::caps(name.as_str(), th::text3())
+                        .w_full()
+                        .opacity(part_op)
+                        .align(match look.align {
+                            1 => rune::Align::Center,
+                            2 => rune::Align::End,
+                            _ => rune::Align::Start,
+                        });
                     lines = lines.child(caps.mt(if i == 0 { 0.0 } else { 18.0 }));
                 }
                 let is_active = l.synced && active == Some(i);
                 let near = active.is_none_or(|a| i.abs_diff(a) <= 6);
                 let row_el = if is_active && !ctx.reduce && (!line.words.is_empty() || !line.backing.is_empty()) {
                     let version = (s.lyrics_gen, pos_bucket, look.size, look.align, look.font, ctx.cpu, ctx.resizing, th::light());
-                    rune::memo(format!("ly-memo-{i}"), version, || lyric_line(i, line, true, true, &ctx))
+                    rune::memo(format!("ly-memo-{i}"), version, || lyric_line(i, line, true, 0, true, &ctx))
                 } else {
-                    let version = (s.lyrics_gen, is_active, near, l.synced, look.size, look.align, look.font, ctx.reduce, ctx.cpu, ctx.resizing, th::light());
-                    rune::memo(format!("ly-memo-{i}"), version, || lyric_line(i, line, is_active, near, &ctx))
+                    let delta_bucket = delta.clamp(-5, 5);
+                    let flags = u8::from(is_active)
+                        | (u8::from(hover) << 1)
+                        | (u8::from(near) << 2)
+                        | (u8::from(l.synced) << 3)
+                        | (u8::from(ctx.reduce) << 4)
+                        | (u8::from(ctx.cpu) << 5)
+                        | (u8::from(ctx.resizing) << 6)
+                        | (u8::from(th::light()) << 7);
+                    let version = (s.lyrics_gen, delta_bucket, flags, look.size, look.align, look.font);
+                    rune::memo(format!("ly-memo-{i}"), version, || lyric_line(i, line, is_active, delta, near, &ctx))
                 };
                 lines = lines.child(row_el);
             }
@@ -319,7 +365,16 @@ pub(super) fn lyrics_view(s: &State, p: &Pal, x: f32, w: f32, h: f32) -> El {
                 };
                 lines = lines.child(row_c.child(c).mt(12.0));
             }
-            col().key("np-lyrics").absolute(x, vp_top).w(w).h(vp_h).motion(rune::Spring::NONE).scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(56.0).child(lines)
+            col()
+                .key("np-lyrics")
+                .absolute(x, vp_top)
+                .w(w)
+                .h(vp_h)
+                .motion(rune::Spring::NONE)
+                .on_hover_change(|s: &mut State, on: bool, _tx: &mut Tx| s.lyrics.hover = on)
+                .scroll(ScrollSpec { stick_bottom: false })
+                .scroll_edge_fade(56.0)
+                .child(lines)
         }
     }
 }

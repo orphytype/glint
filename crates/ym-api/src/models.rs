@@ -151,6 +151,14 @@ pub struct LyricsInfo {
     pub has_available_text_lyrics: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TrackParameters {
+    pub bpm: Option<f32>,
+    pub energy: Option<f32>,
+    pub hue: Option<f32>,
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Track {
@@ -170,6 +178,7 @@ pub struct Track {
     pub og_image: Option<String>,
     pub lyrics_info: Option<LyricsInfo>,
     pub content_warning: Option<String>,
+    pub track_parameters: Option<TrackParameters>,
 }
 
 impl Track {
@@ -250,6 +259,13 @@ pub struct Album {
     #[serde(deserialize_with = "de_labels")]
     pub labels: Vec<String>,
     pub likes_count: Option<u64>,
+    pub content_warning: Option<String>,
+}
+
+impl Album {
+    pub fn is_explicit(&self) -> bool {
+        self.content_warning.as_deref() == Some("explicit")
+    }
 }
 
 /// A label list: `[{"id": 1, "name": "x"}]` or `["x"]`; anything else is skipped.

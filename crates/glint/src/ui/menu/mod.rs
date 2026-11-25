@@ -116,10 +116,14 @@ pub(super) fn flow_menu(name: &'static str, t: f32, open: bool, flow: &Flow, ent
         };
         items = items.child(if a < 0.999 { el.opacity(a) } else { el });
     }
-    let mut card = el().key(format!("{name}-card")).absolute(x, y).w(w).h(h).radius(radius).children(kit::frost(radius, skin)).transition(Transition::none()).child(items);
-    if t < 0.995 {
-        card = card.clip_rounded(radius);
-    }
+    let body = if t < 0.995 {
+        el().key(format!("{name}-clip")).absolute(0.0, 0.0).w(w).h(h).clip_rounded(radius).transition(Transition::none()).child(items)
+    } else {
+        items
+    };
+    // Keep `kit::frost` outside `clip_rounded` so `Glass::Menu` paints live backdrop blur from the
+    // very first frame of opening instead of being skipped inside an offscreen clip layer.
+    let card = el().key(format!("{name}-card")).absolute(x, y).w(w).h(h).radius(radius).children(kit::frost(radius, skin)).transition(Transition::none()).child(body);
     let card = if open { card.modal(true, move |s: &mut State| close(s)) } else { card };
 
     let mut layer = el().key(format!("{name}-layer")).absolute(0.0, 0.0).w_full().h_full().transition(Transition::none()).instant_changes();
@@ -137,6 +141,7 @@ pub fn popover(s: &State, cx: &Cx<State>, w: f32, h: f32) -> El {
     let Some(p) = &s.popover else { return el() };
     let (list, width) = match p {
         Popover::Actions { .. } => (popovers::action_entries(s), 228.0),
+        Popover::Card { item, .. } => (popovers::card_entries(s, item), 228.0),
         Popover::Waves { choices, .. } => (popovers::wave_entries(s, choices), 276.0),
         Popover::Quality { .. } => (popovers::quality_entries(s), 248.0),
         Popover::Stage { .. } => {
@@ -226,7 +231,11 @@ pub fn volume(s: &State, cx: &Cx<State>, w: f32, h: f32) -> El {
         .center()
         .transition(Transition::none())
         .child(label(format!("{pct}"), th::MONO, th::text2()).opacity(((t - 0.15) / 0.3).clamp(0.0, 1.0)));
-    let mut card = el()
+    let mut inner = el().key("vol-inner").absolute(0.0, 0.0).w(cw).h(ch).transition(Transition::none()).child(number).child(field);
+    if t < 0.995 {
+        inner = inner.clip_rounded(radius);
+    }
+    let card = el()
         .key("vol-card")
         .absolute(x, y)
         .w(cw)
@@ -245,11 +254,7 @@ pub fn volume(s: &State, cx: &Cx<State>, w: f32, h: f32) -> El {
                 s.vol_close_at = Some(s.now + 0.28);
             }
         })
-        .child(number)
-        .child(field);
-    if t < 0.995 {
-        card = card.clip_rounded(radius);
-    }
+        .child(inner);
     el().key("vol-layer").absolute(0.0, 0.0).w(0.0).h(0.0).transition(Transition::none()).child(kit::snapshot().key("vol-snap").w(w).h(h)).child(card)
 }
 

@@ -82,9 +82,17 @@ pub(super) fn queue_view(s: &State, p: &Pal, x: f32, w: f32, h: f32) -> El {
         .motion(rune::Spring::NONE)
         .scroll(ScrollSpec { stick_bottom: false })
         .scroll_edge_fade(44.0)
-        // The panel lands its changes at once, but its rows move on a spring: when the next track
-        // starts, the one that played slides up past "Now playing" and the new one takes its place.
-        .child(col().w_full().pt(QUEUE_TOP).pb((h * 0.48).max(72.0)).animated_changes().motion(th::SLIDE).child(rows))
+        // Animate row positions only during track advance or drag reorder so opening Queue for the
+        // first time slides in cleanly without rows jumping.
+        .child(
+            col()
+                .w_full()
+                .pt(QUEUE_TOP)
+                .pb((h * 0.48).max(72.0))
+                .animated_changes()
+                .motion(if s.queue_passing.is_some() || s.row_drag.as_ref().is_some_and(|d| d.queue) { th::SLIDE } else { rune::Spring::NONE })
+                .child(rows),
+        )
 }
 
 /// Right of a heading, its text ends where the durations of the rows below end.

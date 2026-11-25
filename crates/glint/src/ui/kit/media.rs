@@ -44,6 +44,16 @@ pub fn cover_sm(s: &State, template: Option<&str>, pt: f32, radius: f32) -> El {
     cover_px(s, template, crate::art::COVER_SM, pt, radius)
 }
 
+/// Frameless image loaded at 200x200 with transparent background and no border, used for Yandex
+/// Music's wheel artwork (transparent vibe PNGs, circular artist photos, and release covers).
+pub fn wheel_art(s: &State, template: Option<&str>, pt: f32, radius: f32) -> El {
+    let base = el().w(pt).h(pt).radius(radius).transition(Transition::none());
+    match State::cover_key_px(template, crate::art::COVER_CARD) {
+        Some(key) => base.child(picture(s, &key, "wheel", [radius; 4])),
+        None => base,
+    }
+}
+
 /// Borderless cover tile for collages framed by one outer border.
 pub fn cover_tile(s: &State, template: Option<&str>, pt: f32, corners: [f32; 4]) -> El {
     let base = el().w(pt).h(pt).corners(corners).fill(veil(0.06)).transition(Transition::none());

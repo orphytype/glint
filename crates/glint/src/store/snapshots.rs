@@ -14,6 +14,7 @@ pub struct HomeSnapshot {
     pub account: Option<ym_api::Account>,
     pub avatar: Option<String>,
     pub home: Vec<ym_api::Shelf>,
+    pub wheel: Vec<ym_api::WheelItem>,
 }
 
 /// What was playing when Glint last closed: the queue, the track in it and where in that track,

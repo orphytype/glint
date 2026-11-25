@@ -167,18 +167,20 @@ fn track_entries(s: &State, m: &TrackMenu, h: f32) -> Vec<Entry> {
     })));
 
     out.push(Entry::Divider);
-    if m.player && s.np_open {
+    if m.player && (s.np_open || s.page == Page::Home) {
         let anchor = match &m.anchor {
             PopupAnchor::Key(key) => key.clone(),
-            _ => "np-more".to_owned(),
+            _ => if s.np_open { "np-more" } else { "hm-more" }.to_owned(),
         };
         let look_anchor = anchor.clone();
         out.push(Entry::Row(row_of("tm-quality", np_icons::quality_icon(s.settings.quality), S::Quality.get(lang)).on_press(move |s: &mut State| {
             s.open_popover(Popover::Quality { anchor: anchor.clone() });
         })));
-        out.push(Entry::Row(row_of("tm-look", &np_icons::LOOK, S::StageLook.get(lang)).on_press(move |s: &mut State| {
-            s.open_popover(Popover::Stage { anchor: look_anchor.clone() });
-        })));
+        if s.np_open {
+            out.push(Entry::Row(row_of("tm-look", &np_icons::LOOK, S::StageLook.get(lang)).on_press(move |s: &mut State| {
+                s.open_popover(Popover::Stage { anchor: look_anchor.clone() });
+            })));
+        }
     }
     if m.player {
         out.push(Entry::Row(row_of("tm-mini", &np_icons::MINI, S::MiniPlayer.get(lang)).on_press(|s: &mut State| {

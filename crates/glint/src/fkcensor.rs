@@ -406,6 +406,7 @@ fn album_stub(album: &Album) -> Album {
         volumes: Vec::new(),
         labels: Vec::new(),
         likes_count: album.likes_count,
+        content_warning: album.content_warning.clone(),
     }
 }
 

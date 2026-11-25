@@ -21,6 +21,7 @@ mod drive;
 mod engine;
 pub mod eq;
 mod source;
+mod stream;
 mod tone;
 mod waveform;
 
@@ -32,6 +33,7 @@ pub use drive::Drive;
 pub use engine::Engine;
 pub use eq::{BAND_HZ, BANDS, EqSettings, MAX_GAIN_DB, PRESETS};
 pub use source::AudioData;
+pub use stream::{StreamBuf, StreamHandle, StreamWriter};
 pub use tone::{Tone, midi};
 pub use waveform::waveform;
 
@@ -91,6 +93,6 @@ pub struct PlaybackState {
 
 /// Probes an audio buffer for its duration in milliseconds without playing it.
 pub fn probe_duration_ms(audio: impl Into<AudioData>, ext: &str) -> Option<u64> {
-    let track = source::Track::open(0, audio.into(), &LoadHint::default().ext(ext)).ok()?;
+    let track = source::Track::open_sync(0, audio.into(), &LoadHint::default().ext(ext)).ok()?;
     track.duration.map(|d| d.as_millis() as u64)
 }

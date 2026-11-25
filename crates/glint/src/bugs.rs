@@ -125,6 +125,8 @@ pub struct Bug {
     mode: Mode,
     pub off: Live<[f32; 2]>,
     pub scale: Live<f32>,
+    last_off: [f32; 2],
+    last_scale: f32,
 }
 
 impl Bug {
@@ -133,10 +135,18 @@ impl Bug {
         (self.span * 1.9).round()
     }
 
-    fn publish(&self) {
+    fn publish(&mut self) {
         let b = self.boxed();
-        self.off.set([self.pos[0] - b * 0.5, self.pos[1] - b * 0.5]);
-        self.scale.set(0.8 + 0.36 * self.z);
+        let next_off = [self.pos[0] - b * 0.5, self.pos[1] - b * 0.5];
+        let next_scale = 0.8 + 0.36 * self.z;
+        if (next_off[0] - self.last_off[0]).abs() > 0.05 || (next_off[1] - self.last_off[1]).abs() > 0.05 {
+            self.last_off = next_off;
+            self.off.set(next_off);
+        }
+        if (next_scale - self.last_scale).abs() > 0.002 {
+            self.last_scale = next_scale;
+            self.scale.set(next_scale);
+        }
     }
 }
 
@@ -150,14 +160,14 @@ pub struct Swarm {
 impl Swarm {
     pub fn new(seed: u64) -> Swarm {
         let mut rng = Rng::new(seed ^ 0x6275_6773);
-        let n = 3 + rng.pick(2);
+        let n = 3;
         // Colours apart from each other around the wheel, from one start.
         let h0 = rng.range(0.0, 360.0);
         let bugs = (0..n)
             .map(|i| Bug {
                 seed: rng.seed(),
                 hue: (h0 + i as f32 * 360.0 / n as f32 + rng.range(-25.0, 25.0)).rem_euclid(360.0),
-                span: rng.range(40.0, 56.0),
+                span: rng.range(38.0, 52.0),
                 pos: [0.0, 0.0],
                 heading: rng.range(0.0, TAU),
                 open: 1.0,
@@ -175,6 +185,8 @@ impl Swarm {
                 mode: Mode::Wander { until: 0.0 },
                 off: Live::new([-200.0, -200.0]),
                 scale: Live::new(1.0),
+                last_off: [-200.0, -200.0],
+                last_scale: 1.0,
             })
             .collect();
         Swarm { seed, bugs, rng, placed: false }
@@ -225,17 +237,21 @@ impl Swarm {
         }
         let mut soonest = 2.0f64;
         let mut busy = false;
-        for i in 0..self.bugs.len() {
-            let taken: Vec<u64> = self
-                .bugs
-                .iter()
-                .enumerate()
-                .filter(|(j, _)| *j != i)
-                .filter_map(|(_, o)| match o.mode {
-                    Mode::Approach { spot, .. } | Mode::Landed { spot, .. } => Some(spot),
-                    _ => None,
-                })
-                .collect();
+        let bug_count = self.bugs.len();
+        for i in 0..bug_count {
+            // Stack-only taken-spot ids (at most a handful of bugs, zero heap allocation per frame).
+            let mut taken = [0u64; 8];
+            let mut taken_n = 0usize;
+            for (j, o) in self.bugs.iter().enumerate() {
+                if j != i
+                    && taken_n < taken.len()
+                    && let Mode::Approach { spot, .. } | Mode::Landed { spot, .. } = o.mode
+                {
+                    taken[taken_n] = spot;
+                    taken_n += 1;
+                }
+            }
+            let taken = &taken[..taken_n];
             let rng = &mut self.rng;
             let b = &mut self.bugs[i];
             match b.mode {
@@ -266,26 +282,21 @@ impl Swarm {
                         b.beating = true;
                         b.beat_until = now + 1.0;
                     } else if ft >= 1.1 {
-                        soonest = soonest.min((b.flick_at - now).min(until - now).max(0.016));
+                        soonest = soonest.min((b.flick_at - now).min(until - now).max(0.033));
                     }
                     b.publish();
                     continue;
                 }
                 Mode::Wander { until } if now >= until => {
-                    // Pick somewhere free to settle that can be seen.
-                    let free: Vec<&Spot> = g
-                        .spots
-                        .iter()
-                        .filter(|s| !taken.contains(&s.id))
-                        .filter(|s| {
-                            let c = s.centre();
-                            c[1] > by[0] && c[1] < by[1]
-                        })
-                        .collect();
-                    if free.is_empty() {
+                    // Pick somewhere free to settle that can be seen (two-pass, zero allocation).
+                    let is_free = |s: &&Spot| {
+                        let c = s.centre();
+                        !taken.contains(&s.id) && c[1] > by[0] && c[1] < by[1]
+                    };
+                    let free_n = g.spots.iter().filter(is_free).count();
+                    if free_n == 0 {
                         b.mode = Mode::Wander { until: now + 3.0 };
-                    } else {
-                        let s = free[rng.pick(free.len())];
+                    } else if let Some(s) = g.spots.iter().filter(is_free).nth(rng.pick(free_n)) {
                         let p = s.perch(rng);
                         b.mode = Mode::Approach { spot: s.id, at: [p[0] - s.rect[0], p[1] - s.rect[1]] };
                     }
@@ -412,6 +423,6 @@ impl Swarm {
             b.z += (z_want - b.z) * (1.0 - (-dt * 2.0).exp());
             b.publish();
         }
-        if busy { Some(Duration::from_millis(16)) } else { Some(Duration::from_secs_f64(soonest.max(0.016))) }
+        if busy { Some(Duration::from_millis(33)) } else { Some(Duration::from_secs_f64(soonest.max(0.033))) }
     }
 }

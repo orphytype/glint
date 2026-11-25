@@ -281,6 +281,7 @@ strings! {
     WaveByArtist => "My Wave by artist", "Моя волна по исполнителю";
     WaveByRelease => "My Wave by release", "Моя волна по релизу";
     WaveByCollection => "My Wave by collection", "Моя волна по коллекции";
+    WaveByPlaylist => "My Wave by playlist", "Моя волна по плейлисту";
     ByTrack => "By track", "По треку";
     ByArtist => "By artist", "По исполнителю";
     ByRelease => "By release", "По релизу";
@@ -392,6 +393,7 @@ strings! {
     AccentAdaptive => "From cover", "В цвет обложки";
     Effects => "Background effects", "Эффекты фона";
     Shaders => "Shaders", "Шейдеры";
+    Butterflies => "Butterflies on Home", "Бабочки на главной";
     CpuMode => "CPU mode", "Режим процессора";
     CpuModeNote => "Uses less memory, restarts the app", "Меньше памяти, перезапустит приложение";
     ReduceMotion => "Disable animations", "Отключить анимации";

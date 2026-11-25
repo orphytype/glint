@@ -1,9 +1,9 @@
-//! Home's editorial My Wave layout: a full-bleed 3D-textured fluid wave backdrop behind a centered,
-//! fully responsive two-column composition holding the hero player stage on the left and a refined
-//! infinitely looping Cormorant preset arc wheel on the right at every window size.
+//! Home's My Wave layout: a fluid procedural wave backdrop behind a centered, responsive
+//! two-column composition holding the hero player stage on the left and Yandex Music's
+//! infinitely looping personalized wave wheel on the right.
 
 use crate::fx::Slot as _;
-use rune::{Align, Cursor, El, TextStyle, Transition, Tx, col, el, icon, row};
+use rune::{Align, Cursor, Drag, El, Phase, TextStyle, Transition, Tx, col, el, icon, row};
 
 use super::shared::{start_wave_with, wave_hue, wave_title};
 use crate::app::{FromName, Page, PlayingFrom, State};
@@ -16,27 +16,33 @@ use crate::ui::{
     np_icons as ni,
 };
 
-/// Curated arc order of all 12 My Wave presets: Favorite sits cleanly between Discover and Popular
-/// near the center of the wheel, and Russian sits at the end right before Foreign.
-const ARC_PRESETS: [&str; 12] = [
-    "workbackground",
-    "fun",
-    "energetic",
-    "onyourwave",
-    "discover",
-    "favorite",
-    "popular",
-    "calm",
-    "sad",
-    "without-words",
-    "russian",
-    "not-russian",
-];
+/// Converts an `[r, g, b]` tint into a hue angle in `0..360` for the fluid wave backdrop.
+fn rgb_hue([r, g, b]: [u8; 3]) -> f32 {
+    let (rf, gf, bf) = (f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0);
+    let max = rf.max(gf).max(bf);
+    let min = rf.min(gf).min(bf);
+    let d = max - min;
+    if d < 1e-4 {
+        return 222.0;
+    }
+    let h = if (max - rf).abs() < 1e-5 {
+        ((gf - bf) / d).rem_euclid(6.0)
+    } else if (max - gf).abs() < 1e-5 {
+        (bf - rf) / d + 2.0
+    } else {
+        (rf - gf) / d + 4.0
+    };
+    (h * 60.0).rem_euclid(360.0)
+}
 
 /// Layout keys that butterflies perch on or steer around when enabled in Settings.
-pub fn bug_spots(s: &State) -> Vec<(String, bool)> {
-    let seed = s.home_seed;
-    vec![("hm-stage".to_owned(), true), ("hm-arc".to_owned(), false), (format!("hm-wave-shape-{seed}"), true)]
+pub fn bug_spots(_s: &State) -> Vec<(String, bool)> {
+    vec![
+        ("hm-cover".to_owned(), false),
+        ("hm-source".to_owned(), false),
+        ("hm-control-bar".to_owned(), false),
+        ("hm-track-title".to_owned(), false),
+    ]
 }
 
 pub(super) fn bug_layer(s: &State) -> El {
@@ -97,11 +103,11 @@ fn stage_eyebrow(s: &State, cur: Option<&ym_api::Track>, wave_on: bool, stage_w:
     let lang = s.lang;
     let (chip_bg, chip_border, cell_hov) = colors;
     let eyebrow_col = if th::light() { th::rgb(0x9e6300) } else { th::rgb(0xffdc4e) };
-    let pill_h = even(26.0 * u, 22.0, 28.0);
-    let pill_px = (12.0 * u).clamp(9.0, 14.0).round();
+    let pill_h = even(28.0 * u, 24.0, 30.0);
+    let pill_px = (16.0 * u).clamp(13.0, 18.0).round();
     let font_sz = (12.5 * u).clamp(11.0, 13.5);
     let glyph_sz = even(13.5 * u, 12.0, 14.0);
-    let max_pill = (stage_w - 40.0).clamp(140.0, 260.0);
+    let max_pill = (stage_w - 32.0).clamp(160.0, 300.0);
 
     let wave_pill = |text: String| {
         row()
@@ -109,7 +115,7 @@ fn stage_eyebrow(s: &State, cur: Option<&ym_api::Track>, wave_on: bool, stage_w:
             .h(pill_h)
             .max_w(max_pill)
             .px(pill_px)
-            .gap(6.0)
+            .gap(7.0)
             .radius(pill_h * 0.5)
             .items_center()
             .fill(chip_bg)
@@ -126,6 +132,8 @@ fn stage_eyebrow(s: &State, cur: Option<&ym_api::Track>, wave_on: bool, stage_w:
     if wave_on && s.playing_from.as_ref().is_none_or(|f| f.kind == S::WaveTitle) {
         let title = if s.wave_choice == "onyourwave" {
             S::WaveTitle.get(lang).to_owned()
+        } else if let Some(w) = s.wheel_wave(&s.wave_choice) {
+            format!("{} · {}", S::WaveShort.get(lang), w.name)
         } else {
             format!("{} · {}", S::WaveShort.get(lang), wave_title(&s.wave_choice).get(lang))
         };
@@ -153,7 +161,7 @@ fn stage_eyebrow(s: &State, cur: Option<&ym_api::Track>, wave_on: bool, stage_w:
         .h(pill_h)
         .max_w(max_pill)
         .px(pill_px)
-        .gap(6.0)
+        .gap(7.0)
         .radius(pill_h * 0.5)
         .items_center()
         .fill(chip_bg)
@@ -181,10 +189,13 @@ pub(super) fn garden(s: &State, cw: f32, h: f32) -> El {
     let cur = s.current();
     let has_track = cur.is_some();
     let playing = has_track && s.player.playing;
-    let mood_name = wave_title(&s.wave_choice).get(lang).to_owned();
+    let selected_wheel = s.wheel_wave(&s.wave_choice);
+    let mood_name = selected_wheel.map(|w| w.name.clone()).unwrap_or_else(|| wave_title(&s.wave_choice).get(lang).to_owned());
 
     let hue = if !crate::fx::wave_ready() && has_track && s.palette.wave[1] > 0.12 {
         s.palette.wave[0]
+    } else if let Some(rgb) = selected_wheel.and_then(|w| w.color) {
+        rgb_hue(rgb)
     } else {
         wave_hue(&s.wave_choice)
     };
@@ -240,15 +251,20 @@ pub(super) fn garden(s: &State, cw: f32, h: f32) -> El {
     let (eyebrow, eyebrow_h) = stage_eyebrow(s, cur, wave_on, stage_w, u, (chip_bg, chip_border, cell_hov));
     let eyebrow = recede_el(eyebrow, stay, -12.0);
 
-    // Dynamic even-pixel control sizing so compact windows stay crisp and every icon stays dead-center.
-    let btn_s = even(38.0 * u, 30.0, 40.0);
-    let play_s = even(46.0 * u, 36.0, 48.0);
-    let ic_sm = even(18.0 * u, 14.0, 18.0);
-    let ic_md = even(20.0 * u, 16.0, 20.0);
-    let bar_h = play_s + 14.0;
-    let bar_px = (10.0 * u).clamp(6.0, 12.0).round();
-    let div_mx = (6.0 * u).clamp(3.0, 8.0).round();
+    // Dynamic even-pixel control sizing with a compact play/pause circle and a slim seek bar
+    // resting directly on the top edge of the control pill.
+    let btn_s = even(34.0 * u, 28.0, 36.0);
+    let play_s = even(32.0 * u, 28.0, 34.0);
+    let play_ic = even(15.0 * u, 13.0, 16.0);
+    let ic_sm = even(17.0 * u, 14.0, 18.0);
+    let ic_md = even(18.0 * u, 15.0, 19.0);
+    let bar_h = even(48.0 * u, 42.0, 50.0);
+    let bar_px = (9.0 * u).clamp(6.0, 11.0).round();
+    let div_mx = (5.0 * u).clamp(3.0, 7.0).round();
     let play_mx = (4.0 * u).clamp(2.0, 5.0).round();
+    let bar_w = (2.0 * bar_px + 6.0 * btn_s + play_s + 2.0 * play_mx + 2.0 * (1.0 + 2.0 * div_mx) + 8.0 * 2.0).round();
+    let seek_inset = (bar_h * 0.5).round();
+    let seek_w = (bar_w - 2.0 * seek_inset).max(120.0).round();
 
     let cover_side = even(196.0 * u, 112.0, 224.0);
     let cover_r = (cover_side * 0.115).clamp(14.0, 24.0).round();
@@ -259,9 +275,9 @@ pub(super) fn garden(s: &State, cw: f32, h: f32) -> El {
     let art_sz = (14.5 * u).clamp(12.0, 16.0);
     let art_lh = (art_sz + 5.0).round();
     let art_mt = (3.0 * u).clamp(2.0, 5.0).round();
-    let bar_mt = (16.0 * u).clamp(10.0, 20.0).round();
+    let bar_mt = (22.0 * u).clamp(14.0, 26.0).round();
 
-    // Lock the 3D wave ring dead center onto the album cover (left half of the centered band).
+    // Lock the wave ring dead center onto the album cover (left half of the centered band).
     let stage_cx = content_x + stage_w * 0.5;
     let cover_cy = if has_track {
         let above = eyebrow_h + cover_mt;
@@ -343,14 +359,14 @@ pub(super) fn garden(s: &State, cw: f32, h: f32) -> El {
     let play_bg = if light { th::rgb(0x141418).alpha(0.92) } else { th::rgb(0xffffff).alpha(0.95) };
     let play_fg = if light { th::rgb(0xffffff) } else { th::rgb(0x101218) };
     let (play_glyph_raw, play_state) = if has_track && s.player.loading {
-        (kit::spin(icon(&icons::SPINNER, ic_md).color(play_fg)), "load")
+        (kit::spin(icon(&icons::SPINNER, play_ic).color(play_fg)), "load")
     } else if playing {
-        (icon(&ni::PAUSE, ic_md).color(play_fg), "pause")
+        (icon(&ni::PAUSE, play_ic).color(play_fg), "pause")
     } else {
-        (icon(&ni::PLAY, ic_md).color(play_fg), "play")
+        (icon(&ni::PLAY, play_ic).color(play_fg), "play")
     };
     let play_glyph = if has_track {
-        kit::swap_glyph(format!("hm-play-{}-{play_state}", play_s as u32), play_glyph_raw, play_s, ic_md, true)
+        kit::swap_glyph(format!("hm-play-{}-{play_state}", play_s as u32), play_glyph_raw, play_s, play_ic, true)
     } else {
         play_glyph_raw
     };
@@ -487,26 +503,64 @@ pub(super) fn garden(s: &State, cw: f32, h: f32) -> El {
         let more_b = bar_icon("hm-more", &ni::MORE, ic_sm, th::text().alpha(0.86), S::More.get(lang))
             .on_press(|s: &mut State| s.open_player_menu(rune::PopupAnchor::Key("hm-more".into())));
 
-        let control_bar = recede_el(
-            row()
-                .key("hm-control-bar")
-                .h(bar_h)
-                .px(bar_px)
-                .gap(2.0)
-                .radius(bar_h * 0.5)
-                .items_center()
-                .justify_center()
-                .fill(bar_bg)
-                .border(1.0, bar_border)
-                .child(vol_btn)
-                .child(dislike_b)
-                .child(divider())
-                .child(prev_btn)
-                .child(play_pill.mx(play_mx))
-                .child(next_btn)
-                .child(divider())
-                .child(like_b)
-                .child(more_b),
+        let frac = if s.player.dur_ms > 0 { (s.player.pos_ms as f32 / s.player.dur_ms as f32).clamp(0.0, 1.0) } else { 0.0 };
+        let (fill_live, thumb_live) = s.update_home_seek_live(seek_w, frac);
+        let thumb_rest = if s.scrubbing { 1.0 } else { 0.0 };
+        let seek_bar = el()
+            .key("hm-seek")
+            .role("slider")
+            .absolute(seek_inset, -4.5)
+            .w(seek_w)
+            .h(12.0)
+            .cursor(Cursor::Pointer)
+            .transition(Transition::none())
+            .hov_group()
+            .on_drag(|s: &mut State, d: &mut Drag, _tx: &mut Tx| {
+                let f = if d.w > 0.0 { (d.x / d.w).clamp(0.0, 1.0) } else { 0.0 };
+                let up = d.phase == Phase::Up;
+                s.scrubbing = !up;
+                s.player.pos_ms = (f as f64 * s.player.dur_ms as f64) as u64;
+                s.sync_lives();
+                if up {
+                    s.seek_frac(f);
+                }
+            })
+            .child(
+                el().key("hm-seek-track")
+                    .absolute(0.0, 4.0)
+                    .w(seek_w)
+                    .h(2.5)
+                    .radius(1.25)
+                    .fill(th::veil(if light { 0.14 } else { 0.22 }))
+                    .hov(th::veil(if light { 0.24 } else { 0.34 }))
+                    .transition(Transition::none())
+                    .child(el().key("hm-seek-fill").radius(1.25).fill(th::text().alpha(0.92)).live_rect(fill_live).transition(Transition::none())),
+            )
+            .child(el().key("hm-seek-thumb").radius(4.0).fill(th::text()).live_rect(thumb_live).gop(thumb_rest, 1.0).transition(Transition::none()));
+
+        let control_pill = row()
+            .key("hm-control-bar")
+            .w(bar_w)
+            .h(bar_h)
+            .px(bar_px)
+            .gap(2.0)
+            .radius(bar_h * 0.5)
+            .items_center()
+            .justify_center()
+            .fill(bar_bg)
+            .border(1.0, bar_border)
+            .child(vol_btn)
+            .child(dislike_b)
+            .child(divider())
+            .child(prev_btn)
+            .child(play_pill.mx(play_mx))
+            .child(next_btn)
+            .child(divider())
+            .child(like_b)
+            .child(more_b);
+
+        let controls_wrap = recede_el(
+            el().key("hm-controls-wrap").w(bar_w).h(bar_h).transition(Transition::none()).child(control_pill).child(seek_bar),
             stay,
             20.0,
         );
@@ -515,18 +569,26 @@ pub(super) fn garden(s: &State, cw: f32, h: f32) -> El {
             .child(cover.mt(cover_mt))
             .child(track_title.mt(title_mt))
             .child(artists_line.mt(art_mt))
-            .child(control_bar.mt(bar_mt));
+            .child(controls_wrap.mt(bar_mt));
     } else {
-        let idle_ic = even(68.0 * u, 46.0, 80.0);
-        let idle_px = blobs::ym_preset_icon(&s.wave_choice, true);
-        let idle_sz = (44.0 * u).clamp(28.0, 52.0).round();
-        let idle_style = TextStyle::new(idle_sz, 500.0).family(th::DISPLAY).italic().tracking(-0.4).lh(idle_sz + 8.0);
+        let idle_ic = even(72.0 * u, 48.0, 84.0);
+        let idle_art = if let Some(w) = selected_wheel
+            && w.cover.is_some()
+        {
+            let r = if w.round { idle_ic * 0.5 } else { 10.0 };
+            kit::wheel_art(s, w.cover.as_deref(), idle_ic, r).mt((18.0 * u).round())
+        } else {
+            let tint = if light { th::rgb(0xc07a00) } else { th::rgb(0xffdc4e) };
+            row().w(idle_ic).h(idle_ic).mt((18.0 * u).round()).center().child(kit::wave_glyph((idle_ic * 0.62).round(), tint))
+        };
+        let idle_sz = (34.0 * u).clamp(24.0, 42.0).round();
+        let idle_style = TextStyle::new(idle_sz, 700.0).family(th::SANS).tracking(-0.4).lh(idle_sz + 8.0);
         let listen_pill = row()
             .key("hero-go")
             .role("button")
             .label(S::Listen.get(lang))
             .h(play_s)
-            .px((22.0 * u).clamp(14.0, 26.0).round())
+            .px((20.0 * u).clamp(14.0, 24.0).round())
             .gap(8.0)
             .radius(play_s * 0.5)
             .center()
@@ -535,7 +597,7 @@ pub(super) fn garden(s: &State, cw: f32, h: f32) -> El {
             .press_scale(0.95)
             .on_press(go)
             .child(play_glyph)
-            .child(label(S::Listen.get(lang), TextStyle::new((15.0 * u).clamp(13.0, 16.0), 650.0).family(th::SANS).lh(20.0), play_fg));
+            .child(label(S::Listen.get(lang), TextStyle::new((14.5 * u).clamp(12.5, 16.0), 650.0).family(th::SANS).lh(20.0), play_fg));
 
         let control_bar = row()
             .key("hm-control-bar")
@@ -554,33 +616,21 @@ pub(super) fn garden(s: &State, cw: f32, h: f32) -> El {
             .child(next_btn);
 
         stage_content = stage_content
-            .child(el().w(idle_ic).h(idle_ic).mt((18.0 * u).round()).pixels_fit(&idle_px, rune::SurfaceFit::Fill))
+            .child(idle_art)
             .child(label(mood_name, idle_style, th::text()).align(Align::Center).max_lines(2).max_w((stage_w - 40.0).max(200.0)).mt((8.0 * u).round()))
             .child(control_bar.mt((28.0 * u).clamp(18.0, 34.0).round()));
     }
 
-    let stage = el()
-        .key("hm-stage")
-        .w(stage_w)
-        .h(stage_h)
-        .transition(Transition::none())
-        .on_hover_change(garden_hover("wave"))
-        .on_pointer_move_any(move |p: rune::PointerEvent, _tx: &mut Tx| {
-            let nx = (p.x / stage_w.max(1.0) - 0.5) * 2.0;
-            let ny = (p.y / stage_h.max(1.0) - 0.5) * 2.0;
-            crate::fx::set_wave_pointer(nx, ny);
-        })
-        .child(stage_content);
+    let stage = el().key("hm-stage").w(stage_w).h(stage_h).transition(Transition::none()).on_hover_change(garden_hover("wave")).child(stage_content);
 
-    // ---- right infinitely-looping Cormorant preset arc wheel -----------------------------------
-    let n = ARC_PRESETS.len() as isize;
-    let ic_box = even(44.0 * arc_u, 28.0, 50.0);
-    let pitch = (stage_h / 8.0).clamp(52.0, 82.0).round();
-    let item_h = (ic_box + 12.0).max(42.0);
+    // ---- right infinitely-looping Yandex Music wave wheel --------------------------------------
+    let ic_box = even(72.0 * arc_u, 48.0, 78.0);
+    let pitch = (stage_h / 7.2).clamp(80.0, 102.0).round();
+    let item_h = (ic_box + 8.0).max(60.0);
     let center_y = stage_h * 0.5;
     let arc_pos = s.wave_arc;
-    let vis_span = (stage_h / (2.0 * pitch) + 1.35).max(4.0);
-    let fade_edge = (stage_h * 0.13).clamp(56.0, 110.0).round();
+    let vis_span = (stage_h / (2.0 * pitch) + 1.35).max(3.5);
+    let fade_edge = (stage_h * 0.14).clamp(56.0, 116.0).round();
 
     let arc_enter = if crate::fx::cpu_mode() {
         Transition::none()
@@ -609,74 +659,131 @@ pub(super) fn garden(s: &State, cw: f32, h: f32) -> El {
             true
         });
 
-    let pad_l = (arc_w * 0.08).clamp(8.0, 42.0).round();
-    let curve = (34.0 * arc_u).clamp(14.0, 42.0);
-    let item_gap = (12.0 * arc_u).clamp(8.0, 16.0).round();
-    let base_slot = arc_pos.round() as isize;
-    let half = vis_span.ceil() as isize;
-    for offset in -half..=half {
-        let slot = base_slot + offset;
-        let rel = slot as f32 - arc_pos;
-        if rel.abs() > vis_span {
-            continue;
+    let pad_l = (arc_w * 0.06).clamp(8.0, 36.0).round();
+    let curve = (32.0 * arc_u).clamp(14.0, 40.0);
+    let item_gap = (16.0 * arc_u).clamp(11.0, 20.0).round();
+    let accent_yellow = if light { th::rgb(0xc07a00) } else { th::rgb(0xffdc4e) };
+    let total_waves = s.wheel_waves.len();
+    if total_waves > 0 {
+        let n = total_waves as isize;
+        let base_slot = arc_pos.round() as isize;
+        let half = vis_span.ceil() as isize;
+        for offset in -half..=half {
+            let slot = base_slot + offset;
+            let rel = slot as f32 - arc_pos;
+            if rel.abs() > vis_span {
+                continue;
+            }
+            let idx = slot.rem_euclid(n) as usize;
+            let w = &s.wheel_waves[idx];
+            let norm = (rel / 3.4).clamp(-1.35, 1.35);
+            // Gentle rightward bow cradling the left wave's circular silhouette.
+            let x = (pad_l + curve * (1.0 - (norm * norm).min(1.0))).round();
+            let y = (center_y + rel * pitch - item_h * 0.5).round();
+            let focus = (1.0 - (rel.abs() / 3.4).min(1.0)).powf(1.15);
+            let edge_op = (1.0 - (rel.abs() / vis_span).powf(2.4)).clamp(0.0, 1.0);
+            let ic_side = ((ic_box - 6.0) + 6.0 * focus).round().max(42.0);
+            let fs = (17.0 * arc_u).clamp(13.5, 19.0).round();
+            let label_style = TextStyle::new(fs, 680.0).family(th::SANS).tracking(-0.2).lh(fs + 4.0);
+            let row_w = (arc_w - x - 10.0).max(120.0);
+
+            let key_id = w.key();
+            let chosen = s.wave_choice == key_id && (wave_on || !has_track);
+            let is_shake = w.control_accent;
+            let icon_el = if w.cover.is_some() {
+                let r = if w.round { ic_side * 0.5 } else { 10.0 };
+                kit::wheel_art(s, w.cover.as_deref(), ic_side, r)
+            } else {
+                let tint = if is_shake {
+                    accent_yellow
+                } else {
+                    match w.color {
+                        Some([r, g, b]) => th::srgb([f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0]),
+                        None => accent_yellow,
+                    }
+                };
+                row().w(ic_side).h(ic_side).center().child(kit::wave_glyph((ic_side * 0.62).round(), tint))
+            };
+
+            let label_col = if is_shake {
+                accent_yellow
+            } else if chosen {
+                th::text()
+            } else {
+                th::text().alpha(0.84 + 0.16 * focus)
+            };
+            let text_el = if !w.description.is_empty() {
+                let desc_sz = (13.0 * arc_u).clamp(10.5, 14.0);
+                let desc_style = TextStyle::new(desc_sz, 520.0).family(th::SANS).lh(desc_sz + 3.0);
+                let desc_col = th::text().alpha(0.50);
+                col()
+                    .grow(1.0)
+                    .min_w(0.0)
+                    .gap(2.0)
+                    .justify_center()
+                    .child(label(w.description.clone(), desc_style, desc_col).truncate().min_w(0.0))
+                    .child(label(w.name.clone(), label_style, label_col).truncate().min_w(0.0))
+            } else {
+                el().grow(1.0).min_w(0.0).child(label(w.name.clone(), label_style, label_col).truncate().min_w(0.0))
+            };
+
+            let item_op = (if chosen { edge_op.max(0.65) } else { edge_op }) * stay;
+            let click_id = key_id;
+            let item = row()
+                .key(format!("hm-arc-slot-{slot}"))
+                .role("button")
+                .label(w.name.as_str())
+                .checked(chosen)
+                .absolute(x, y)
+                .w(row_w)
+                .h(item_h)
+                .px(4.0)
+                .gap(item_gap)
+                .items_center()
+                .opacity(item_op)
+                .cursor(Cursor::Pointer)
+                .press_scale(0.98)
+                .transition(Transition::none())
+                .on_hover_change(garden_hover("arc"))
+                .on_press_tx(move |s: &mut State, tx: &mut Tx| {
+                    s.wave_arc_to = slot as f32;
+                    if s.settings.reduce_motion || crate::fx::cpu_mode() {
+                        s.wave_arc = s.wave_arc_to;
+                        s.wave_arc_vel = 0.0;
+                    } else {
+                        tx.wake_after(std::time::Duration::from_millis(16));
+                    }
+                    if !is_shake && dock::wave_playing(s) && s.wave_choice == click_id {
+                        s.toggle_pause();
+                    } else {
+                        start_wave_with(s, &click_id);
+                    }
+                })
+                .child(el().w(ic_box).h(ic_box).center().child(icon_el))
+                .child(text_el);
+
+            arc = arc.child(item);
         }
-        let idx = slot.rem_euclid(n) as usize;
-        let id = ARC_PRESETS[idx];
-        let norm = (rel / 3.5).clamp(-1.35, 1.35);
-        // Gentle rightward bow cradling the left wave's circular silhouette: furthest right at the
-        // equator (`rel == 0`), curving inward left toward the wave at top and bottom.
-        let x = (pad_l + curve * (1.0 - (norm * norm).min(1.0))).round();
-        let y = (center_y + rel * pitch - item_h * 0.5).round();
-        let focus = (1.0 - (rel.abs() / 3.4).min(1.0)).powf(1.25);
-        let edge_op = (1.0 - (rel.abs() / vis_span).powf(2.4)).clamp(0.0, 1.0);
-
-        let chosen = s.wave_choice == id && (wave_on || !has_track);
-        let active = chosen && wave_on;
-        let name = wave_title(id).get(lang);
-        let ic_side = ((ic_box - 8.0) + 6.0 * focus).round().max(22.0);
-        let px = blobs::ym_preset_icon(id, active || chosen);
-
-        // Upright Cormorant display serif: uniform size across items, active preset stands out by brightness.
-        let fs = ((20.0 + 2.0 * focus) * arc_u).clamp(15.5, 25.0).round();
-        let label_style = TextStyle::new(fs, 500.0).family(th::DISPLAY).tracking(-0.15).lh(fs + 4.0);
-        let label_col = if chosen { th::text() } else { th::text().alpha(0.28 + 0.28 * focus) };
-        let row_w = (arc_w - x - 10.0).max(120.0);
-
-        let item_op = (if chosen { edge_op.max(0.55) } else { edge_op }) * stay;
-        let item = row()
-            .key(format!("hm-arc-slot-{slot}"))
+    } else {
+        let fs = (17.0 * arc_u).clamp(13.5, 19.0).round();
+        let label_style = TextStyle::new(fs, 680.0).family(th::SANS).tracking(-0.2).lh(fs + 4.0);
+        let fallback_item = row()
+            .key("hm-arc-fallback")
             .role("button")
-            .label(name)
-            .checked(chosen)
-            .absolute(x, y)
-            .w(row_w)
+            .label(S::WaveTitle.get(lang))
+            .absolute(pad_l + curve, (center_y - item_h * 0.5).round())
+            .w((arc_w - pad_l - curve - 10.0).max(120.0))
             .h(item_h)
-            .px(6.0)
+            .px(4.0)
             .gap(item_gap)
             .items_center()
-            .opacity(item_op)
+            .opacity(stay)
             .cursor(Cursor::Pointer)
             .press_scale(0.98)
-            .transition(Transition::none())
-            .on_hover_change(garden_hover(id))
-            .on_press_tx(move |s: &mut State, tx: &mut Tx| {
-                s.wave_arc_to = slot as f32;
-                if s.settings.reduce_motion || crate::fx::cpu_mode() {
-                    s.wave_arc = s.wave_arc_to;
-                    s.wave_arc_vel = 0.0;
-                } else {
-                    tx.wake_after(std::time::Duration::from_millis(16));
-                }
-                if dock::wave_playing(s) && s.wave_choice == id {
-                    s.toggle_pause();
-                } else {
-                    start_wave_with(s, id);
-                }
-            })
-            .child(el().w(ic_box).h(ic_box).center().child(el().w(ic_side).h(ic_side).pixels_fit(&px, rune::SurfaceFit::Fill)))
-            .child(el().grow(1.0).min_w(0.0).child(label(name, label_style, label_col).truncate().min_w(0.0)));
-
-        arc = arc.child(item);
+            .on_press(|s: &mut State| start_wave_with(s, "onyourwave"))
+            .child(el().w(ic_box).h(ic_box).center().child(kit::wave_glyph((ic_box * 0.56).round(), accent_yellow)))
+            .child(label(S::WaveTitle.get(lang), label_style, accent_yellow).truncate().min_w(0.0));
+        arc = arc.child(fallback_item);
     }
 
     let foreground = row()

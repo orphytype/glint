@@ -114,7 +114,7 @@ impl State {
         match src {
             ListSrc::Liked => {
                 let all = self.library.tracks.get().map_or(&[][..], Vec::as_slice);
-                if self.library.filter.text.trim().is_empty() && self.library.sort == TrackSort::Original {
+                if self.library.filter.text.trim().is_empty() && self.library.track_filter.is_empty() && self.library.sort == TrackSort::Original {
                     all.to_vec()
                 } else {
                     self.library.shown.borrow().iter().filter_map(|&i| all.get(i).cloned()).collect()
