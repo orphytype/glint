@@ -92,7 +92,7 @@ fn credits(s: &State, t: &Track, width: f32) -> El {
         _ if s.fkcensor.knows(&t.id) => {
             let mut c = col().w(width).gap(14.0).child(fact_line("sheet-credit-0".into(), S::Artist.get(lang), t.artists_line(), width));
             if let Some(al) = t.albums.first().filter(|a| !a.title.is_empty()) {
-                c = c.child(fact_line("sheet-credit-1".into(), S::Album.get(lang), al.title.as_str(), width));
+                c = c.child(fact_line("sheet-credit-1".into(), crate::app::album_kind_name(al).get(lang), al.title.as_str(), width));
             }
             if let Some(ms) = t.duration_ms {
                 c = c.child(fact_line("sheet-credit-2".into(), S::Duration.get(lang), crate::player::fmt_time(ms), width));
@@ -107,7 +107,7 @@ fn credits(s: &State, t: &Track, width: f32) -> El {
 fn release(s: &State, t: &Track, width: f32) -> Option<El> {
     let al = t.albums.first()?;
     let lang = s.lang;
-    let mut sub = vec![S::Album.get(lang).to_owned()];
+    let mut sub = vec![crate::app::album_kind_name(al).get(lang).to_owned()];
     if let Some(y) = al.year {
         sub.push(y.to_string());
     }

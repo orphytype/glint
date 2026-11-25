@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 pub use downloads::{DownloadStore, DownloadedTrack};
-pub use settings::{BackdropLook, Effects, LyricLook, MiniStyle, PinnedSetting, PlayerLayout, QualityPref, Repeat, Settings, StageLook, ThemeMode, WaveLook, WaveTune};
+pub use settings::{BackdropLook, LyricLook, MiniStyle, PinnedSetting, PlayerLayout, QualityPref, Repeat, Settings, StageLook, ThemeMode, WaveLook, WaveTune};
 pub use snapshots::{HomeSnapshot, LibrarySnapshot, PlaybackSnapshot};
 
 /// Locally uploaded tracks and custom track ordering for a playlist (`"{uid}:{kind}"`).

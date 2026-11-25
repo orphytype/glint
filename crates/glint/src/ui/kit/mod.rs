@@ -18,16 +18,16 @@ use crate::i18n::S;
 use crate::theme::{self as th, Pal};
 
 pub use controls::{
-    BTN_H, FIELD_R, MENU_ROW, bar_play_btn, button_group, seg_button, seg_icon, seg_sort, bone_fill, btn_primary, btn_select, btn_small, btn_small_disabled, btn_soft, btn_soft_icon, button_bone, button_width, ctl_radius,
-    field_icon_btn, field_surface, ibtn, menu_row, more_link, np_play_btn, plus_badge, quiet_btn, quiet_off, quiet_toggle, search_clear, search_field, skip_btn, sort_button, sort_button_w, tab_body, tab_pill_w,
-    tab_pill_with_w, tab_track, text_bone,
+    BTN_H, FIELD_R, MENU_ROW, bar_play_btn, bone_fill, btn_primary, btn_select, btn_small, btn_small_disabled, btn_soft, btn_soft_icon, button_bone, button_group, button_width,
+    field_icon_btn, field_surface, ibtn, menu_row, more_link, np_play_btn, plus_badge, quiet_btn, quiet_off, quiet_toggle, search_clear, search_field, seg_button,
+    seg_icon, seg_sort, skip_btn, sort_button, sort_button_sm, sort_button_w, swap_glyph, tab_body, tab_pill_w, tab_pill_with_w, tab_track, text_bone,
 };
 pub use marquee::{marquee, marquee_hover, marquee_on};
 pub use media::{
-    artist_line_width, artists_row_in_width, cover, cover_border, cover_sm, cover_tile, picture_url, playing_cover, playing_cover_lg, roll, seg_wave, track_title, wave_card,
-    wave_glyph,
+    artist_line_width, artists_row_in_width, cover, cover_border, cover_placeholder, cover_sm, cover_tile, picture_url, playing_cover, playing_cover_lg, roll, seg_wave,
+    source_glyph, track_title, wave_card_alpha, wave_glyph,
 };
-pub use rows::{ListSrc, ROW_COVER, ROW_COVER_R, ROW_H, ROW_PAD, ROW_TIME_INSET, bleed, explicit_badge, np_like_button, track_bones, track_fields, queue_row, track_row};
+pub use rows::{ListSrc, ROW_COVER, ROW_COVER_R, ROW_H, ROW_PAD, ROW_TIME_INSET, bleed, explicit_badge, np_like_button, track_bones, track_fields, queue_row, track_row, track_row_lazy};
 
 pub const TITLE_H: f32 = 60.0;
 pub const CAPTION_H: f32 = if cfg!(target_os = "windows") { 44.0 } else { TITLE_H };
@@ -102,6 +102,55 @@ pub fn label(s: impl Into<String>, style: TextStyle, color: Color) -> El {
     text(s).font(style).color(color)
 }
 
+/// Cached single-line text width measurement to avoid repeated shaping during commits.
+pub fn measure_w(s: &str, style: TextStyle) -> f32 {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::hash::{Hash, Hasher};
+
+    thread_local! {
+        static CACHE: RefCell<HashMap<u64, f32>> = RefCell::new(HashMap::new());
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    style.family.hash(&mut h);
+    style.size.to_bits().hash(&mut h);
+    style.weight.to_bits().hash(&mut h);
+    style.tracking.to_bits().hash(&mut h);
+    style.line_height.to_bits().hash(&mut h);
+    let key = h.finish();
+    if let Some(w) = CACHE.with_borrow(|c| c.get(&key).copied()) {
+        return w;
+    }
+    let w = text::measure(s, &[], style, None).0;
+    CACHE.with_borrow_mut(|c| {
+        if c.len() > 512 {
+            c.clear();
+        }
+        c.insert(key, w);
+    });
+    w
+}
+
+/// Animates a loading spinner without creating a rotated layer in CPU mode (which would trigger
+/// a GPU handover in RUNE's CPU renderer).
+pub fn spin(e: El) -> El {
+    if fx::cpu_mode() {
+        e.looping(rune::LoopSpec::opacity(1.1, 0.0, 0.35, 1.0))
+    } else {
+        e.looping(rune::LoopSpec::rotation(0.9))
+    }
+}
+
+/// A downward chevron that flips upward when `open`, swapping glyph instead of rotating in CPU mode.
+pub fn chevron(size: f32, open: bool, color: Color) -> El {
+    if fx::cpu_mode() {
+        rune::icon(if open { &super::icons::CHEVRON_UP } else { &super::icons::CHEVRON_DOWN }, size).color(color)
+    } else {
+        rune::icon(&super::icons::CHEVRON_DOWN, size).color(color).rotate(if open { std::f32::consts::PI } else { 0.0 })
+    }
+}
+
 /// Small sentence-case label for section headings, metadata kinds, and badges.
 pub fn caps(s: impl Into<String>, color: Color) -> El {
     let s: String = s.into();
@@ -130,8 +179,8 @@ pub fn glass_alpha(kind: Glass, radius: f32, alpha: f32) -> El {
         return pane.effect(fx::glass(kind)).fx_data([1.0 - alpha, 0.0, 0.0, 0.0]);
     }
     let (fill, edge, bw) = match kind {
-        Glass::Dock | Glass::Card => (th::pop().alpha(0.96 * alpha), th::veil(0.12 * alpha), 2.0),
-        Glass::Chip => (th::pop().alpha(0.90 * alpha), th::veil(0.13 * alpha), 2.0),
+        Glass::Dock | Glass::Card => (th::pop().alpha(alpha), th::veil(0.11 * alpha), 1.0),
+        Glass::Chip => (th::pop().alpha((if th::light() { 0.82 } else { 0.72 }) * alpha), th::veil(0.12 * alpha), 1.0),
         Glass::Menu => (th::pop().alpha(alpha), th::veil(0.0), 0.0),
     };
     let pane = pane.fill(fill);
@@ -142,12 +191,8 @@ pub fn frost(radius: f32, skin: f32) -> [El; 2] {
     let film = if fx::glass_enabled() { th::FROST } else { 1.0 };
     [
         glass_alpha(Glass::Menu, radius, skin),
-        el().absolute(0.0, 0.0).w_full().h_full().radius(radius).fill(th::pop().alpha(film * skin)).border(2.0, th::veil(0.13 * skin)).transition(Transition::none()),
+        el().absolute(0.0, 0.0).w_full().h_full().radius(radius).fill(th::pop().alpha(film * skin)).border(1.0, th::veil(0.12 * skin)).transition(Transition::none()),
     ]
-}
-
-pub fn veil_top(h: f32) -> El {
-    fx::veil_slot(el().key("veil-top").absolute(0.0, 0.0).w_full().h(h).transition(Transition::none()), [h, 0.0, 20.0, 0.38])
 }
 
 pub fn veil_bottom(h: f32) -> El {
@@ -176,6 +221,15 @@ pub fn dialog_head(key: &str, w: f32, title: &str, badge: Option<El>, body: Vec<
             .child(b),
         None => label(title.to_owned(), th::H2, th::text()).wrap(),
     };
+    let card_tr = if fx::cpu_mode() {
+        Transition::none()
+    } else {
+        Transition::asymmetric(
+            Transition::scale(0.95).combined(Transition::offset(0.0, 10.0)).combined(Transition::opacity()),
+            Transition::scale(0.97).combined(Transition::offset(0.0, 4.0)).combined(Transition::opacity()),
+        )
+        .springs(th::RISE)
+    };
     let card = col()
         .key(format!("{key}-card"))
         .role("dialog")
@@ -185,20 +239,21 @@ pub fn dialog_head(key: &str, w: f32, title: &str, badge: Option<El>, body: Vec<
         .gap(12.0)
         .radius(16.0)
         .fill(th::pop())
-        .border(2.0, th::veil(0.12))
-        .transition(pop_in(0.97, 6.0, th::RISE))
+        .border(1.0, th::veil(0.12))
+        .transition(card_tr)
         .modal(true, dismiss)
         .on_press(|_s: &mut State| {})
-        .child(head)
+        .child(head.focusable(true).tab_index(-1).autofocus())
         .children(body)
         .child(row().w_full().pt(6.0).gap(10.0).justify_end().children(buttons));
+    let scrim_tr = if fx::cpu_mode() { Transition::none() } else { Transition::opacity().springs(th::RISE) };
     el().key(key.to_owned())
         .absolute(0.0, 0.0)
         .w_full()
         .h_full()
         .center()
         .fill(th::rgba(0x000000, if th::light() { 0.24 } else { 0.52 }))
-        .transition(Transition::none())
+        .transition(scrim_tr)
         .on_press(dismiss)
         .child(card)
 }

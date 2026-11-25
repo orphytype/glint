@@ -1,9 +1,7 @@
 //! The shape of a whole track: how loud it is along its length, for a seek line that shows where
 //! the quiet and the loud parts are.
 
-use std::sync::Arc;
-
-use crate::source::Track;
+use crate::source::{AudioData, Track};
 use crate::{AudioError, LoadHint};
 
 /// How far below the loudest part a part may be and still show; anything quieter is the floor.
@@ -11,9 +9,9 @@ const RANGE_DB: f32 = 20.0;
 
 /// Decodes `audio` and returns `n` values from 0 (silence) to 1 (the loudest part of the track),
 /// one per equal slice of its length. It reads the whole file, so call it off the UI thread.
-pub fn waveform(audio: Arc<[u8]>, hint: &LoadHint, n: usize) -> Result<Vec<f32>, AudioError> {
+pub fn waveform(audio: impl Into<AudioData>, hint: &LoadHint, n: usize) -> Result<Vec<f32>, AudioError> {
     let n = n.max(1);
-    let track = Track::open(1, audio, hint)?;
+    let track = Track::open(1, audio.into(), hint)?;
     let (channels, rate) = (track.channels.max(1), track.rate.max(1));
     // The loudness of every 10 ms, as RMS of the mono mix.
     let block = (rate as usize / 100).max(1) * channels;

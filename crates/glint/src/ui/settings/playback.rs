@@ -1,74 +1,53 @@
-//! The Sound page (quality and the 10-band equalizer) and the Player screen page (its look,
-//! the picture behind it and the lyrics).
+//! Sound (quality, FckCensor, autoplay, collapsible 10-band equalizer) and Player (Now Playing
+//! layout, backdrop, lyrics, and Mini Player) pages of Settings.
 
 use rune::{Cursor, Drag, El, Tx, col, el, icon, row};
 use ym_audio::{BANDS, MAX_GAIN_DB};
 
-use super::{ROW_PAD, found_mark, group, item, item_below, item_key, segmented, toggle, words};
+use super::{ROW_PAD, figure, group, item, item_below, segmented, toggle};
 use crate::app::{Popover, State};
 use crate::i18n::{Lang, S};
-use crate::store::{PlayerLayout, QualityPref};
+use crate::store::{MiniStyle, PlayerLayout, QualityPref};
 use crate::theme::{self as th, veil};
 use crate::ui::{
+    icons,
     kit::{self, Hover as _, label},
-    menu, np_icons,
+    menu,
 };
 
-const LEVEL_W: f32 = 200.0;
-const EQ_H: f32 = 132.0;
+const LEVEL_W: f32 = 160.0;
+const EQ_H: f32 = 122.0;
 const EQ_PAD: f32 = 10.0;
-const EQ_W: f32 = 36.0;
+const EQ_W: f32 = 34.0;
 const HZ_LABELS: [&str; BANDS] = ["31.5", "63", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
 
 pub(super) fn sound(s: &State, k: &rune_kit::Kit) -> Vec<El> {
     let lang = s.lang;
     let qs = [QualityPref::Saver, QualityPref::Balanced, QualityPref::Best];
-    let mut q = row().key("set-quality").padding(3.0).gap(2.0).radius(9.0).fill(veil(0.05)).border(1.0, veil(0.08)).items_center();
-    for quality in qs {
-        let on = s.settings.quality == quality;
-        let text = np_icons::quality_label(quality).get(lang);
-        let ink = if on { th::text() } else { th::text2() };
-        let mut cell = row()
-            .key(format!("set-q-{quality:?}"))
-            .role("radio")
-            .label(text)
-            .checked(on)
-            .h(28.0)
-            .px(10.0)
-            .gap(6.0)
-            .radius(6.5)
-            .items_center()
-            .cursor(Cursor::Pointer)
-            .hov(veil(if on { 0.0 } else { 0.05 }))
-            .press(veil(0.10))
-            .on_press(move |s: &mut State| s.set_quality(quality))
-            .child(icon(np_icons::quality_icon(quality), 16.0).color(ink))
-            .child(label(text, th::BODY_M, ink));
-        if on {
-            cell = cell.fill(if th::light() { th::pop() } else { veil(0.14) });
-            if th::light() {
-                cell = cell.border(1.0, veil(0.10));
-            }
-        }
-        q = q.child(cell);
-    }
+    let q = segmented(
+        k,
+        &[S::QualitySaver.get(lang), S::QualityBalanced.get(lang), S::QualityBest.get(lang)],
+        qs.iter().position(|q| *q == s.settings.quality).unwrap_or(2),
+        move |s, i| s.set_quality(qs[i]),
+    );
     let censor = toggle(k, s.settings.fkcensor, S::FckCensor.get(lang), |s| s.set_fkcensor(!s.settings.fkcensor));
     let launch = toggle(k, s.settings.play_on_launch, S::PlayOnLaunch.get(lang), |s| {
         s.settings.play_on_launch = !s.settings.play_on_launch;
         s.mark_settings_dirty();
     });
-    let mut groups = vec![group(
-        "set-sound",
-        None,
-        vec![
-            item_below(S::Quality.get(lang), Some(S::QualityNote.get(lang)), q),
-            item(S::FckCensor.get(lang), Some(S::FckCensorNote.get(lang)), censor),
-            item(S::PlayOnLaunch.get(lang), None, launch),
-        ],
-        None,
-    )];
-    groups.extend(equalizer(s, k));
-    groups
+    vec![
+        group(
+            "set-sound",
+            None,
+            vec![
+                item(S::Quality.get(lang), None, q),
+                item(S::FckCensor.get(lang), Some(S::FckCensorNote.get(lang)), censor),
+                item(S::PlayOnLaunch.get(lang), None, launch),
+            ],
+            None,
+        ),
+        equalizer(s, k),
+    ]
 }
 
 pub(super) fn player(s: &State, k: &rune_kit::Kit) -> Vec<El> {
@@ -83,20 +62,20 @@ pub(super) fn player(s: &State, k: &rune_kit::Kit) -> Vec<El> {
             s.mark_settings_dirty();
         },
     );
-    let mut screen = vec![item_below(S::PlayerLayout.get(lang), None, layout)];
-    for (i, (name, opts)) in menu::stage_rows().into_iter().enumerate() {
-        screen.push(item(name.get(lang), None, look_choice(s, k, i, opts)));
+    let mut screen = vec![item(S::PlayerLayout.get(lang), None, layout)];
+    if s.shaders_active() {
+        let stage_fx = toggle(k, s.settings.stage.effects > 0, S::Effects.get(lang), |s| {
+            s.settings.stage.effects = u8::from(s.settings.stage.effects == 0);
+            s.mark_settings_dirty();
+        });
+        screen.push(item(S::Effects.get(lang), None, stage_fx));
     }
-    let reset = if menu::look_changed(s) {
-        kit::btn_small("set-look-reset", S::StageReset.get(lang), None).on_press(menu::reset_look)
-    } else {
-        kit::btn_small_disabled("set-look-reset", S::StageReset.get(lang), None)
-    };
+    screen.extend(backdrop_rows(s, k));
+
     vec![
-        group("set-screen", None, screen, None),
-        group("set-backdrop", Some(S::SetBackdrop.get(lang)), backdrop_rows(s, k), None),
+        group("set-screen", Some(S::SetPlayerScreen.get(lang)), screen, None),
         lyrics(s, k),
-        group("set-look-reset", None, vec![item(S::StageLook.get(lang), Some(S::StageResetNote.get(lang)), reset)], None),
+        mini_section(s, k),
     ]
 }
 
@@ -112,11 +91,23 @@ fn backdrop_rows(s: &State, k: &rune_kit::Kit) -> Vec<El> {
     if !look.on {
         return vec![item(S::Backdrop.get(lang), None, pick("bd-pick", S::BdPick.get(lang)))];
     }
-    let buttons = row()
-        .gap(8.0)
-        .items_center()
-        .child(pick("bd-change", S::BdChange.get(lang)))
-        .child(kit::btn_small("bd-remove", S::BdRemove.get(lang), None).on_press(|s: &mut State| s.drop_backdrop()));
+    let remove = row()
+        .key("bd-remove")
+        .role("button")
+        .label(S::BdRemove.get(lang))
+        .help(S::BdRemove.get(lang))
+        .w(28.0)
+        .h(28.0)
+        .radius(7.0)
+        .center()
+        .fill(veil(0.06))
+        .cursor(Cursor::Pointer)
+        .hov(veil(0.11))
+        .press(veil(0.15))
+        .press_scale(th::PRESS)
+        .on_press(|s: &mut State| s.drop_backdrop())
+        .child(icon(&icons::CLOSE, 13.0).color(th::text2()));
+    let buttons = row().gap(6.0).items_center().child(pick("bd-change", S::BdChange.get(lang))).child(remove);
     let effect = segmented(k, &crate::backdrop::EFFECTS.map(|e| e.get(lang)), usize::from(look.effect), |s, i| {
         s.settings.backdrop.effect = i as u8;
         s.mark_settings_dirty();
@@ -154,15 +145,15 @@ pub(in crate::ui) fn level_w(key: &str, value: f32, lw: f32, set: impl Fn(&mut S
     el().key(key.to_owned())
         .role("slider")
         .w(lw)
-        .h(24.0)
+        .h(22.0)
         .cursor(Cursor::Pointer)
         .on_drag(move |s: &mut State, d: &mut Drag, _tx: &mut Tx| {
             let f = if d.w > 0.0 { (d.x / d.w).clamp(0.0, 1.0) } else { 0.0 };
             set(s, (f * 100.0).round() / 100.0);
         })
-        .child(el().absolute(0.0, 10.0).w(lw).h(4.0).radius(2.0).fill(veil(0.12)))
-        .child(el().absolute(0.0, 10.0).w((lw * v).max(4.0)).h(4.0).radius(2.0).fill(ink))
-        .child(el().absolute((lw * v - 8.0).clamp(0.0, lw - 16.0), 4.0).w(16.0).h(16.0).radius(8.0).fill(ink))
+        .child(el().absolute(0.0, 9.5).w(lw).h(3.0).radius(1.5).fill(veil(0.12)))
+        .child(el().absolute(0.0, 9.5).w((lw * v).max(3.0)).h(3.0).radius(1.5).fill(ink))
+        .child(el().absolute((lw * v - 6.5).clamp(0.0, lw - 13.0), 4.5).w(13.0).h(13.0).radius(6.5).fill(ink))
 }
 
 fn lyrics(s: &State, k: &rune_kit::Kit) -> El {
@@ -173,24 +164,51 @@ fn lyrics(s: &State, k: &rune_kit::Kit) -> El {
         s.settings.lyric_look.font = i as u8;
         s.mark_settings_dirty();
     });
-    let sample = label(S::LyricsFontSample.get(lang), th::lyric_face(th::LYRIC_CARD, font), th::text()).key("set-lyrics-sample").w_full().wrap();
-    let face_key = item_key(S::LyricsFont.get(lang));
-    let face = col()
-        .key(face_key.clone())
-        .w_full()
-        .px(ROW_PAD)
-        .py(14.0)
-        .gap(12.0)
-        .children(found_mark(&face_key))
-        .child(words(S::LyricsFont.get(lang), None))
-        .child(row().w_full().child(faces))
-        .child(sample);
-    let mut rows = vec![face];
+    let mut rows = vec![
+        item(S::WordLyrics.get(lang), None, word_lyrics),
+        item(S::LyricsFont.get(lang), None, faces),
+    ];
     for (j, (name, opts)) in menu::lyric_rows().into_iter().enumerate() {
         rows.push(item(name.get(lang), None, look_choice(s, k, 1 + j, opts)));
     }
-    rows.push(item(S::WordLyrics.get(lang), None, word_lyrics));
     group("set-lyrics", Some(S::SetLyrics.get(lang)), rows, None)
+}
+
+fn mini_section(s: &State, k: &rune_kit::Kit) -> El {
+    let lang = s.lang;
+    let mini_styles = [MiniStyle::Compact, MiniStyle::Standard, MiniStyle::Cover];
+    let mini_style_idx = mini_styles.iter().position(|st| *st == s.settings.mini_style).unwrap_or(1);
+    let mini_style_ctl = segmented(
+        k,
+        &[S::MiniCompact.get(lang), S::MiniStandard.get(lang), S::MiniCover.get(lang)],
+        mini_style_idx,
+        move |s, i| s.set_mini_style(mini_styles[i]),
+    );
+    let op_frac = ((s.settings.mini_opacity.clamp(0.65, 1.0) - 0.65) / 0.35).clamp(0.0, 1.0);
+    let op_pct = format!("{}%", (s.settings.mini_opacity.clamp(0.65, 1.0) * 100.0).round() as i32);
+    let op_ctl = row().gap(10.0).items_center().child(figure(op_pct)).child(level_w("set-mini-opacity", op_frac, 110.0, |s, f| {
+        s.set_mini_opacity(0.65 + f * 0.35);
+    }));
+    let mut rows = vec![
+        item(S::MiniStyle.get(lang), None, mini_style_ctl),
+        item(
+            S::MiniAlwaysOnTop.get(lang),
+            None,
+            toggle(k, s.settings.mini_always_on_top, S::MiniAlwaysOnTop.get(lang), |s| s.set_mini_always_on_top(!s.settings.mini_always_on_top)),
+        ),
+        item(S::MiniOpacity.get(lang), None, op_ctl),
+    ];
+    if s.settings.show_tray && s.settings.close_to_tray {
+        rows.push(item(
+            S::MiniOnClose.get(lang),
+            None,
+            toggle(k, s.settings.mini_on_close, S::MiniOnClose.get(lang), |s| {
+                s.settings.mini_on_close = !s.settings.mini_on_close;
+                s.mark_settings_dirty();
+            }),
+        ));
+    }
+    group("set-mini", Some(S::MiniPlayer.get(lang)), rows, None)
 }
 
 pub(crate) fn preset_label(name: &str, lang: Lang) -> String {
@@ -214,14 +232,13 @@ pub(crate) fn preset_label(name: &str, lang: Lang) -> String {
 
 fn eq_band(s: &State, i: usize) -> El {
     let g = s.player.eq.gains_db[i];
-    let enabled = s.player.eq.enabled;
     let usable = EQ_H - 2.0 * EQ_PAD;
     let knob_y = EQ_PAD + (0.5 - g / (2.0 * MAX_GAIN_DB)) * usable;
     let mid_y = EQ_PAD + 0.5 * usable;
     let (top, height) = if knob_y < mid_y { (knob_y, mid_y - knob_y) } else { (mid_y, knob_y - mid_y) };
-    let color = if enabled { th::text() } else { th::text3().alpha(0.55) };
-    let rail = veil(if enabled { 0.14 } else { 0.07 });
-    let tick = veil(if enabled { 0.26 } else { 0.13 });
+    let color = th::text();
+    let rail = veil(0.12);
+    let tick = veil(0.22);
     let value = if g.abs() < 0.05 { "0".to_owned() } else { format!("{g:+.1}") };
     let mx = EQ_W * 0.5;
     let hz = HZ_LABELS[i];
@@ -245,42 +262,40 @@ fn eq_band(s: &State, i: usize) -> El {
             }
         })
         .child(el().absolute(mx - 1.0, EQ_PAD).w(2.0).h(usable).radius(1.0).fill(rail))
-        .child(el().absolute(mx - 8.0, mid_y - 0.5).w(16.0).h(1.0).fill(tick))
+        .child(el().absolute(mx - 6.0, mid_y - 0.5).w(12.0).h(1.0).fill(tick))
         .child(el().absolute(mx - 1.5, top).w(3.0).h(height.max(0.5)).radius(1.5).fill(color))
-        .child(el().absolute(mx - 6.0, knob_y - 6.0).w(12.0).h(12.0).radius(6.0).fill(color));
+        .child(el().absolute(mx - 5.5, knob_y - 5.5).w(11.0).h(11.0).radius(5.5).fill(color));
 
     col()
         .key(format!("eq-col-{i}"))
         .w(EQ_W)
-        .gap(4.0)
+        .gap(3.0)
         .items_center()
-        .child(label(value, th::MONO, if enabled { th::text2() } else { th::text3().alpha(0.55) }))
+        .child(label(value, th::MONO, th::text2()))
         .child(slider)
-        .child(label(hz, th::MONO, if enabled { th::text3() } else { th::text3().alpha(0.55) }))
+        .child(label(hz, th::MONO, th::text3()))
 }
 
-fn equalizer(s: &State, k: &rune_kit::Kit) -> Vec<El> {
+fn equalizer(s: &State, k: &rune_kit::Kit) -> El {
     let lang = s.lang;
     let enabled = s.player.eq.enabled;
-    let current = s.player.eq.preset_name().map_or_else(|| "—".to_owned(), |n| preset_label(n, lang));
-    let open = s.popover_open && matches!(s.popover, Some(Popover::EqPreset { .. }));
-    let presets = kit::btn_select("eq-preset", &current, 160.0, open).on_press(|s: &mut State| s.open_popover(Popover::EqPreset { anchor: "eq-preset".into() }));
-    let reset = kit::btn_small("eq-reset", S::EqReset.get(lang), None).on_press(|s: &mut State| {
-        s.player.eq.gains_db = [0.0; BANDS];
-        s.player.eq.preamp_db = 0.0;
-        s.apply_eq();
-    });
-    let bands = row().w_full().px(ROW_PAD - 4.0).pt(14.0).pb(12.0).justify_between().children((0..BANDS).map(|i| eq_band(s, i)));
     let on = toggle(k, enabled, S::EqEnabled.get(lang), |s| {
         s.player.eq.enabled = !s.player.eq.enabled;
         s.apply_eq();
     });
-    vec![
-        group(
-            "set-eq",
-            Some(S::Equalizer.get(lang)),
-            vec![item(S::EqEnabled.get(lang), None, on), item(S::EqPreset.get(lang), None, row().gap(8.0).items_center().child(presets).child(reset)), bands],
-            None,
-        ),
-    ]
+    let mut rows = vec![item(S::EqEnabled.get(lang), None, on)];
+    if enabled {
+        let current = s.player.eq.preset_name().map_or_else(|| "—".to_owned(), |n| preset_label(n, lang));
+        let open = s.popover_open && matches!(s.popover, Some(Popover::EqPreset { .. }));
+        let presets = kit::btn_select("eq-preset", &current, 152.0, open).on_press(|s: &mut State| s.open_popover(Popover::EqPreset { anchor: "eq-preset".into() }));
+        let reset = kit::btn_small("eq-reset", S::EqReset.get(lang), None).on_press(|s: &mut State| {
+            s.player.eq.gains_db = [0.0; BANDS];
+            s.player.eq.preamp_db = 0.0;
+            s.apply_eq();
+        });
+        let bands = row().w_full().px(ROW_PAD - 4.0).pt(12.0).pb(10.0).justify_between().children((0..BANDS).map(|i| eq_band(s, i)));
+        rows.push(item(S::EqPreset.get(lang), None, row().gap(8.0).items_center().child(presets).child(reset)));
+        rows.push(bands);
+    }
+    group("set-eq", Some(S::Equalizer.get(lang)), rows, None)
 }

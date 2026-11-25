@@ -175,7 +175,7 @@ fn build_system_info(settings: &Settings, method: glint_update::Method, win_size
          gpu_adapter = {}\n\
          display = {}\n\
          window = {}x{}\n\
-         settings = theme:{:?} effects:{:?} reduce_motion:{} quality:{:?} layout:{:?} butterflies:{}\n",
+         settings = theme:{:?} shaders:{} cpu_mode:{} reduce_motion:{} quality:{:?} layout:{:?} butterflies:{}\n",
         env!("CARGO_PKG_VERSION"),
         std::env::consts::ARCH,
         method,
@@ -188,7 +188,8 @@ fn build_system_info(settings: &Settings, method: glint_update::Method, win_size
         w,
         h,
         settings.theme,
-        settings.effects,
+        settings.shaders,
+        settings.cpu_mode,
         settings.reduce_motion,
         settings.quality,
         settings.player_layout,
@@ -274,6 +275,20 @@ fn windows_reg_dword(subkey: &str, value: &str) -> Option<u32> {
     // SAFETY: `data` is a writable 4-byte `u32` matching `bytes`; strings are NUL-terminated UTF-16.
     let status = unsafe { RegGetValueW(HKEY_LOCAL_MACHINE, sub.as_ptr(), val.as_ptr(), RRF_RT_REG_DWORD, std::ptr::null_mut(), (&mut data as *mut u32).cast(), &mut bytes) };
     (status == 0).then_some(data)
+}
+
+/// Releases unused freed working-set pages back to the OS on Windows when hiding or trimming
+/// caches so Task Manager reflects lower RAM usage right away.
+pub fn trim_working_set() {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        // SAFETY: `GetCurrentProcess()` returns the current process pseudo-handle.
+        unsafe {
+            let _ = K32EmptyWorkingSet(GetCurrentProcess());
+        }
+    }
 }
 
 #[cfg(windows)]

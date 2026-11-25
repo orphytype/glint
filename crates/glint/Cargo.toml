@@ -36,7 +36,7 @@ tokio.workspace = true
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 swash = { version = "0.2", default-features = false, features = ["scale"] }
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "wgsl"] }
-procwatch = { git = "https://github.com/anomalyco/rune", rev = "1f1d68c4f07f9f814e86b065cffe685f9a694606", features = ["alloc-sites"], optional = true }
+procwatch = { git = "https://github.com/anomalyco/rune", rev = "570cac50795dda50cf7319a168b9611cb28bc131", features = ["alloc-sites"], optional = true }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 wgpu = { version = "30", default-features = false, features = ["vulkan", "dx12"] }

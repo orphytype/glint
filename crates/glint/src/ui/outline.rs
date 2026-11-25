@@ -1,10 +1,5 @@
-//! The outline of a shape of Home worked out on the CPU, from the same functions the shader
-//! draws it with (`sh_f`, the mood pictures and `wave_form`), with the same seed, size and tilt.
-//! Before the shape shaders compile, a shape's stand-in uses that outline as a gray skeleton so
-//! when the real shape comes in over it nothing changes place.
-
-use std::cell::RefCell;
-use std::collections::HashMap;
+//! CPU evaluation of the shape signed-distance fields (used when pre-rendering shapes with
+//! GPU shaders disabled).
 
 use super::blobs::Family;
 
@@ -223,6 +218,11 @@ fn wave_form(form: u8, x: f32, y: f32, seed: f32, t: f32, amp: f32) -> f32 {
     smin(f, ell(x, y, 0.90, 0.66), 0.16)
 }
 
+/// Evaluates a shape's signed distance in its own space (radius 1, y down, negative inside) at rest.
+pub fn eval_field(family: Family, form: u8, x: f32, y: f32, seed: f32) -> f32 {
+    field(family, form, x, y, seed, 0.0)
+}
+
 /// The shape's function in its own space (radius 1, y down), negative inside, as `sh_f` draws it
 /// at rest (no hover, no music) at the clock's `t`.
 fn field(family: Family, form: u8, x: f32, y: f32, seed: f32, t: f32) -> f32 {
@@ -238,145 +238,4 @@ fn field(family: Family, form: u8, x: f32, y: f32, seed: f32, t: f32) -> f32 {
         Family::Sun => sun(x, y, seed, t),
         _ => len(x, y) - 0.98,
     }
-}
-
-/// How far out the grid that traces an outline reaches, in the shape's own units.
-const REACH: f32 = 1.5;
-/// Cells across that grid.
-const CELLS: usize = 72;
-
-/// A traced outline, by family, form, seed and size (the last two as bits).
-type Kept = HashMap<(u32, u8, u32, u32), Vec<[f32; 2]>>;
-
-/// The outline of `family` (My Wave in `form`) for `seed`, in a `side` box: points in the box,
-/// clockwise or not, the largest closed piece of the shape. Traced by marching squares over the
-/// shape's function, then kept, as each one is asked for again on every frame until the
-/// compositor is up.
-pub fn outline(family: Family, form: u8, seed: f32, side: f32) -> Vec<[f32; 2]> {
-    thread_local! {
-        static KEPT: RefCell<Kept> = RefCell::new(HashMap::new());
-    }
-    let key = (family as u32, form, seed.to_bits(), side.to_bits());
-    if let Some(p) = KEPT.with_borrow(|k| k.get(&key).cloned()) {
-        return p;
-    }
-    let p = trace(family, form, seed, side);
-    KEPT.with_borrow_mut(|k| {
-        if k.len() > 64 {
-            k.clear();
-        }
-        k.insert(key, p.clone());
-    });
-    p
-}
-
-fn trace(family: Family, form: u8, seed: f32, side: f32) -> Vec<[f32; 2]> {
-    let r = super::blobs::radius(family, side);
-    // The clock the shapes start on, and a picture's sway at that moment (`shape_px`).
-    let t = 0.0;
-    let picture = matches!(family, Family::Heart | Family::Bolt | Family::Moon | Family::Drop | Family::Star | Family::Crown | Family::Sun);
-    let turn = if picture { 0.035 * (t * 0.3 + seed).sin() } else { 0.0 };
-    let (c, s) = (turn.cos(), turn.sin());
-    let n = CELLS;
-    let step = 2.0 * REACH / n as f32;
-    let at = |i: usize| -REACH + i as f32 * step;
-    // The function at every corner of the grid; the outermost ring counts as outside, so every
-    // outline closes inside the grid.
-    let mut v = vec![0.0f32; (n + 1) * (n + 1)];
-    for j in 0..=n {
-        for i in 0..=n {
-            let (x, y) = (at(i), at(j));
-            let (qx, qy) = (c * x + s * y, -s * x + c * y);
-            let f = field(family, form, qx, qy, seed, t);
-            v[j * (n + 1) + i] = if i == 0 || j == 0 || i == n || j == n { f.max(0.01) } else { f };
-        }
-    }
-    let val = |i: usize, j: usize| v[j * (n + 1) + i];
-    // Where the outline crosses each edge of the grid: an edge's id is twice its first corner's
-    // index, plus one for an edge going down.
-    let cross = |id: usize| -> [f32; 2] {
-        let k = id / 2;
-        let (i, j) = (k % (n + 1), k / (n + 1));
-        let (i2, j2) = if id.is_multiple_of(2) { (i + 1, j) } else { (i, j + 1) };
-        let (a, b) = (val(i, j), val(i2, j2));
-        let f = if (a - b).abs() < 1e-9 { 0.5 } else { (a / (a - b)).clamp(0.0, 1.0) };
-        let (x, y) = (mix(at(i), at(i2), f), mix(at(j), at(j2), f));
-        [side * 0.5 + x * r, side * 0.5 + y * r]
-    };
-    let mut links: HashMap<usize, Vec<usize>> = HashMap::new();
-    let mut link = |a: usize, b: usize| {
-        links.entry(a).or_default().push(b);
-        links.entry(b).or_default().push(a);
-    };
-    for j in 0..n {
-        for i in 0..n {
-            let corner = |ii: usize, jj: usize| val(ii, jj) < 0.0;
-            let case = corner(i, j) as u8 | (corner(i + 1, j) as u8) << 1 | (corner(i + 1, j + 1) as u8) << 2 | (corner(i, j + 1) as u8) << 3;
-            let top = (j * (n + 1) + i) * 2;
-            let left = top + 1;
-            let right = (j * (n + 1) + i + 1) * 2 + 1;
-            let bottom = ((j + 1) * (n + 1) + i) * 2;
-            let middle_in = (val(i, j) + val(i + 1, j) + val(i + 1, j + 1) + val(i, j + 1)) < 0.0;
-            match case {
-                1 | 14 => link(left, top),
-                2 | 13 => link(top, right),
-                3 | 12 => link(left, right),
-                4 | 11 => link(right, bottom),
-                6 | 9 => link(top, bottom),
-                7 | 8 => link(left, bottom),
-                5 => {
-                    if middle_in {
-                        link(top, right);
-                        link(bottom, left);
-                    } else {
-                        link(left, top);
-                        link(right, bottom);
-                    }
-                }
-                10 => {
-                    if middle_in {
-                        link(left, top);
-                        link(right, bottom);
-                    } else {
-                        link(top, right);
-                        link(bottom, left);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    // Walk each loop; keep the one that encloses the most.
-    let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    let mut best: Vec<[f32; 2]> = Vec::new();
-    let mut best_area = 0.0f32;
-    let mut starts: Vec<usize> = links.keys().copied().collect();
-    starts.sort_unstable();
-    for start in starts {
-        if seen.contains(&start) {
-            continue;
-        }
-        let mut ring = vec![start];
-        seen.insert(start);
-        let (mut prev, mut cur) = (start, start);
-        loop {
-            let next = links.get(&cur).and_then(|l| l.iter().copied().find(|&e| e != prev && !seen.contains(&e)));
-            match next {
-                Some(e) => {
-                    seen.insert(e);
-                    ring.push(e);
-                    prev = cur;
-                    cur = e;
-                }
-                None => break,
-            }
-        }
-        let points: Vec<[f32; 2]> = ring.into_iter().map(&cross).collect();
-        let area = points.iter().zip(points.iter().cycle().skip(1)).map(|(a, b)| a[0] * b[1] - b[0] * a[1]).sum::<f32>().abs() * 0.5;
-        if area > best_area {
-            best_area = area;
-            best = points;
-        }
-    }
-    best
 }

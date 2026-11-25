@@ -27,9 +27,16 @@ fn cover_px(s: &State, template: Option<&str>, px: u32, pt: f32, radius: f32) ->
     }
 }
 
-/// Cover art loaded at 300x300 for cards, page headers, and medium tiles.
+/// Cover art loaded at 200x200 for cards, grids, and detail page headers.
 pub fn cover(s: &State, template: Option<&str>, pt: f32, radius: f32) -> El {
-    cover_px(s, template, crate::art::COVER_MD, pt, radius)
+    cover_px(s, template, crate::art::COVER_CARD, pt, radius)
+}
+
+/// Cover art placeholder box (same visual geometry as `cover` without requesting a download/decode).
+pub fn cover_placeholder(pt: f32, radius: f32) -> El {
+    let base = el().w(pt).h(pt).radius(radius).fill(veil(0.06)).transition(Transition::none());
+    let edge = el().absolute(0.0, 0.0).w_full().h_full().radius(radius).border(1.0, cover_border());
+    base.center().child(icon(&icons::NOTE, pt * 0.42).color(th::text3())).child(edge)
 }
 
 /// Cover art loaded at 100x100 for track lists, queues, small avatars, and pins.
@@ -51,61 +58,68 @@ fn picture(s: &State, key: &str, name: &str, corners: [f32; 4]) -> El {
     el().key(format!("{name}-{key}")).absolute(0.0, 0.0).w_full().h_full().corners(corners).pixels_fit(&px, SurfaceFit::Fill).transition(Transition::none())
 }
 
-/// The playing track's cover: it fades in once its picture has decoded, and the one it replaces
-/// fades out under it. Until then the cover shown before stays (`hold`), so a track change never
-/// shows an empty square.
-fn swap_picture(s: &State, key: &str, hold: Option<&str>, corners: [f32; 4]) -> Option<El> {
-    let shown = if s.art.ready(key) {
-        key
-    } else {
-        s.art.pixels(key);
-        hold.filter(|h| s.art.ready(h))?
-    };
-    let px = s.art.pixels(shown);
-    Some(
-        el().key(format!("swap-{shown}"))
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
-            .corners(corners)
-            .pixels_fit(&px, SurfaceFit::Fill)
-            .transition(Transition::opacity().springs(th::SWAP)),
-    )
-}
-
 pub fn picture_url(s: &State, url: &str, radius: f32) -> El {
     picture(s, url, "pic", [radius; 4])
 }
 
-/// Playing track cover at 300x300 (mini-player bar) with previous-cover hold while decoding.
+/// Playing track cover at 100x100 for the mini-player dock (`pt <= 64`) or 200x200 on Home.
+/// Renders immediately with `Transition::none()` when ready so opening/closing Now Playing never
+/// fades the cover in from opacity 0 (no grey blink); falls back to the previous cover while decoding.
 pub fn playing_cover(s: &State, t: &Track, pt: f32, radius: f32, track_key: &str) -> El {
     let base = el().w(pt).h(pt).radius(radius).fill(veil(0.06)).transition(Transition::none());
     let edge = el().absolute(0.0, 0.0).w_full().h_full().radius(radius).border(1.0, cover_border());
-    let Some(key) = State::cover_key(t.cover_template()) else {
+    let px = if pt <= 64.0 { crate::art::COVER_SM } else { crate::art::COVER_CARD };
+    let Some(key) = State::cover_key_px(t.cover_template(), px) else {
         return base.center().child(icon(&icons::NOTE, pt * 0.42).color(th::text3())).child(edge);
     };
-    base.children(swap_picture(s, &key, s.palette_key.as_deref(), [radius; 4]))
+    let pic = if s.art.ready(&key) {
+        picture(s, &key, "play", [radius; 4])
+    } else {
+        let _ = s.art.pixels(&key);
+        match s.palette_key.as_deref().filter(|h| s.art.ready(h)) {
+            Some(hold) => picture(s, hold, "play-hold", [radius; 4]),
+            None => picture(s, &key, "play", [radius; 4]),
+        }
+    };
+    base.child(pic)
         .child(edge)
         .child(el().key(track_key.to_owned()).absolute(0.0, 0.0).w_full().h_full().transition(Transition::none()).fx(fx::COVER_MARK))
 }
 
-/// Playing track hero cover at 600x600 (Now Playing), holding the cached 300x300 or previous
-/// cover underneath until the high-res image finishes decoding without mutating the tree mid-flight.
+/// Playing track hero cover loaded at 600x600 ONLY when Now Playing is open and settled (200x200
+/// in CPU mode). Uses `Transition::none()` on both the 200px underlayer and the decoded 600px
+/// upgrade so there is ZERO opacity-0 grey flash on open, upgrade, or collapse.
 pub fn playing_cover_lg(s: &State, t: &Track, pt: f32, radius: f32, track_key: &str, settled: bool) -> El {
+    if fx::cpu_mode() {
+        return playing_cover(s, t, pt, radius, track_key);
+    }
     let base = el().w(pt).h(pt).radius(radius).fill(veil(0.06)).transition(Transition::none());
     let edge = el().absolute(0.0, 0.0).w_full().h_full().radius(radius).border(1.0, cover_border());
     let Some(key_lg) = State::cover_key_px(t.cover_template(), crate::art::COVER_LG) else {
         return base.center().child(icon(&icons::NOTE, pt * 0.42).color(th::text3())).child(edge);
     };
     let lg_ready = s.art.ready(&key_lg);
-    if !lg_ready && settled {
+    if !lg_ready && s.np_open && settled {
+        // Schedule the 600px decode only after Now Playing settles so opening never hitches.
+        let _ = s.art.pixels(&key_lg);
         s.art.watch(&key_lg);
     }
-    // Under the large picture, until it is ready: this track's 300 px cover, or the cover shown
-    // before. Both fade, so a track change crossfades whichever size is there first.
-    let under = (!lg_ready || !settled).then(|| State::cover_key(t.cover_template())).flatten().and_then(|md| swap_picture(s, &md, s.palette_key.as_deref(), [radius; 4]));
-    base.children(under)
-        .children(lg_ready.then(|| swap_picture(s, &key_lg, None, [radius; 4])).flatten())
+    let pic = if lg_ready {
+        picture(s, &key_lg, "np-lg", [radius; 4])
+    } else if let Some(card) = State::cover_key(t.cover_template()) {
+        if s.art.ready(&card) {
+            picture(s, &card, "np-card", [radius; 4])
+        } else {
+            let _ = s.art.pixels(&card);
+            match s.palette_key.as_deref().filter(|h| s.art.ready(h)) {
+                Some(hold) => picture(s, hold, "np-hold", [radius; 4]),
+                None => picture(s, &card, "np-card", [radius; 4]),
+            }
+        }
+    } else {
+        return base.center().child(icon(&icons::NOTE, pt * 0.42).color(th::text3())).child(edge);
+    };
+    base.child(pic)
         .child(edge)
         .child(el().key(track_key.to_owned()).absolute(0.0, 0.0).w_full().h_full().transition(Transition::none()).fx(fx::COVER_MARK))
 }
@@ -168,7 +182,9 @@ pub fn track_title(s: &State, t: &Track, key: &'static str, style: TextStyle, wi
     r
 }
 
-pub fn wave_card(s: &State, key: &str, caption: &str, name: &str, station: Station, w: Option<f32>, more: Option<Vec<WaveChoice>>) -> El {
+#[expect(clippy::too_many_arguments, reason = "explicit wave card configuration and transition alpha")]
+pub fn wave_card_alpha(s: &State, key: &str, caption: &str, name: &str, station: Station, w: Option<f32>, more: Option<Vec<WaveChoice>>, alpha: f32) -> El {
+    let a = alpha.clamp(0.0, 1.0);
     let playing = matches!(&s.player.source, Source::Wave { preset, .. } if station.is(preset)) && s.current().is_some();
     let on = playing && s.player.playing;
     let seed = (key.bytes().fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(u32::from(b))) % 997) as f32 + 0.37;
@@ -188,8 +204,8 @@ pub fn wave_card(s: &State, key: &str, caption: &str, name: &str, station: Stati
         .justify_center()
         .corners(if more.is_some() { [12.0, 0.0, 0.0, 12.0] } else { [12.0; 4] })
         .cursor(Cursor::Pointer)
-        .hov(veil(0.04))
-        .press(veil(0.10))
+        .hov(veil(0.04 * a))
+        .press(veil(0.10 * a))
         .transition(Transition::none())
         .on_press(move |s: &mut State| {
             if playing {
@@ -198,14 +214,14 @@ pub fn wave_card(s: &State, key: &str, caption: &str, name: &str, station: Stati
                 s.start_station(&station, &wave_name);
             }
         })
-        .child(label(caption.to_owned(), th::SMALL, th::text2()).truncate())
+        .child(label(caption.to_owned(), th::SMALL, th::text2().alpha(a)).truncate())
         .child(
             row()
                 .gap(6.0)
                 .items_center()
                 .min_w(0.0)
-                .child(icon(if on { &icons::PAUSE } else { &icons::PLAY }, 16.0).color(th::text()).ml(-3.0))
-                .child(label(name.to_owned(), th::H3, th::text()).truncate().min_w(0.0)),
+                .child(icon(if on { &icons::PAUSE } else { &icons::PLAY }, 16.0).color(th::text().alpha(a)).ml(-3.0))
+                .child(label(name.to_owned(), th::H3, th::text().alpha(a)).truncate().min_w(0.0)),
         );
     let mut c = row()
         .key(key.to_owned())
@@ -220,15 +236,15 @@ pub fn wave_card(s: &State, key: &str, caption: &str, name: &str, station: Stati
                 s.wave_hover = None;
             }
         })
-        .child(blobs::ribbon(format!("{key}-ribbon"), seed, s.palette.wave, hovered, playing, 12.0))
-        // A shade over the moving picture, so the words and the menu arrow stay readable on it.
-        .child(el().absolute(0.0, 0.0).w_full().h_full().radius(12.0).fill(th::bg().alpha(0.32)))
+        .child(blobs::ribbon_alpha(format!("{key}-ribbon"), seed, s.palette.wave, hovered, playing, 12.0, a))
+        // A shade over the GPU ribbon shader so the words and menu arrow stay readable over glowing ribbons.
+        .children(fx::ribbon_ready().then(|| el().absolute(0.0, 0.0).w_full().h_full().radius(12.0).fill(th::bg().alpha(0.32 * a))))
         .child(go);
     if let Some(choices) = more {
         let anchor = format!("{key}-more");
         let open = s.popover_open && matches!(&s.popover, Some(Popover::Waves { anchor: a, .. }) if *a == anchor);
         let a2 = anchor.clone();
-        c = c.child(el().w(1.0).h(24.0).fill(th::text().alpha(0.18))).child(
+        c = c.child(el().w(1.0).h(24.0).fill(veil(0.14 * a))).child(
             row()
                 .key(anchor)
                 .role("button")
@@ -240,17 +256,36 @@ pub fn wave_card(s: &State, key: &str, caption: &str, name: &str, station: Stati
                 .corners([0.0, 12.0, 12.0, 0.0])
                 .center()
                 .cursor(Cursor::Pointer)
-                .hov(veil(0.06))
-                .press(veil(0.12))
+                .hov(veil(0.06 * a))
+                .press(veil(0.12 * a))
                 .transition(Transition::none())
                 .on_press(move |s: &mut State| s.open_popover(Popover::Waves { choices: choices.clone(), anchor: a2.clone() }))
-                .child(icon(&icons::CHEVRON_DOWN, 17.0).color(th::text()).rotate(if open { std::f32::consts::PI } else { 0.0 })),
+                .child(super::chevron(17.0, open, th::text().alpha(a))),
         );
     }
     match w {
         Some(w) => c.w(w),
         None => c.min_w(200.0).max_w(320.0),
     }
+}
+
+/// Compact semantic icon for source badges in Now Playing and on Home.
+pub fn source_glyph(from: &crate::app::PlayingFrom, color: Color, size: f32) -> El {
+    if from.wave {
+        return wave_glyph(size + 2.0, color);
+    }
+    let ic = if matches!(from.name, crate::app::FromName::Word(S::ListeningHistory)) {
+        &icons::CLOCK
+    } else {
+        match from.kind {
+            S::Album | S::Single | S::Compilation => &icons::DISC,
+            S::Artist => &icons::USER,
+            S::Liked => &icons::HEART_FILL,
+            S::Search => &icons::SEARCH,
+            _ => &icons::QUEUE,
+        }
+    };
+    icon(ic, size).color(color)
 }
 
 /// My Wave glyph at `side` points, reusing cached unit curve points.

@@ -348,6 +348,8 @@ pub struct Playlist {
     pub revision: i64,
     /// `"public"` or `"private"`.
     pub visibility: Option<String>,
+    pub modified: Option<String>,
+    pub created: Option<String>,
 }
 
 impl Playlist {

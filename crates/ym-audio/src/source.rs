@@ -6,7 +6,9 @@
 //! queue slot, which the control thread holds for a pointer swap) and never allocates.
 //! Control comes in through atomics ([`Shared`], [`SourceCtl`]), polled every few frames.
 
-use std::io::Cursor;
+use std::fs::File;
+use std::io::{self, BufReader, Cursor, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 use std::num::NonZero;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -96,7 +98,108 @@ impl SourceCtl {
     }
 }
 
-type Pcm = Decoder<Cursor<Arc<[u8]>>>;
+/// Read buffer per open audio stream (64 KiB keeps RAM tiny while keeping disk reads and seeks fast).
+const STREAM_BUF_BYTES: usize = 64 * 1024;
+
+pub(crate) struct FileBacking {
+    path: PathBuf,
+    len: u64,
+    delete_on_drop: bool,
+}
+
+impl Drop for FileBacking {
+    fn drop(&mut self) {
+        if self.delete_on_drop {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+#[derive(Clone)]
+enum AudioBacking {
+    Bytes(Arc<[u8]>),
+    File(Arc<FileBacking>),
+}
+
+/// Audio payload backing a decoded track: either an in-memory buffer or a seekable file on disk.
+/// Clones share the underlying buffer or file handle; temporary stream files are deleted once the
+/// last clone (and every open decoder reading it) drops.
+#[derive(Clone)]
+pub struct AudioData(AudioBacking);
+
+impl AudioData {
+    /// Opens an existing file on disk without copying it into RAM.
+    pub fn file(path: impl Into<PathBuf>, len: u64) -> Self {
+        AudioData(AudioBacking::File(Arc::new(FileBacking { path: path.into(), len, delete_on_drop: false })))
+    }
+
+    /// Opens a temporary file on disk that is removed automatically when playback and any waveform
+    /// analysis finish with it.
+    pub fn temp_file(path: impl Into<PathBuf>, len: u64) -> Self {
+        AudioData(AudioBacking::File(Arc::new(FileBacking { path: path.into(), len, delete_on_drop: true })))
+    }
+
+    pub fn byte_len(&self) -> u64 {
+        match &self.0 {
+            AudioBacking::Bytes(b) => b.len() as u64,
+            AudioBacking::File(f) => f.len,
+        }
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        match &self.0 {
+            AudioBacking::Bytes(_) => None,
+            AudioBacking::File(f) => Some(&f.path),
+        }
+    }
+}
+
+impl From<Arc<[u8]>> for AudioData {
+    fn from(bytes: Arc<[u8]>) -> Self {
+        AudioData(AudioBacking::Bytes(bytes))
+    }
+}
+
+pub(crate) enum AudioReader {
+    Bytes(Cursor<Arc<[u8]>>),
+    File { _keep: Arc<FileBacking>, reader: BufReader<File> },
+}
+
+impl AudioReader {
+    fn open(data: AudioData) -> Result<(Self, u64), AudioError> {
+        match data.0 {
+            AudioBacking::Bytes(bytes) => {
+                let len = bytes.len() as u64;
+                Ok((AudioReader::Bytes(Cursor::new(bytes)), len))
+            }
+            AudioBacking::File(keep) => {
+                let file = File::open(&keep.path).map_err(|e| AudioError::Decode(e.to_string()))?;
+                let len = if keep.len > 0 { keep.len } else { file.metadata().map_or(0, |m| m.len()) };
+                Ok((AudioReader::File { _keep: keep, reader: BufReader::with_capacity(STREAM_BUF_BYTES, file) }, len))
+            }
+        }
+    }
+}
+
+impl Read for AudioReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            AudioReader::Bytes(c) => c.read(buf),
+            AudioReader::File { reader, .. } => reader.read(buf),
+        }
+    }
+}
+
+impl Seek for AudioReader {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        match self {
+            AudioReader::Bytes(c) => c.seek(pos),
+            AudioReader::File { reader, .. } => reader.seek(pos),
+        }
+    }
+}
+
+type Pcm = Decoder<AudioReader>;
 
 /// One decoded track with its own equaliser state.
 pub(crate) struct Track {
@@ -109,12 +212,12 @@ pub(crate) struct Track {
 }
 
 impl Track {
-    pub fn open(token: u64, audio: Arc<[u8]>, hint: &LoadHint) -> Result<Track, AudioError> {
-        let len = audio.len() as u64;
+    pub fn open(token: u64, audio: AudioData, hint: &LoadHint) -> Result<Track, AudioError> {
+        let (reader, len) = AudioReader::open(audio)?;
         if len == 0 {
             return Err(AudioError::Decode("the audio is empty".into()));
         }
-        let mut builder = Decoder::builder().with_data(Cursor::new(audio)).with_byte_len(len).with_gapless(true);
+        let mut builder = Decoder::builder().with_data(reader).with_byte_len(len).with_gapless(true);
         if let Some(ext) = hint.ext.as_deref() {
             builder = builder.with_hint(ext);
         }

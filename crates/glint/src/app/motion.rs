@@ -24,7 +24,7 @@ impl Pop {
             (self.t, self.v) = (target, 0.0);
             return true;
         }
-        let (omega, zeta) = if open { (std::f32::consts::TAU / 0.40, 0.92) } else { (std::f32::consts::TAU / 0.30, 1.0) };
+        let (omega, zeta) = if open { (std::f32::consts::TAU / 0.24, 0.90) } else { (std::f32::consts::TAU / 0.18, 1.0) };
         self.spring(target, omega, zeta, dt)
     }
 
@@ -38,7 +38,7 @@ impl Pop {
             (self.t, self.v) = (target, 0.0);
             return true;
         }
-        let (response, zeta) = if open { (0.52, 0.8) } else { (0.4, 1.0) };
+        let (response, zeta) = if open { (0.34, 0.86) } else { (0.24, 1.0) };
         self.spring(target, std::f32::consts::TAU / response, zeta, dt)
     }
 
@@ -50,7 +50,7 @@ impl Pop {
         self.spring(target, std::f32::consts::TAU / response, zeta, dt)
     }
 
-    /// Slower, critically damped spring used for the Now Playing overlay.
+    /// Critically damped, interruptible spring used for the Now Playing overlay.
     pub fn glide(&mut self, open: bool, dt: f32, reduce_motion: bool) -> bool {
         let target = if open { 1.0 } else { 0.0 };
         if self.t == target && self.v == 0.0 {
@@ -60,8 +60,8 @@ impl Pop {
             (self.t, self.v) = (target, 0.0);
             return true;
         }
-        let omega = std::f32::consts::TAU / if open { 0.42 } else { 0.36 };
-        self.spring(target, omega, 1.0, dt)
+        let (response, zeta) = if open { (0.36, 0.98) } else { (0.28, 1.0) };
+        self.spring(target, std::f32::consts::TAU / response, zeta, dt)
     }
 
     fn spring(&mut self, target: f32, omega: f32, zeta: f32, dt: f32) -> bool {

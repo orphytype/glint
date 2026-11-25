@@ -39,21 +39,6 @@ impl State {
         WaveTune::applies(id).then(|| self.wave_tune(id).knobs())
     }
 
-    pub fn set_wave_tune(&mut self, id: &str, tune: WaveTune) {
-        if tune == self.wave_tune(id) {
-            return;
-        }
-        if tune == WaveTune::of(id) {
-            self.settings.wave_tunes.remove(id);
-        } else {
-            self.settings.wave_tunes.insert(id.to_owned(), tune);
-        }
-        self.mark_settings_dirty();
-        if matches!(&self.player.source, Source::Wave { preset, .. } if preset == id) {
-            self.start_wave(id);
-        }
-    }
-
     fn run_wave(&mut self, preset: &str) {
         self.player.wave_gen += 1;
         let wave = self.player.wave_gen;

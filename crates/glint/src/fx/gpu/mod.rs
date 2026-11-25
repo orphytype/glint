@@ -3,8 +3,9 @@
 
 mod pipes;
 mod resources;
+mod wave;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -14,11 +15,14 @@ use rune::compose::DeviceKey;
 pub use pipes::Pipe;
 pub use resources::Region;
 
-/// The pyramids are kept in half floats whatever the frame is, so a dark blur never bands.
+/// Half-float format for RUNE's isolated layers and stage live readings.
 pub const HDR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-/// Frames a texture bind group is kept after its last draw. Short: it keeps its textures alive.
-const BIND_KEEP: u64 = 4;
+/// Blur pyramid format (`Rgba8Unorm` uses half the VRAM and memory bandwidth of `Rgba16Float`).
+pub const PYR_FMT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+/// Frames a texture bind group or blur pyramid is kept after its last draw.
+const BIND_KEEP: u64 = 2;
 
 /// Initial slot capacity of the shared dynamic uniform buffer (128 * 256 B = 32 KiB, fitting in
 /// a single 64 KiB D3D12 placed buffer allocation).
@@ -81,14 +85,19 @@ pub struct Gpu {
     d0_layout: wgpu::BindGroupLayout,
     /// Bind group layout for `Down` (uses `textureLoad` only, avoiding D3D12 sampler heap waste).
     d_layout: wgpu::BindGroupLayout,
+    /// Bind group layout and pipeline layout for `Pipe::Wave` (reads 3D `wave_field` texture).
+    wave_t_layout: wgpu::BindGroupLayout,
+    wave_layout: wgpu::PipelineLayout,
+    wave_field: Option<wgpu::BindGroup>,
+    wave_building: Option<std::sync::mpsc::Receiver<wgpu::BindGroup>>,
     gfx_layout: wgpu::PipelineLayout,
     down0_layout: wgpu::PipelineLayout,
     down_layout: wgpu::PipelineLayout,
     pipes: HashMap<(wgpu::TextureFormat, Pipe), wgpu::RenderPipeline>,
-    /// Pipelines being built on worker threads (see `ensure`), one channel per worker.
+    /// Pipelines being built on worker threads (see `ensure_pipes`), one channel per worker.
     warm: Vec<std::sync::mpsc::Receiver<((wgpu::TextureFormat, Pipe), wgpu::RenderPipeline)>>,
-    /// The target formats whose pipelines have been asked for.
-    started: Vec<wgpu::TextureFormat>,
+    /// `(target_format, pipe)` pairs already queued or compiled so each shader compiles at most once.
+    queued: HashSet<(wgpu::TextureFormat, Pipe)>,
     sampler: wgpu::Sampler,
     dummy: wgpu::TextureView,
     /// The current playing cover (40x40), for `Pipe::Stage`.
@@ -111,8 +120,6 @@ pub struct Gpu {
     shadow: Vec<U>,
     /// Packed dynamic-stride uniform staging bytes uploaded in one `write_buffer` call per frame.
     shadow_bytes: Vec<u8>,
-    /// The current and previous covers, sharper, for My Wave's cover fill (`Pipe::Wave`).
-    sharp: [Option<wgpu::TextureView>; 2],
     art_id: usize,
     /// The picture behind the player (with its smaller copies), its id, and whether it is active.
     backdrop: Option<(u64, wgpu::TextureView)>,
@@ -168,6 +175,27 @@ impl Gpu {
         let t_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("glint textures"), entries: &[tex(0), tex(1), smp(2)] });
         let d0_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("glint pyramid0"), entries: &[tex(0), smp(1)] });
         let d_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("glint pyramid"), entries: &[tex(0)] });
+        let wave_t_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("glint wave 3d"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                smp(1),
+            ],
+        });
+        let wave_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("glint wave"),
+            bind_group_layouts: &[Some(&u_layout), Some(&wave_t_layout)],
+            immediate_size: 0,
+        });
         let gfx_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("glint gfx"), bind_group_layouts: &[Some(&u_layout), Some(&t_layout)], immediate_size: 0 });
         let down0_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -205,12 +233,16 @@ impl Gpu {
             t_layout,
             d0_layout,
             d_layout,
+            wave_t_layout,
+            wave_layout,
+            wave_field: None,
+            wave_building: None,
             gfx_layout,
             down0_layout,
             down_layout,
             pipes: HashMap::new(),
             warm: Vec::new(),
-            started: Vec::new(),
+            queued: HashSet::new(),
             sampler,
             dummy,
             art: None,
@@ -225,7 +257,6 @@ impl Gpu {
             wave: None,
             shadow: Vec::new(),
             shadow_bytes: Vec::new(),
-            sharp: [None, None],
             art_id: 0,
             backdrop: None,
             backdrop_on: false,
@@ -286,8 +317,8 @@ impl Gpu {
             for m in 0..p.mips.len() as u32 {
                 let mw = u64::from((w >> m).max(1));
                 let mh = u64::from((h >> m).max(1));
-                // Rgba16Float = 8 bytes per texel.
-                pyr_bytes = pyr_bytes.saturating_add(mw * mh * 8);
+                // Rgba8Unorm = 4 bytes per texel.
+                pyr_bytes = pyr_bytes.saturating_add(mw * mh * 4);
             }
         }
         (self.pyrs.len() as u32, pyr_bytes, self.used as u32)
@@ -358,9 +389,56 @@ impl Gpu {
         slot
     }
 
+    /// Ensures the 3D wave material field is synthesized on the GPU without blocking the UI thread
+    /// on live windows (headless snapshots still run synchronously for frame-1 determinism).
+    pub fn ensure_wave_field(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        self.take_wave_field();
+        if self.wave_field.is_some() || self.wave_building.is_some() {
+            return;
+        }
+        if crate::app::is_headless() {
+            self.wave_field = Some(wave::build_wave_field(device, queue, &self.wave_t_layout));
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (dev, q, layout) = (device.clone(), queue.clone(), self.wave_t_layout.clone());
+        let spawned = std::thread::Builder::new().name("glint-wave-init".into()).spawn(move || {
+            let bg = wave::build_wave_field(&dev, &q, &layout);
+            let _ = tx.send(bg);
+        });
+        if spawned.is_ok() {
+            self.wave_building = Some(rx);
+        } else {
+            self.wave_field = Some(wave::build_wave_field(device, queue, &self.wave_t_layout));
+        }
+    }
+
+    /// Collects the finished 3D wave field bind group from its background builder if ready.
+    pub fn take_wave_field(&mut self) {
+        let Some(rx) = &self.wave_building else { return };
+        match rx.try_recv() {
+            Ok(bg) => {
+                self.wave_field = Some(bg);
+                self.wave_building = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.wave_building = None;
+            }
+        }
+    }
+
     /// Records one draw of `pipe` into the open pass.
     pub fn draw(&mut self, device: &wgpu::Device, pass: &mut wgpu::RenderPass<'_>, format: wgpu::TextureFormat, pipe: Pipe, u: usize, b: Binds<'_>) {
         let Some(pipeline) = self.pipes.get(&(format, pipe)) else { return };
+        if pipe == Pipe::Wave {
+            let Some(wave_bg) = self.wave_field.as_ref() else { return };
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &self.ubind, &[u as u32 * self.ustride]);
+            pass.set_bind_group(1, wave_bg, &[]);
+            pass.draw(0..4, 0..1);
+            return;
+        }
         let (bd, pyr): (&wgpu::TextureView, &wgpu::TextureView) = match pipe {
             Pipe::Stage => {
                 let cur = if self.backdrop_on { self.backdrop.as_ref().map(|x| &x.1) } else { None }.or(self.art.as_ref()).unwrap_or(&self.dummy);
@@ -368,16 +446,11 @@ impl Gpu {
                 (cur, live)
             }
             Pipe::Bars => (&self.dummy, self.wave.as_ref().map_or(&self.dummy, |h| &h.1)),
-            Pipe::Wave => {
-                let cur = self.sharp[0].as_ref().unwrap_or(&self.dummy);
-                let prev = self.sharp[1].as_ref().unwrap_or(cur);
-                (cur, prev)
-            }
             Pipe::Glass | Pipe::Veil => {
                 let level = b.pyr.and_then(|d| self.pyrs.get(&(d[0], d[1], b.tag))).map_or(&self.dummy, |p| &p.full);
                 (b.bd.unwrap_or(&self.dummy), level)
             }
-            Pipe::Field | Pipe::Morph | Pipe::Mood | Pipe::Ribbon | Pipe::Butterfly | Pipe::Down0 | Pipe::Down => (&self.dummy, &self.dummy),
+            Pipe::Wave | Pipe::Field | Pipe::Morph | Pipe::Mood | Pipe::Ribbon | Pipe::Butterfly | Pipe::Down0 | Pipe::Down => (&self.dummy, &self.dummy),
         };
         let bind_idx = if let Some(idx) = self.binds.iter().position(|(a, c, _, _)| a == bd && c == pyr) {
             self.binds[idx].3 = self.frame;

@@ -13,9 +13,7 @@ impl State {
         self.menu_open = false;
         self.tmenu_open = false;
         self.close_volume();
-        if page == Page::Search {
-            self.focus_search = true;
-        }
+        self.blur_edits();
         self.sheet_open = false;
         if self.page == page && !self.np_open {
             return;
@@ -26,10 +24,14 @@ impl State {
         }
         self.forward.clear();
         self.np_open = false;
+        if self.settings.reduce_motion || crate::fx::cpu_mode() {
+            self.np = super::Pop::default();
+        }
         self.glide.active = false;
         if self.page != page {
             self.keep_scroll(&page);
             self.page = page.clone();
+            self.art_trim_at = Some(self.now + 0.5);
             self.enter(page);
         }
     }
@@ -90,11 +92,14 @@ impl State {
         self.menu_open = false;
         self.tmenu_open = false;
         self.close_volume();
+        self.blur_edits();
         if self.np_open != np {
             crate::diag_log::event("ui", if np { "np open" } else { "np close" });
             self.log_mem(if np { "np:open" } else { "np:close" });
-            self.art_trim_at = Some(self.now + 2.5);
             self.np_open = np;
+            if self.settings.reduce_motion || crate::fx::cpu_mode() {
+                self.np = super::Pop { t: if np { 1.0 } else { 0.0 }, v: 0.0 };
+            }
         }
         self.glide.active = false;
         let same = self.page == p;
@@ -111,6 +116,7 @@ impl State {
     fn enter(&mut self, page: Page) {
         let kind = match &page {
             Page::Home => "Home",
+            Page::Explore => "Explore",
             Page::Library => "Library",
             Page::Search => "Search",
             Page::Album(_) => "Album",
@@ -119,7 +125,8 @@ impl State {
         };
         crate::diag_log::event("nav", &format!("page={kind}"));
         self.log_mem(&format!("nav:{kind}"));
-        self.art_trim_at = Some(self.now + 2.5);
+        self.art.bump_page();
+        self.art_trim_at = Some(self.now + 0.5);
         let detail = !page.is_root();
         match page {
             Page::Library => self.load_library_tab(self.library.tab),

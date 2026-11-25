@@ -202,3 +202,21 @@ pub fn ill(m: Ill, size: f32, accent: Color, delay: f32) -> El {
     let colour = place(canvas(m.shape(none, none, accent, th::bg()))).transition(draw()).enter_delay(delay + 0.25).looping(LoopSpec::opacity(3.6, 0.0, 0.62, 1.0));
     el().w(w).h(h).child(colour).child(lines)
 }
+
+// ---- Settings navigation icons ------------------------------------------------------------------
+
+/// Clean, logical monochrome outline icons for each Settings sidebar tab.
+pub fn settings_icon(tab: crate::ui::settings::SetTab, active: bool) -> El {
+    use super::icons;
+    use crate::ui::settings::SetTab;
+    let ic = match tab {
+        SetTab::General => &icons::SET_GENERAL,
+        SetTab::Sound => &icons::SET_SOUND,
+        SetTab::Player => &icons::SET_PLAYER,
+        SetTab::Keys => &icons::SET_KEYS,
+        SetTab::Storage => &icons::SET_STORAGE,
+        SetTab::About => &icons::SET_ABOUT,
+    };
+    let ink = if active { th::text() } else { th::text2() };
+    rune::icon(ic, 17.0).color(ink)
+}

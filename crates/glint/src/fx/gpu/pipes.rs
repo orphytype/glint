@@ -2,7 +2,7 @@
 
 use rune::render::CLIP_WGSL;
 
-use super::{Gpu, HDR};
+use super::{Gpu, HDR, PYR_FMT};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Pipe {
@@ -14,7 +14,7 @@ pub enum Pipe {
     Bars,
     /// Behind the open player (`fs_stage`): reads the playing cover and live music readings.
     Stage,
-    /// My Wave's liquid (`fs_wave`).
+    /// Stage Home 3D-texture fluid wave (`fs_wave_stage`).
     Wave,
     /// Mood pebbles and pictures (`fs_mood`).
     Mood,
@@ -35,7 +35,7 @@ impl Pipe {
             Pipe::Veil => "fs_veil",
             Pipe::Morph => "fs_morph",
             Pipe::Bars => "fs_bars",
-            Pipe::Wave => "fs_wave",
+            Pipe::Wave => "fs_wave_stage",
             Pipe::Mood => "fs_mood",
             Pipe::Ribbon => "fs_ribbon",
             Pipe::Butterfly => "fs_butterfly",
@@ -70,9 +70,12 @@ fn shader_source(pipe: Pipe) -> String {
     const BLUR: &str = include_str!("../../shaders/blur.wgsl");
     const NOISE: &str = include_str!("../../shaders/noise.wgsl");
     const SHAPE_HELPERS: &str = include_str!("../../shaders/shape_helpers.wgsl");
-    const LIQUID_HELPERS: &str = include_str!("../../shaders/liquid_helpers.wgsl");
     if pipe.is_down() {
         return format!("{COMMON}\n{}", include_str!("../../shaders/down.wgsl"));
+    }
+    if pipe == Pipe::Wave {
+        // Standalone 3D-texture wave shader (no `gfx_head.wgsl` 2D bindings).
+        return format!("{CLIP_WGSL}\n{COMMON}\n{NOISE}\n{SHAPE_HELPERS}\n{}", include_str!("../../shaders/wave_stage.wgsl"));
     }
     let body = match pipe {
         Pipe::Field => include_str!("../../shaders/field.wgsl"),
@@ -80,28 +83,23 @@ fn shader_source(pipe: Pipe) -> String {
         Pipe::Veil => include_str!("../../shaders/veil.wgsl"),
         Pipe::Morph => include_str!("../../shaders/morph.wgsl"),
         Pipe::Bars => include_str!("../../shaders/bars.wgsl"),
-        Pipe::Wave => include_str!("../../shaders/wave.wgsl"),
         Pipe::Mood => include_str!("../../shaders/mood.wgsl"),
         Pipe::Ribbon => include_str!("../../shaders/ribbon.wgsl"),
         Pipe::Butterfly => include_str!("../../shaders/butterfly.wgsl"),
         Pipe::Stage => include_str!("../../shaders/stage.wgsl"),
-        Pipe::Down0 | Pipe::Down => unreachable!(),
+        Pipe::Wave | Pipe::Down0 | Pipe::Down => unreachable!(),
     };
     let mut src = format!("{CLIP_WGSL}\n{COMMON}\n{GFX_HEAD}\n");
     if matches!(pipe, Pipe::Glass | Pipe::Veil) {
         src.push_str(BLUR);
         src.push('\n');
     }
-    if matches!(pipe, Pipe::Wave | Pipe::Mood | Pipe::Butterfly | Pipe::Stage) {
+    if matches!(pipe, Pipe::Mood | Pipe::Butterfly | Pipe::Stage) {
         src.push_str(NOISE);
         src.push('\n');
     }
-    if matches!(pipe, Pipe::Wave | Pipe::Mood | Pipe::Ribbon | Pipe::Butterfly | Pipe::Stage) {
+    if matches!(pipe, Pipe::Mood | Pipe::Ribbon | Pipe::Butterfly | Pipe::Stage) {
         src.push_str(SHAPE_HELPERS);
-        src.push('\n');
-    }
-    if matches!(pipe, Pipe::Wave) {
-        src.push_str(LIQUID_HELPERS);
         src.push('\n');
     }
     src.push_str(body);
@@ -132,34 +130,83 @@ fn build_pipe(device: &wgpu::Device, module: &wgpu::ShaderModule, layout: &wgpu:
 }
 
 impl Gpu {
-    /// Starts building every pipeline a frame of `format` can use, on worker threads, the first
-    /// time one is drawn.
-    pub fn ensure(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
+    /// Queues only the specific pipelines `wanted` needs (compiles each shader lazily on first
+    /// use instead of compiling all 12 pipelines at startup, cutting startup DXC/driver RAM).
+    pub fn ensure_pipes(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat, wanted: &[Pipe]) {
         self.take_warm();
-        if self.started.contains(&format) {
+        let mut missing: Vec<(wgpu::TextureFormat, Pipe)> = Vec::new();
+        let mut push_one = |target: wgpu::TextureFormat, pipe: Pipe| {
+            let key = (target, pipe);
+            if !self.pipes.contains_key(&key) && self.queued.insert(key) {
+                missing.push(key);
+            }
+        };
+        let mut need_down = false;
+        for &p in wanted {
+            if matches!(p, Pipe::Glass | Pipe::Veil) {
+                need_down = true;
+            }
+            let target = if p.is_down() { PYR_FMT } else { format };
+            push_one(target, p);
+        }
+        if need_down {
+            push_one(PYR_FMT, Pipe::Down0);
+            push_one(PYR_FMT, Pipe::Down);
+        }
+        if missing.is_empty() {
             return;
         }
-        self.started.push(format);
-        // Core UI and Home pipelines go first across available threads; secondary effects follow.
-        let order = [Pipe::Wave, Pipe::Mood, Pipe::Glass, Pipe::Veil, Pipe::Ribbon, Pipe::Field, Pipe::Bars, Pipe::Morph, Pipe::Butterfly, Pipe::Stage];
-        let mut jobs: Vec<Vec<(wgpu::TextureFormat, Pipe)>> = Vec::with_capacity(order.len() + 1);
-        for (i, p) in order.into_iter().enumerate() {
-            if i == 5 {
-                jobs.push(vec![(HDR, Pipe::Down0), (HDR, Pipe::Down)]);
+        // Group `Down0` + `Down` into one job so they share their compiled shader module.
+        let mut down_job: Vec<(wgpu::TextureFormat, Pipe)> = Vec::new();
+        let mut jobs: Vec<Vec<(wgpu::TextureFormat, Pipe)>> = Vec::with_capacity(missing.len());
+        for pair in missing {
+            if pair.1.is_down() {
+                down_job.push(pair);
+            } else {
+                jobs.push(vec![pair]);
             }
-            jobs.push(vec![(format, p)]);
         }
-        let mut jobs: Vec<Vec<(wgpu::TextureFormat, Pipe)>> =
-            jobs.into_iter().map(|v| v.into_iter().filter(|k| !self.pipes.contains_key(k)).collect::<Vec<_>>()).filter(|v| !v.is_empty()).collect();
-        let threads = std::thread::available_parallelism().map_or(4, std::num::NonZero::get).clamp(2, 4).min(jobs.len().max(1));
+        if !down_job.is_empty() {
+            jobs.push(down_job);
+        }
+        // Headless snapshots build synchronously on demand so every effect is ready immediately.
+        if crate::app::is_headless() {
+            for job in jobs {
+                let mut cached_module: Option<(Pipe, wgpu::ShaderModule)> = None;
+                for (target, pipe) in job {
+                    let mod_key = pipe.module_key();
+                    let module = match &cached_module {
+                        Some((k, m)) if *k == mod_key => m,
+                        _ => {
+                            let label = if pipe.is_down() { "glint down" } else { pipe.entry() };
+                            let m = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(shader_source(pipe).into()) });
+                            &cached_module.insert((mod_key, m)).1
+                        }
+                    };
+                    let (layout, vertex) = match pipe {
+                        Pipe::Down0 => (&self.down0_layout, "vs_full"),
+                        Pipe::Down => (&self.down_layout, "vs_full"),
+                        Pipe::Wave => (&self.wave_layout, "vs"),
+                        _ => (&self.gfx_layout, "vs"),
+                    };
+                    let built = build_pipe(device, module, layout, vertex, pipe, target);
+                    self.pipes.entry((target, pipe)).or_insert(built);
+                }
+            }
+            return;
+        }
+        // Build lazily on up to 2 worker threads so startup shaders compile concurrently while
+        // keeping peak DXC/FXC driver heap low.
+        let max_threads = if jobs.len() >= 2 { 2 } else { 1 };
+        let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get).clamp(1, max_threads).min(jobs.len());
         let mut chunks: Vec<Vec<(wgpu::TextureFormat, Pipe)>> = vec![Vec::new(); threads];
         for (i, job) in jobs.drain(..).enumerate() {
-            let slot = if i < threads { i } else { threads - 1 - ((i - threads) % threads) };
-            chunks[slot].extend(job);
+            chunks[i % threads].extend(job);
         }
         for chunk in chunks.into_iter().filter(|c| !c.is_empty()) {
             let (tx, rx) = std::sync::mpsc::channel();
-            let (device, gfx_layout, down0_layout, down_layout) = (device.clone(), self.gfx_layout.clone(), self.down0_layout.clone(), self.down_layout.clone());
+            let (device, gfx_layout, wave_layout, down0_layout, down_layout) =
+                (device.clone(), self.gfx_layout.clone(), self.wave_layout.clone(), self.down0_layout.clone(), self.down_layout.clone());
             let spawned = std::thread::Builder::new().name("glint-pipelines".into()).spawn(move || {
                 let mut cached_module: Option<(Pipe, wgpu::ShaderModule)> = None;
                 for (target, pipe) in chunk {
@@ -175,6 +222,7 @@ impl Gpu {
                     let (layout, vertex) = match pipe {
                         Pipe::Down0 => (&down0_layout, "vs_full"),
                         Pipe::Down => (&down_layout, "vs_full"),
+                        Pipe::Wave => (&wave_layout, "vs"),
                         _ => (&gfx_layout, "vs"),
                     };
                     let t0 = std::time::Instant::now();
@@ -191,38 +239,47 @@ impl Gpu {
                 self.warm.push(rx);
             }
         }
-        // Headless snapshots wait for workers so every effect is in the picture.
-        if crate::app::is_headless() {
-            for rx in std::mem::take(&mut self.warm) {
-                for (k, p) in rx {
-                    self.pipes.entry(k).or_insert(p);
-                }
-            }
-        }
     }
 
-    /// Whether every pipeline asked for so far is built.
+    pub fn ensure_pipe(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat, pipe: Pipe) {
+        self.ensure_pipes(device, format, &[pipe]);
+    }
+
+    pub fn ensure_glass(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
+        self.ensure_pipes(device, format, &[Pipe::Glass, Pipe::Veil]);
+    }
+
+    /// Whether every pipeline and compute resource asked for so far is built.
     pub fn ready(&self) -> bool {
-        self.warm.is_empty()
+        self.warm.is_empty() && self.wave_building.is_none()
     }
 
     /// Whether glass and progressive veil pipelines are built.
     pub fn glass_ready(&self, format: wgpu::TextureFormat) -> bool {
         self.pipes.contains_key(&(format, Pipe::Glass))
             && self.pipes.contains_key(&(format, Pipe::Veil))
-            && self.pipes.contains_key(&(HDR, Pipe::Down0))
-            && self.pipes.contains_key(&(HDR, Pipe::Down))
+            && self.pipes.contains_key(&(PYR_FMT, Pipe::Down0))
+            && self.pipes.contains_key(&(PYR_FMT, Pipe::Down))
     }
 
-    /// Whether Home garden shapes (My Wave, moods, ribbons) are built.
-    pub fn shapes_ready(&self, format: wgpu::TextureFormat) -> bool {
-        self.pipes.contains_key(&(format, Pipe::Wave)) && self.pipes.contains_key(&(format, Pipe::Mood)) && self.pipes.contains_key(&(format, Pipe::Ribbon))
+    pub fn wave_ready(&self, format: wgpu::TextureFormat) -> bool {
+        self.pipes.contains_key(&(format, Pipe::Wave)) && self.wave_field.is_some()
     }
 
-    /// Whether the essential pipelines for Home, glass panels, veils, and bars are built.
-    pub fn core_ready(&self, format: wgpu::TextureFormat) -> bool {
-        const CORE: [Pipe; 8] = [Pipe::Field, Pipe::Glass, Pipe::Veil, Pipe::Wave, Pipe::Mood, Pipe::Ribbon, Pipe::Bars, Pipe::Morph];
-        CORE.into_iter().all(|p| self.pipes.contains_key(&(format, p))) && self.pipes.contains_key(&(HDR, Pipe::Down0)) && self.pipes.contains_key(&(HDR, Pipe::Down))
+    pub fn stage_ready(&self, format: wgpu::TextureFormat) -> bool {
+        self.pipes.contains_key(&(format, Pipe::Stage))
+    }
+
+    pub fn bars_ready(&self, format: wgpu::TextureFormat) -> bool {
+        self.pipes.contains_key(&(format, Pipe::Bars))
+    }
+
+    pub fn mood_ready(&self, format: wgpu::TextureFormat) -> bool {
+        self.pipes.contains_key(&(format, Pipe::Mood))
+    }
+
+    pub fn ribbon_ready(&self, format: wgpu::TextureFormat) -> bool {
+        self.pipes.contains_key(&(format, Pipe::Ribbon))
     }
 
     /// Whether the pipeline a slot drawn into a target of `format` needs is built yet.
@@ -242,7 +299,8 @@ impl Gpu {
             return false;
         }
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(pipe.entry()), source: wgpu::ShaderSource::Wgsl(shader_source(pipe).into()) });
-        let built = build_pipe(device, &module, &self.gfx_layout, "vs", pipe, format);
+        let layout = if pipe == Pipe::Wave { &self.wave_layout } else { &self.gfx_layout };
+        let built = build_pipe(device, &module, layout, "vs", pipe, format);
         self.pipes.insert((format, pipe), built);
         true
     }

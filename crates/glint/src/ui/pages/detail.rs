@@ -3,7 +3,7 @@
 
 use rune::{Cursor, El, FileDialogOptions, Transition, Tx, col, el, icon, row, text_input};
 
-use super::shared::{GRID_GAP, album_card, artist_card, column, facts_line, fit, heading_side, hscroll, play_button, row_arrows, track_list};
+use super::shared::{GRID_GAP, album_card_lazy, artist_card_lazy, column, facts_line, fit, heading_side, hscroll, hscroll_range, play_button, row_arrows, track_list};
 use crate::app::{DiscKind, DiscSort, Load, Page, Popover, Sheet, State, Station, TrackSort};
 use crate::i18n::{Lang, S};
 use crate::theme::{self as th, Pal};
@@ -16,7 +16,7 @@ use crate::ui::{
 pub(super) const HEAD_SIDE: f32 = 160.0;
 pub(super) const HEAD_SIDE_S: f32 = 140.0;
 pub(crate) const HEAD_COVER_R: f32 = 18.0;
-pub(super) const HEAD_STEP_BY: f32 = 6.0;
+pub(super) const HEAD_STEP_BY: f32 = 5.0;
 pub(super) const HEAD_STEP_BUTTONS: f32 = 14.0;
 pub(super) const HEAD_GAP: f32 = 24.0;
 
@@ -52,38 +52,44 @@ fn detail_facts(s: &State) -> Option<El> {
     if d.is_artist {
         return None;
     }
-    let about = d.facts.iter().find(|(n, _)| *n == S::Description).map(|(_, v)| v.clone());
-
     let release_date = d.facts.iter().find(|(n, _)| *n == S::ReleaseDate).map(|(_, v)| v.as_str());
     let version = d.facts.iter().find(|(n, _)| *n == S::Version).map(|(_, v)| v.as_str());
     let has_colophon = release_date.is_some() || version.is_some() || !d.labels.is_empty();
-    if !has_colophon && about.is_none() {
+    if !has_colophon {
         return None;
     }
 
-    let mut c = col().key("d-about").w_full().mt(-16.0).gap(12.0).transition(Transition::none()).child(el().w_full().h(1.0).fill(th::veil(0.06)));
-    if let Some(text) = about {
-        c = c.child(label(text, th::BODY, th::text2()).wrap().max_lines(8).max_w(720.0));
+    let mut lines = col().grow(1.0).min_w(0.0).gap(3.0);
+    let top = facts_line([release_date.unwrap_or_default().to_owned(), version.unwrap_or_default().to_owned()]);
+    if !top.is_empty() {
+        lines = lines.child(label(top, th::SMALL, th::text3()).truncate().min_w(0.0));
     }
-    if has_colophon {
-        let mut lines = col().grow(1.0).min_w(0.0).gap(3.0);
-        let top = facts_line([release_date.unwrap_or_default().to_owned(), version.unwrap_or_default().to_owned()]);
-        if !top.is_empty() {
-            lines = lines.child(label(top, th::SMALL, th::text3()).truncate().min_w(0.0));
-        }
-        if !d.labels.is_empty() {
-            lines = lines.child(label(format!("℗ {}", d.labels.join(", ")), th::SMALL, th::text3()).truncate().min_w(0.0));
-        }
-        let more = kit::more_link("d-details-link", S::Details.get(lang)).on_press(|s: &mut State| s.open_sheet(Sheet::Page));
-        c = c.child(row().key("d-colophon").w_full().gap(16.0).items_center().child(lines).child(more));
+    if !d.labels.is_empty() {
+        lines = lines.child(label(format!("℗ {}", d.labels.join(", ")), th::SMALL, th::text3()).truncate().min_w(0.0));
     }
-    Some(c)
+    let more = kit::more_link("d-details-link", S::Details.get(lang)).on_press(|s: &mut State| s.open_sheet(Sheet::Page));
+    Some(
+        col()
+            .key("d-about")
+            .w_full()
+            .mt(-16.0)
+            .gap(12.0)
+            .transition(Transition::none())
+            .child(el().w_full().h(1.0).fill(th::veil(0.06)))
+            .child(row().key("d-colophon").w_full().gap(16.0).items_center().child(lines).child(more)),
+    )
 }
 
 fn head_backdrop(s: &State, w: f32, side: f32) -> Option<El> {
+    if crate::fx::cpu_mode() {
+        return None;
+    }
     let tpl = s.detail.cover.as_deref()?;
-    let pic = State::cover_key(Some(tpl))?;
-    let px = s.art.soft(&pic)?;
+    // `head_picture` loads `COVER_CARD` (200px) for 140-160 pt headers; read that key first so
+    // the backdrop reliably appears on every album, playlist, and artist page without waiting on
+    // an unrequested `COVER_MD` copy.
+    let card_pic = State::cover_key_px(Some(tpl), crate::art::COVER_CARD)?;
+    let px = s.art.soft(&card_pic)?;
     let page_w = (w - RAIL_W).max(0.0);
     let left = ((page_w - page_w.min(PAGE_MAX)) * 0.5).max(0.0);
     let h = kit::TITLE_H + 16.0 + side + 120.0;
@@ -95,7 +101,15 @@ fn head_backdrop(s: &State, w: f32, side: f32) -> Option<El> {
             .h(h)
             .clip_fade(0.0, 0.0, 0.0, h * 0.66)
             .transition(Transition::none())
-            .child(el().absolute(0.0, 0.0).w_full().h_full().opacity(strength).pixels_fit(&px, rune::SurfaceFit::Fill)),
+            .child(
+                el().key(format!("d-backdrop-img-{tpl}"))
+                    .absolute(0.0, 0.0)
+                    .w_full()
+                    .h_full()
+                    .opacity(strength)
+                    .transition(Transition::opacity().springs(th::SWAP))
+                    .pixels_fit(&px, rune::SurfaceFit::Fill),
+            ),
     )
 }
 
@@ -114,10 +128,17 @@ fn head_facts(s: &State, kind: S) -> String {
             _ => {}
         }
     }
-    if let Some(n) = d.monthly_listeners {
-        parts.push(format_listeners(n, lang));
-    }
     facts_line(parts)
+}
+
+fn artist_listeners_row(n: u64, lang: Lang) -> El {
+    row()
+        .key("d-listeners")
+        .min_w(0.0)
+        .gap(5.0)
+        .items_center()
+        .child(label(crate::i18n::group_digits(n), th::BODY_M, th::text()))
+        .child(label(S::ListenersPerMonth.get(lang), th::BODY, th::text2()).truncate().min_w(0.0))
 }
 
 fn head_buttons(s: &State) -> El {
@@ -217,7 +238,7 @@ pub(super) fn detail(s: &State, w: f32) -> El {
                 th::BYLINE_M,
                 true,
                 "d-art",
-                th::text().alpha(0.9),
+                th::text().alpha(0.84),
                 by_w,
                 true,
             )));
@@ -225,10 +246,29 @@ pub(super) fn detail(s: &State, w: f32) -> El {
             meta = meta.child(label(d.subtitle.clone(), th::BYLINE_M, th::text2()).truncate().min_w(0.0).mt(HEAD_STEP_BY));
         }
         if !coming {
-            let facts = head_facts(s, kind);
-            if !facts.is_empty() {
-                let (style, color, gap) = if d.is_artist { (th::BODY, th::text2(), 6.0) } else { (th::SMALL, th::text3(), if has_by { 4.0 } else { 6.0 }) };
-                meta = meta.child(label(facts, style, color).truncate().min_w(0.0).mt(gap));
+            if d.is_artist {
+                if let Some(n) = d.monthly_listeners {
+                    meta = meta.child(artist_listeners_row(n, lang).mt(6.0));
+                }
+            } else {
+                let facts = head_facts(s, kind);
+                if !facts.is_empty() {
+                    meta = meta.child(label(facts, th::SMALL, th::text3()).truncate().min_w(0.0).mt(if has_by { 4.0 } else { 6.0 }));
+                }
+            }
+            if !d.is_artist
+                && let Some(desc) = d.facts.iter().find(|(n, _)| *n == S::Description).map(|(_, v)| v.trim()).filter(|v| !v.is_empty())
+            {
+                meta = meta.child(
+                    el().key("d-desc")
+                        .role("button")
+                        .label(S::Details.get(lang))
+                        .cursor(Cursor::Pointer)
+                        .mt(8.0)
+                        .max_w(580.0)
+                        .on_press(|s: &mut State| s.open_sheet(Sheet::Page))
+                        .child(label(desc.to_owned(), th::SMALL, th::text2()).wrap().max_lines(2).min_w(0.0)),
+                );
             }
         } else {
             meta = meta.child(kit::text_bone("d-by-bone", th::BYLINE_M.line_height, 12.0, 200.0).mt(6.0));
@@ -246,10 +286,17 @@ pub(super) fn detail(s: &State, w: f32) -> El {
                 .gap(HEAD_GAP)
                 .items_center()
                 .transition(Transition::none())
-                .child(head_picture(s, side))
+                .child(kit::rise(head_picture(s, side), 0))
                 .child(kit::rise(meta.grow(1.0).min_w(0.0), 1))
         } else {
-            col().key("detail-head").w_full().mt(8.0).gap(20.0).transition(Transition::none()).child(head_picture(s, side)).child(kit::rise(meta.w_full().min_w(0.0), 1))
+            col()
+                .key("detail-head")
+                .w_full()
+                .mt(8.0)
+                .gap(20.0)
+                .transition(Transition::none())
+                .child(kit::rise(head_picture(s, side), 0))
+                .child(kit::rise(meta.w_full().min_w(0.0), 1))
         };
         body = body.child(head);
     }
@@ -303,7 +350,7 @@ pub(super) fn detail(s: &State, w: f32) -> El {
                         .min_w(0.0)
                         .color(th::text())
                         .placeholder(S::SearchTrack.get(lang), th::text3())
-                        .caret(p.accent, p.accent.alpha(0.30))
+                        .caret(s.caret_color(d.filter.focused, p.accent), p.accent.alpha(0.30))
                         .on_edit(|s: &mut State| &mut s.detail.filter);
                     let clear = (!d.filter.text.trim().is_empty()).then(|| kit::search_clear("pl-search-clear", lang).on_press(|s: &mut State| s.detail.filter.clear()));
                     let field = kit::search_field("pl-search-field", kit::BTN_H, input, clear).grow(1.0).min_w(0.0);
@@ -323,7 +370,7 @@ pub(super) fn detail(s: &State, w: f32) -> El {
                             tx.scroll_to_y(s.page.key(), 0.0);
                         });
                         if d.all_tracks.is_loading() {
-                            m = m.child(icon(&icons::SPINNER, 14.0).color(th::text3()).looping(rune::LoopSpec::rotation(0.9)));
+                            m = m.child(kit::spin(icon(&icons::SPINNER, 14.0).color(th::text3())));
                         }
                         m
                     });
@@ -340,13 +387,14 @@ pub(super) fn detail(s: &State, w: f32) -> El {
                 let open = s.popover_open && matches!(s.popover, Some(Popover::DiscSort { .. }));
                 let changed = d.disc_sort != DiscSort::default() || d.disc_kind != DiscKind::default();
                 let now = changed.then(|| if d.disc_kind != DiscKind::default() { d.disc_kind.name() } else { d.disc_sort.name() }.get(lang));
-                let sort = kit::sort_button("d-disc-sort", s, now, open).on_press(|s: &mut State| s.open_popover(Popover::DiscSort { anchor: "d-disc-sort".into() }));
+                let sort = kit::sort_button_sm("d-disc-sort", s, now, open).on_press(|s: &mut State| s.open_popover(Popover::DiscSort { anchor: "d-disc-sort".into() }));
                 let row_key = format!("detail-albums-{:?}-{:?}", d.disc_sort, d.disc_kind);
                 let arrows = row_arrows(s, &row_key, shown.len(), card, w);
                 let releases = if shown.is_empty() {
                     row().key("d-albums-none").h(card * 0.5).items_center().pl(4.0).child(label(S::NoneOfKind.get(lang), th::BODY, th::text3()))
                 } else {
-                    hscroll(row_key, shown.iter().map(|a| album_card(s, a, card)).collect())
+                    let vis = hscroll_range(&row_key, shown.len(), card, w);
+                    hscroll(s, row_key, card, shown.iter().enumerate().map(|(idx, a)| album_card_lazy(s, a, card, vis.contains(&idx))).collect())
                 };
                 body = body.child(
                     col()
@@ -359,13 +407,19 @@ pub(super) fn detail(s: &State, w: f32) -> El {
             }
             if !all_mode && !d.similar.is_empty() {
                 let ar_size = (card * 0.86).floor();
+                let vis = hscroll_range("detail-similar", d.similar.len(), ar_size, w);
                 body = body.child(
                     col()
                         .key("d-similar")
                         .gap(14.0)
                         .transition(Transition::asymmetric(Transition::offset(0.0, 10.0), Transition::none()).springs(th::RISE))
                         .child(kit::heading("d-similar-h", S::SimilarArtists.get(lang), row_arrows(s, "detail-similar", d.similar.len(), ar_size, w)))
-                        .child(hscroll("detail-similar".into(), d.similar.iter().map(|a| artist_card(s, a, ar_size)).collect())),
+                        .child(hscroll(
+                            s,
+                            "detail-similar".into(),
+                            ar_size,
+                            d.similar.iter().enumerate().map(|(idx, a)| artist_card_lazy(s, a, ar_size, vis.contains(&idx))).collect(),
+                        )),
                 );
             }
             if d.tracks.is_empty() && d.albums.is_empty() {
@@ -404,8 +458,4 @@ fn track_sort_part(s: &State) -> El {
     let open = s.popover_open && matches!(s.popover, Some(Popover::TrackSort { .. }));
     let now = (d.sort != TrackSort::Original).then(|| d.sort.name().get(s.lang));
     kit::seg_sort("d-sort", s, now, open).on_press(|s: &mut State| s.open_popover(Popover::TrackSort { anchor: "d-sort".into() }))
-}
-
-fn format_listeners(n: u64, lang: Lang) -> String {
-    format!("{} {}", crate::i18n::group_digits(n), S::ListenersPerMonth.get(lang))
 }

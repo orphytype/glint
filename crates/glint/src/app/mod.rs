@@ -30,7 +30,8 @@ use crate::store::{DownloadStore, QualityPref, Settings, Store};
 pub use model::{DownloadActivity, FromName, Library, Lives, LyricsUi, Player, PlayingFrom, Popover, RowDrag, Sheet, Source, Station, Toast, TrackMenu, WaveChoice};
 pub use motion::{LYRIC_LEAD_MS, PAGE_KEY, Pop, WheelGlide, clear_scroll, page_scroll, report_scroll, scroll_thumb};
 pub use types::{
-    Detail, DiscKind, DiscSort, DownloadFail, DownloadState, LibTab, Load, LoginUi, NpTab, Page, PinnedItem, SearchTab, SearchUi, Session, TrackSort, release_kind_name,
+    AlbumSort, ArtistSort, Detail, DiscKind, DiscSort, DownloadFail, DownloadState, LibTab, Load, LoginUi, NpTab, Page, PinnedItem, PlaylistSort, SearchTab, SearchUi, Session,
+    TrackSort, album_kind_name, release_kind_name,
 };
 
 /// The app's home page, sent to lrc.red as the contact required by its API terms.
@@ -38,34 +39,6 @@ pub const APP_URL: &str = "https://github.com/orphytype/glint";
 
 /// Maximum entries kept in search history.
 pub const SEARCH_HISTORY: usize = 12;
-
-/// Local clock hour (fixed to evening in headless runs so scene snapshots repeat).
-pub fn local_hour() -> u32 {
-    if is_headless() {
-        return 20;
-    }
-    #[cfg(windows)]
-    {
-        // SAFETY: SYSTEMTIME is plain data; GetLocalTime initializes all fields in place.
-        let mut t: windows_sys::Win32::Foundation::SYSTEMTIME = unsafe { std::mem::zeroed() };
-        // SAFETY: `t` is a valid mutable pointer to a SYSTEMTIME struct.
-        unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut t) };
-        u32::from(t.wHour)
-    }
-    #[cfg(unix)]
-    {
-        // SAFETY: `time` with a null pointer only returns the time; `localtime_r` writes only `tm`.
-        unsafe {
-            let now = libc::time(std::ptr::null_mut());
-            let mut tm: libc::tm = std::mem::zeroed();
-            if libc::localtime_r(&now, &mut tm).is_null() { 12 } else { tm.tm_hour.clamp(0, 23) as u32 }
-        }
-    }
-    #[cfg(not(any(windows, unix)))]
-    {
-        12
-    }
-}
 
 pub fn is_headless() -> bool {
     static HEADLESS: OnceLock<bool> = OnceLock::new();
@@ -113,6 +86,10 @@ pub struct State {
     pub win_size: Cell<[f32; 2]>,
     pub resized_at: Cell<f64>,
     pub lives: Lives,
+    pub seek_w_dock: Cell<f32>,
+    pub seek_w_np: Cell<f32>,
+    pub seek_px_dock: Cell<u32>,
+    pub seek_px_np: Cell<u32>,
     pub clock_secs: Cell<u64>,
     pub remaining_secs: Cell<u64>,
     pub clock_text: RefCell<String>,
@@ -151,9 +128,9 @@ pub struct State {
     // playback
     pub player: Player,
     pub lyrics: LyricsUi,
-    pub ly_e: Vec<f32>,
     pub ly_panel: Cell<bool>,
     pub np_open: bool,
+    pub np: Pop,
     pub np_tab: NpTab,
     pub np_tab_prev: NpTab,
     pub menu_open: bool,
@@ -174,6 +151,8 @@ pub struct State {
     pub sheet_drag_mark: Option<(std::time::Instant, f32)>,
     pub sheet_credits: (Option<String>, Load<Vec<ym_api::Credit>>),
     pub settings_open: bool,
+    pub settings_pop: Pop,
+    pub bar_pop: Pop,
     pub settings_tab: crate::ui::settings::SetTab,
     /// The search at the top of the Settings sidebar.
     pub settings_find: TextEdit,
@@ -183,23 +162,25 @@ pub struct State {
     pub title_hover: Option<(&'static str, f64)>,
     pub marquee_hot: Option<String>,
     pub vol_open: bool,
+    pub vol: Pop,
     pub vol_button_hover: bool,
     pub vol_card_hover: bool,
     pub over_bar: bool,
     pub over_titlebar: bool,
     pub vol_close_at: Option<f64>,
-    pub vol: Pop,
     pub popover: Option<Popover>,
     pub popover_open: bool,
     pub pop: Pop,
     pub avatar: Option<String>,
     pub home_seed: u64,
+    pub wave_arc: f32,
+    pub wave_arc_to: f32,
+    pub wave_arc_vel: f32,
     pub garden_hover: Option<&'static str>,
     pub wave_hover: Option<String>,
     pub glide: WheelGlide,
     pub scroll_memory: HashMap<String, f32>,
     pub scroll_restore: Option<(String, f32, f64)>,
-    pub np: Pop,
     pub restore_kick_at: f64,
     /// The main window was maximized when it hid: maximize it again once it is back.
     pub remax: bool,
@@ -243,6 +224,9 @@ pub struct State {
     pub fx_pulse: Live<[f32; 2]>,
     pub fx_phase: bool,
     pub fx_next: f64,
+    pub caret_sig: u64,
+    pub caret_since: f64,
+    pub caret_visible: bool,
     pub bugs_at: f64,
     pub lyrics_gen: u64,
     pub boot_gen: u64,
@@ -251,12 +235,17 @@ pub struct State {
     pub deleted_downloads: HashSet<String>,
     pub art_trim_at: Option<f64>,
     pub art_trimmed_at: f64,
+    pub art_evict_gen: u64,
+    pub pipes_gen_seen: u64,
+    pub ws_trimmed_at: f64,
+    pub startup_trim_at: Option<f64>,
     pub row_drag: Option<RowDrag>,
     pub local_playlists: std::collections::BTreeMap<String, crate::store::LocalPlaylistData>,
     pub mini_app: Option<AppHandle<crate::ui::mini::MiniState>>,
     pub mini_win: Option<rune::WindowHandle>,
     pub mini_open: bool,
     pub mini_sync_key: u64,
+    pub restart_pending: bool,
 }
 
 impl State {
@@ -295,7 +284,18 @@ impl State {
             win_w: Cell::new(1280.0),
             win_size: Cell::new([0.0, 0.0]),
             resized_at: Cell::new(f64::NEG_INFINITY),
-            lives: Lives { clock: LiveText::new("0:00"), remaining: LiveText::new("-0:00") },
+            lives: Lives {
+                clock: LiveText::new("0:00"),
+                remaining: LiveText::new("-0:00"),
+                seek_dock: Live::new([0.0, 0.0, 0.0, 4.0]),
+                seek_dock_thumb: Live::new([0.0, 0.0, 12.0, 12.0]),
+                seek_np: Live::new([0.0, 0.0, 0.0, 4.0]),
+                seek_np_thumb: Live::new([0.0, 0.0, 12.0, 12.0]),
+            },
+            seek_w_dock: Cell::new(0.0),
+            seek_w_np: Cell::new(0.0),
+            seek_px_dock: Cell::new(u32::MAX),
+            seek_px_np: Cell::new(u32::MAX),
             clock_secs: Cell::new(u64::MAX),
             remaining_secs: Cell::new(u64::MAX),
             clock_text: RefCell::new(String::new()),
@@ -350,8 +350,8 @@ impl State {
                 next_audio: None,
             },
             lyrics: LyricsUi::default(),
-            ly_e: Vec::new(),
             np_open: false,
+            np: Pop::default(),
             np_tab: NpTab::Closed,
             np_tab_prev: NpTab::Closed,
             wave_cover: RefCell::new((false, None)),
@@ -362,6 +362,7 @@ impl State {
             tmenu: Pop::default(),
             sheet: None,
             sheet_open: false,
+            sheet_pop: Pop::default(),
             sheet_seq: 0,
             id_peek: false,
             backdrop: None,
@@ -371,8 +372,9 @@ impl State {
             sheet_drag_vel: 0.0,
             sheet_drag_mark: None,
             sheet_credits: (None, Load::Idle),
-            sheet_pop: Pop::default(),
             settings_open: false,
+            settings_pop: Pop::default(),
+            bar_pop: Pop::default(),
             settings_tab: crate::ui::settings::SetTab::default(),
             settings_find: TextEdit::default(),
             settings_found: None,
@@ -380,17 +382,20 @@ impl State {
             title_hover: None,
             marquee_hot: None,
             vol_open: false,
+            vol: Pop::default(),
             vol_button_hover: false,
             vol_card_hover: false,
             over_bar: false,
             over_titlebar: false,
             vol_close_at: None,
-            vol: Pop::default(),
             popover: None,
             popover_open: false,
             pop: Pop::default(),
             avatar: None,
             home_seed: if headless { 7 } else { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(7, |d| d.as_nanos() as u64) },
+            wave_arc: 3.0,
+            wave_arc_to: 3.0,
+            wave_arc_vel: 0.0,
             swarm: crate::bugs::Swarm::new(0),
             bug_geom: RefCell::new(crate::bugs::Geom::default()),
             glide: WheelGlide::default(),
@@ -398,7 +403,6 @@ impl State {
             scroll_restore: None,
             garden_hover: None,
             wave_hover: None,
-            np: Pop::default(),
             restore_kick_at: 0.0,
             remax: false,
             art_landed: 0,
@@ -442,22 +446,70 @@ impl State {
             fx_pulse: Live::new([0.0, 0.0]),
             fx_phase: false,
             fx_next: 0.0,
+            caret_sig: 0,
+            caret_since: 0.0,
+            caret_visible: true,
             bugs_at: 0.0,
             lyrics_gen: 0,
             boot_gen: 0,
             boot_playback_done: headless,
             downloads_gen: 0,
             deleted_downloads: HashSet::new(),
-            art_trim_at: None,
+            art_trim_at: Some(3.5),
             art_trimmed_at: 0.0,
+            art_evict_gen: 0,
+            pipes_gen_seen: 0,
+            ws_trimmed_at: -100.0,
+            startup_trim_at: None,
             row_drag: None,
             local_playlists: if headless { std::collections::BTreeMap::new() } else { store.load_local_playlists() },
             mini_app: None,
             mini_win: None,
             mini_open: false,
             mini_sync_key: 0,
+            restart_pending: false,
             settings,
             store,
         }
+    }
+
+    /// Signature of the currently focused text input (field id, text, anchor, focus), or `None`
+    /// when no text input has focus. Used to reset and drive the 530 ms caret blink timer.
+    pub fn focused_edit_sig(&self) -> Option<u64> {
+        use std::hash::{Hash, Hasher};
+        let fields: [(u8, &TextEdit); 6] = [
+            (1, &self.search.edit),
+            (2, &self.library.filter),
+            (3, &self.detail.filter),
+            (4, &self.settings_find),
+            (5, &self.name_edit),
+            (6, &self.login.token),
+        ];
+        for (id, edit) in fields {
+            if edit.focused {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                id.hash(&mut h);
+                edit.text.hash(&mut h);
+                edit.anchor.hash(&mut h);
+                edit.focus.hash(&mut h);
+                return Some(h.finish() | 1);
+            }
+        }
+        None
+    }
+
+    /// Clears focus flags across all text inputs (used on page switches and modal open/close).
+    pub fn blur_edits(&mut self) {
+        self.search.edit.focused = false;
+        self.library.filter.focused = false;
+        self.detail.filter.focused = false;
+        self.settings_find.focused = false;
+        self.name_edit.focused = false;
+        self.login.token.focused = false;
+    }
+
+    /// Returns the blinking caret colour for a focused text input (transparent whenever unfocused).
+    pub fn caret_color(&self, focused: bool, base: rune::Color) -> rune::Color {
+        if focused && (self.caret_visible || self.headless) { base } else { rune::Color::TRANSPARENT }
     }
 }

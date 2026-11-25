@@ -44,7 +44,8 @@ pub fn counting(s: &State) -> bool {
     let Load::Ready(l) = &s.lyrics.lyrics else { return false };
     let Some(first) = count_start(l) else { return false };
     let left = i64::from(first) - i64::from(s.lyric_ms());
-    s.player.playing && left > -(GRAIN_S * 1000.0) as i64 - 100
+    let tail = if crate::fx::cpu_mode() || s.settings.reduce_motion { 0 } else { (GRAIN_S * 1000.0) as i64 + 100 };
+    s.player.playing && left > -tail
 }
 
 /// Cached 1D top-surface contour of the first wrapped visual line below `ly-note`.
@@ -277,13 +278,13 @@ fn simulate_on_contour(pos: [f32; 2], vel: [f32; 2], r: f32, top_y: f32, contour
     let (mut x, mut y) = (pos[0], pos[1]);
     let (mut vx, mut vy) = (vel[0], vel[1]);
     const G: f32 = 1080.0;
-    const DT: f32 = 1.0 / 120.0;
+    const DT: f32 = 1.0 / 60.0;
     let steps = (age / DT).ceil() as usize;
     let mut rem = age;
     let mut settled = false;
     let max_drop = top_y + contour.bottom_y + 12.0;
 
-    for _ in 0..steps.min(260) {
+    for _ in 0..steps.min(120) {
         let dt = rem.min(DT);
         if dt <= 0.0 {
             break;
@@ -349,7 +350,7 @@ fn simulate_on_contour(pos: [f32; 2], vel: [f32; 2], r: f32, top_y: f32, contour
 }
 
 /// Renders the minimalist 3-bead intro loader and its real letter-contour grain scatter.
-pub(super) fn count_note(first: u32, pos: u32, w: f32, align: u8, target: TargetLine<'_>) -> El {
+pub(super) fn count_note(first: u32, pos: u32, w: f32, align: u8, reduce: bool, target: TargetLine<'_>) -> El {
     let since = COUNT_MS - (i64::from(first) - i64::from(pos));
     let x0 = match align {
         1 => ((w - COUNT_W) * 0.5).floor(),
@@ -363,6 +364,9 @@ pub(super) fn count_note(first: u32, pos: u32, w: f32, align: u8, target: Target
     let ring = unit_dot();
 
     if since >= COUNT_MS {
+        if crate::fx::cpu_mode() || reduce {
+            return wrap;
+        }
         let gone = (since - COUNT_MS) as f32 / 1000.0;
         if gone >= GRAIN_S {
             return wrap;
@@ -386,7 +390,7 @@ pub(super) fn count_note(first: u32, pos: u32, w: f32, align: u8, target: Target
                 2 => ((span_r - 280.0).max(span_l), span_r),
                 _ => (span_l, (span_l + 280.0).min(span_r)),
             };
-            const PER_BEAD: usize = 18;
+            const PER_BEAD: usize = 10;
             let total = 3 * PER_BEAD;
             for idx in 0..total {
                 let bead = idx / PER_BEAD;
@@ -454,11 +458,11 @@ pub(super) fn count_note(first: u32, pos: u32, w: f32, align: u8, target: Target
     wrap.child(canvas(shape.view_box(COUNT_W, COUNT_H)).key("ly-note-fig").absolute(x0, 0.0).w(COUNT_W).h(COUNT_H).transition(Transition::none()).motion(rune::Spring::NONE))
 }
 
-fn unit_dot() -> &'static [[f32; 2]; 14] {
-    static DOT: OnceLock<[[f32; 2]; 14]> = OnceLock::new();
+fn unit_dot() -> &'static [[f32; 2]; 10] {
+    static DOT: OnceLock<[[f32; 2]; 10]> = OnceLock::new();
     DOT.get_or_init(|| {
         std::array::from_fn(|k| {
-            let ang = std::f32::consts::TAU * k as f32 / 14.0;
+            let ang = std::f32::consts::TAU * k as f32 / 10.0;
             [ang.cos(), ang.sin()]
         })
     })

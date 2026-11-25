@@ -69,6 +69,32 @@ impl DownloadStore {
         self.dir.join(format!("track-{}.json", Self::key(id)))
     }
 
+    /// Path and byte length of a downloaded audio file without reading it into RAM.
+    pub fn get_audio_path(&self, key: &str) -> Option<(PathBuf, u64)> {
+        let hashed = Self::key(key);
+        let name = {
+            let index = self.audio_files.read().unwrap_or_else(PoisonError::into_inner);
+            AUDIO_EXTS.into_iter().map(|ext| Self::audio_name(&hashed, ext)).find(|n| index.contains(n))
+        }?;
+        let path = self.dir.join(&name);
+        match std::fs::metadata(&path) {
+            Ok(meta) if meta.len() > 0 => Some((path, meta.len())),
+            _ => {
+                self.audio_files.write().unwrap_or_else(PoisonError::into_inner).remove(&name);
+                None
+            }
+        }
+    }
+
+    /// Path and byte length of the downloaded `variant` ("original" or "replacement") of track
+    /// `id`, in `preferred` quality when present, else in any other quality.
+    pub fn find_audio_path(&self, id: &str, preferred: &str, variant: &str) -> Option<(PathBuf, u64)> {
+        if self.audio_files.read().unwrap_or_else(PoisonError::into_inner).is_empty() {
+            return None;
+        }
+        std::iter::once(preferred).chain(DOWNLOAD_QUALITIES.into_iter().filter(|q| *q != preferred)).find_map(|q| self.get_audio_path(&format!("{id}-{q}-{variant}")))
+    }
+
     pub fn get_audio(&self, key: &str) -> Option<Arc<[u8]>> {
         let hashed = Self::key(key);
         let name = {

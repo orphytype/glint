@@ -10,9 +10,9 @@ use crate::ui::{icons, np_icons};
 
 pub const BTN_H: f32 = 36.0;
 pub const FIELD_R: f32 = 10.0;
-pub const MENU_ROW: f32 = 32.0;
-const MENU_GLYPH: f32 = 16.0;
-const TAB_SPRING: rune::Spring = rune::Spring::new(0.36, 0.12);
+pub const MENU_ROW: f32 = 29.0;
+const MENU_GLYPH: f32 = 15.0;
+const TAB_SPRING: rune::Spring = rune::Spring::new(0.26, 0.08);
 const TAB_PILL_H: f32 = 28.0;
 
 pub fn ctl_radius(h: f32) -> f32 {
@@ -55,7 +55,7 @@ fn ibtn_with(key: impl Into<String>, ic: &'static Icon, glyph: f32, size: f32, c
 }
 
 pub(super) fn quiet_halo(glyph: f32) -> El {
-    let d = (glyph + 14.0).round();
+    let d = ((glyph + 14.0) * 0.5).round() * 2.0;
     el().absolute(0.0, 0.0).w_full().h_full().center().child(el().w(d).h(d).radius(d * 0.5).fill(veil(0.08)).gop(0.0, 1.0))
 }
 
@@ -92,7 +92,7 @@ pub fn skip_btn(s: &State, forward: bool, key: &str, ic: &'static Icon, glyph: f
     quiet_btn(key.to_owned(), ic, glyph, size, color, name).on_press(move |s: &mut State| if forward { s.next() } else { s.prev() })
 }
 
-pub(super) fn swap_glyph(key: String, g: El, box_size: f32, glyph_size: f32, pops: bool) -> El {
+pub fn swap_glyph(key: String, g: El, box_size: f32, glyph_size: f32, pops: bool) -> El {
     let pop = rune::SpringPair::new(rune::Spring::new(0.34, 0.3), rune::Spring::new(0.1, 0.0));
     let enter = if pops { Transition::scale(0.6).allow_small_scale().combined(Transition::opacity()) } else { Transition::opacity() };
     let off = (box_size - glyph_size) * 0.5;
@@ -110,7 +110,7 @@ pub fn bar_play_btn(s: &State, size: f32, glyph: f32) -> El {
 fn play_btn_with(s: &State, size: f32, glyph: f32, play: &'static Icon, pause: &'static Icon, key: &str, quiet: bool) -> El {
     let (g, glyph_side, state) = if s.player.loading {
         let side = glyph * 0.8;
-        (icon(&icons::SPINNER, side).color(th::text()).looping(rune::LoopSpec::rotation(0.9)), side, "load")
+        (super::spin(icon(&icons::SPINNER, side).color(th::text())), side, "load")
     } else if s.player.playing {
         (icon(pause, glyph).color(th::text()), glyph, "pause")
     } else {
@@ -131,16 +131,18 @@ pub fn field_surface(base: El) -> El {
 /// and a clear button once there is text. Pages differ only in height.
 pub fn search_field(key: impl Into<String>, h: f32, input: El, clear: Option<El>) -> El {
     let big = h > BTN_H;
+    let r = ctl_radius(h);
     field_surface(row())
         .key(key)
         .h(h)
         .pl(if big { 14.0 } else { 11.0 })
         .pr(4.0)
         .gap(if big { 10.0 } else { 8.0 })
-        .radius(ctl_radius(h))
+        .radius(r)
+        .clip_rounded(r)
         .items_center()
         .child(icon(&icons::SEARCH, if big { 18.0 } else { 16.0 }).color(th::text3()))
-        .child(input)
+        .child(row().grow(1.0).min_w(0.0).h_full().items_center().clip_rounded(0.0).child(input))
         .children(clear)
 }
 
@@ -202,7 +204,7 @@ pub fn button(key: impl Into<String>, weight: Weight, name: &str, ic: Option<&'s
 }
 
 pub fn button_width(name: &str, glyph: bool) -> f32 {
-    let tw = text::measure(name, &[], th::BTN, None).0.ceil();
+    let tw = super::measure_w(name, th::BTN).ceil();
     (if glyph { 12.0 + 15.0 + 8.0 + 1.0 + tw + 16.0 } else { 16.0 + tw + 16.0 }) + 2.0
 }
 
@@ -232,7 +234,7 @@ pub fn btn_soft_icon(key: impl Into<String>, ic: &'static Icon, name: &str) -> E
 }
 
 pub fn btn_small(key: impl Into<String>, name: &str, ic: Option<&'static Icon>) -> El {
-    let tw = text::measure(name, &[], th::BODY_M, None).0.ceil();
+    let tw = super::measure_w(name, th::BODY_M).ceil();
     let w = if ic.is_some() { 10.0 + 15.0 + 7.0 + tw + 12.0 } else { 12.0 + tw + 12.0 };
     let mut r = surface_pill(row().key(key).role("button").label(name).gap(7.0).center(), Weight::Soft, w + 2.0, 32.0);
     r = if ic.is_some() { r.pl(10.0).pr(12.0) } else { r.px(12.0) };
@@ -244,7 +246,7 @@ pub fn btn_small(key: impl Into<String>, name: &str, ic: Option<&'static Icon>) 
 
 /// Disabled companion to `btn_small` styled with muted colors instead of group opacity.
 pub fn btn_small_disabled(key: impl Into<String>, name: &str, ic: Option<&'static Icon>) -> El {
-    let tw = text::measure(name, &[], th::BODY_M, None).0.ceil();
+    let tw = super::measure_w(name, th::BODY_M).ceil();
     let w = if ic.is_some() { 10.0 + 15.0 + 7.0 + tw + 12.0 } else { 12.0 + tw + 12.0 };
     let radius = ctl_radius(32.0);
     let ink = th::text().alpha(0.42);
@@ -259,7 +261,7 @@ pub fn btn_small_disabled(key: impl Into<String>, name: &str, ic: Option<&'stati
 pub fn btn_select(key: impl Into<String>, current: &str, w: f32, open: bool) -> El {
     surface_pill(row().key(key).role("button").label(current).pl(12.0).pr(9.0).gap(8.0).items_center(), Weight::Soft, w, 32.0)
         .child(text(current.to_owned()).font(th::BODY_M).color(th::text()).truncate().grow(1.0).min_w(0.0))
-        .child(icon(&icons::CHEVRON_DOWN, 15.0).color(th::text3()).gcol(th::text2()).rotate(if open { std::f32::consts::PI } else { 0.0 }).motion(th::FLIGHT))
+        .child(super::chevron(15.0, open, th::text3()).gcol(th::text2()).motion(th::FLIGHT))
 }
 
 /// Buttons that belong together, joined into one: a shared surface, as tall as a button, with a
@@ -311,6 +313,42 @@ pub fn seg_sort(key: &str, s: &State, now: Option<&str>, open: bool) -> El {
     }
     if let Some(n) = now {
         b = b.child(label(n.to_owned(), th::BODY_M, th::text2()).gcol(th::text()));
+    }
+    b
+}
+
+/// Compact 30pt round sort pill matching horizontal carousel arrows (`row_arrows`).
+pub fn sort_button_sm(key: &str, s: &State, now: Option<&str>, open: bool) -> El {
+    const H: f32 = 30.0;
+    const GLYPH: f32 = 15.0;
+    const GAP: f32 = 5.0;
+    const PAD: f32 = 10.0;
+    let name = S::SortBy.get(s.lang);
+    let w = match now {
+        None => H,
+        Some(n) => PAD * 2.0 + GLYPH + GAP + text::measure(n, &[], th::SMALL, None).0.ceil(),
+    };
+    let mut b = row()
+        .key(key.to_owned())
+        .role("button")
+        .label(name)
+        .help(name)
+        .checked(open)
+        .w(w)
+        .h(H)
+        .gap(GAP)
+        .radius(H * 0.5)
+        .center()
+        .fill(veil(if open { 0.12 } else { 0.06 }))
+        .border(1.0, veil(if open { 0.14 } else { 0.07 }))
+        .cursor(Cursor::Pointer)
+        .hov(veil(0.12))
+        .press(veil(0.16))
+        .press_scale(th::PRESS)
+        .hov_group()
+        .child(icon(&icons::SORT, GLYPH).color(if now.is_some() || open { th::text() } else { th::text2() }).gcol(th::text()));
+    if let Some(n) = now {
+        b = b.child(label(n.to_owned(), th::SMALL, th::text2()).gcol(th::text()));
     }
     b
 }
@@ -388,14 +426,14 @@ pub fn plus_badge(lang: Lang) -> El {
 }
 
 pub fn tab_body(key: impl Into<String>, body: El) -> El {
-    let springs = rune::SpringPair::new(rune::Spring::new(0.26, 0.0), rune::Spring::new(0.07, 0.0));
-    el().key(key).w_full().transition(Transition::asymmetric(Transition::offset(0.0, 8.0), Transition::none()).springs(springs)).child(body)
+    let springs = rune::SpringPair::new(rune::Spring::new(0.18, 0.0), rune::Spring::new(0.06, 0.0));
+    el().key(key).w_full().transition(Transition::asymmetric(Transition::offset(0.0, 5.0), Transition::none()).springs(springs)).child(body)
 }
 
 pub fn tab_pill_w(name: &str, count: Option<usize>) -> f32 {
-    let mut w = 24.0 + text::measure(name, &[], th::BODY_M, None).0.ceil();
+    let mut w = 24.0 + super::measure_w(name, th::BODY_M).ceil();
     if let Some(n) = count {
-        w += 6.0 + text::measure(&n.to_string(), &[], th::SMALL, None).0.ceil();
+        w += 6.0 + super::measure_w(&n.to_string(), th::SMALL).ceil();
     }
     w
 }

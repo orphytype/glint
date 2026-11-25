@@ -37,10 +37,11 @@ pub const CHIP: f32 = kit::CHROME;
 
 // ---- the rail ----------------------------------------------------------------------------------------
 
-pub fn rail(s: &State, w: f32, lead: f32) -> El {
-    let items: [(Page, &'static Icon, &'static Icon, S); 3] = [
+pub fn rail(s: &State, w: f32, lead: f32, np_t: f32) -> El {
+    let items: [(Page, &'static Icon, &'static Icon, S); 4] = [
         (Page::Search, &icons::SEARCH, &icons::SEARCH_ON, S::Search),
         (Page::Home, &icons::HOME, &icons::HOME_ON, S::Home),
+        (Page::Explore, &icons::COMPASS, &icons::COMPASS_ON, S::Explore),
         (Page::Library, &icons::LIBRARY, &icons::LIBRARY_ON, S::Liked),
     ];
     let here = s.page.rail();
@@ -61,20 +62,35 @@ pub fn rail(s: &State, w: f32, lead: f32) -> El {
             .cursor(Cursor::Pointer)
             .press_scale(th::PRESS)
             .hov_group()
-            .on_press(move |s: &mut State| s.go(target.clone()))
-            .child(nav_plate(on));
+            .on_press(move |s: &mut State| s.go(target.clone()));
         if on {
-            // The marker glides from place to place.
-            b = b.child(
-                el().key("nav-mark")
-                    .matched("nav-mark")
-                    .animated_changes()
-                    .absolute(-(RAIL_W - NAV_BTN) * 0.5 + 1.0, (NAV_BTN - 18.0) * 0.5)
-                    .w(3.0)
-                    .h(18.0)
-                    .radius(1.5)
-                    .fill(th::text()),
-            );
+            // Both the indicator bar and active background plate glide smoothly between destinations.
+            b = b
+                .child(
+                    el().key("nav-pill")
+                        .matched("nav-pill")
+                        .matched_in_place()
+                        .animated_changes()
+                        .motion(rune::Spring::new(0.24, 0.08))
+                        .absolute(0.0, 0.0)
+                        .w_full()
+                        .h_full()
+                        .radius(10.0)
+                        .fill(th::veil(0.085)),
+                )
+                .child(
+                    el().key("nav-mark")
+                        .matched("nav-mark")
+                        .animated_changes()
+                        .motion(rune::Spring::new(0.24, 0.12))
+                        .absolute(-(RAIL_W - NAV_BTN) * 0.5 + 1.0, (NAV_BTN - 18.0) * 0.5)
+                        .w(3.0)
+                        .h(18.0)
+                        .radius(1.5)
+                        .fill(th::text()),
+                );
+        } else {
+            b = b.child(nav_plate(false));
         }
         places = places.child(b.child(icon(if on { on_icon } else { off }, NAV_GLYPH).color(if on { th::text() } else { th::text3() })));
     }
@@ -113,7 +129,7 @@ pub fn rail(s: &State, w: f32, lead: f32) -> El {
     // Low in the rail, so the column's weight sits at its foot: with a bar that leaves the rail's
     // column free (a wide window), the two foot buttons stand level with the bar, top to bottom;
     // with one that runs under the rail, just above it.
-    let bar = s.current().is_some();
+    let bar = s.current().is_some() && s.page != Page::Home;
     let level = bar && bar_span(w).0 >= RAIL_W - 2.0;
     let foot = if level {
         BAR_GAP
@@ -123,12 +139,15 @@ pub fn rail(s: &State, w: f32, lead: f32) -> El {
         14.0
     };
     let mac_chrome = cfg!(target_os = "macos") || lead > 0.0;
+    let np_e = np_t.clamp(0.0, 1.0);
+    let np_e = 1.0 - (1.0 - np_e).powi(3);
     let mut col_el = col()
         .key("rail")
         .absolute(0.0, 0.0)
         .w(RAIL_W)
         .h_full()
         .items_center()
+        .offset(-16.0 * np_e, 0.0)
         .transition(Transition::none())
         .instant_changes();
     if mac_chrome {
@@ -183,6 +202,9 @@ fn pinned_strip(s: &State) -> El {
             .cursor(Cursor::Pointer)
             .press_scale(th::PRESS)
             .hov_group()
+            .animated_changes()
+            .motion(th::SLIDE)
+            .transition(kit::pop_in(0.76, 0.0, th::SOFT))
             .on_press(move |s: &mut State| s.go(page.clone()))
             .on_secondary_press(move |s: &mut State, _press, _tx: &mut Tx| {
                 s.open_popover(Popover::Pinned { item: menu_item.clone(), anchor: format!("pinned-{item_key}") });
@@ -243,7 +265,7 @@ pub fn update_pill(s: &State) -> Option<El> {
     };
     let open = s.popover_open && matches!(s.popover, Some(Popover::Update { .. }));
     let glyph = if matches!(s.update, Ui::Downloading { .. } | Ui::Installing) {
-        icon(&icons::SPINNER, 18.0).color(th::text()).looping(rune::LoopSpec::rotation(0.9))
+        kit::spin(icon(&icons::SPINNER, 18.0).color(th::text()))
     } else {
         icon(&icons::UPDATE_RING, 19.0).color(th::text())
     };
@@ -251,7 +273,9 @@ pub fn update_pill(s: &State) -> Option<El> {
 }
 
 /// A way back or forward: a compact pill in the title bar, subtle when disabled.
-pub fn nav_chip(key: &'static str, ic: &'static Icon, name: &str, on: bool) -> El {
+/// When `flat` is true (Home's full-bleed fluid stage), uses a lightweight frosted pill instead of
+/// `Glass::Chip` so Home never allocates a full-window backdrop copy just for two 30pt buttons.
+pub fn nav_chip(key: &'static str, ic: &'static Icon, name: &str, on: bool, flat: bool) -> El {
     const SIZE: f32 = 30.0;
     let base = row()
         .key(key)
@@ -265,11 +289,13 @@ pub fn nav_chip(key: &'static str, ic: &'static Icon, name: &str, on: bool) -> E
         .no_window_drag()
         .transition(Transition::none());
     if on {
-        base.cursor(Cursor::Pointer)
-            .press_scale(th::PRESS)
-            .hov(th::veil(0.08))
-            .child(kit::glass(Glass::Chip, SIZE * 0.5))
-            .child(icon(ic, 15.0).color(th::text()))
+        let b = base.cursor(Cursor::Pointer).press_scale(th::PRESS).hov(th::veil(0.08));
+        let b = if flat {
+            b.fill(th::veil(if th::light() { 0.075 } else { 0.085 })).border(1.0, th::veil(if th::light() { 0.10 } else { 0.12 }))
+        } else {
+            b.child(kit::glass(Glass::Chip, SIZE * 0.5))
+        };
+        b.child(icon(ic, 15.0).color(th::text()))
     } else {
         base.disabled(true)
             .cursor(Cursor::Default)
@@ -326,12 +352,23 @@ fn profile(s: &State) -> El {
 ///
 /// In a window wider than the page's column ever gets (`kit::PAGE_MAX`), the bar stops growing
 /// too: as wide as the column plus a little, centred over it.
-pub fn bar(s: &State, w: f32) -> El {
+pub fn bar(s: &State, w: f32, np_open: bool, np_t: f32) -> El {
     let (left, width) = bar_span(w);
+    let smooth = |x: f32| {
+        let x = x.clamp(0.0, 1.0);
+        x * x * (3.0 - 2.0 * x)
+    };
+    let bar_e = if s.headless && s.bar_pop.t == 0.0 && s.page != Page::Home && s.current().is_some() { 1.0 } else { smooth(s.bar_pop.t) };
+    let np_out = if np_open { smooth(np_t / 0.55) } else { smooth((np_t - 0.12) / 0.65) };
+    let vis = (bar_e * (1.0 - np_out)).clamp(0.0, 1.0);
+    // Slide down when opening Now Playing or leaving to Home; keep y=0 while closing Now Playing
+    // so `matched("np-cover")` lands pixel-dead-center on `bar-cover` with zero micro-snap.
+    let dy = (1.0 - bar_e) * (BAR_H + BAR_GAP + 8.0) + if np_open { 38.0 * np_out } else { 0.0 };
     row()
         .key("bar")
         .pin(Some(left), None, Some(w - left - width), Some(BAR_GAP))
         .h(BAR_H)
+        .offset(0.0, dy)
         // Keep the glass slot outside a transition layer. RUNE skips backdrop effects inside a
         // moving layer, which made the dock blur disappear for one or more frames whenever a tab
         // remounted the page below it.
@@ -341,8 +378,8 @@ pub fn bar(s: &State, w: f32) -> El {
         // underneath, and while the pointer is on it the page takes no hover (`kit::set_under`).
         .on_press(|_s: &mut State| {})
         .on_hover_change(|s: &mut State, on: bool, _tx: &mut Tx| s.over_bar = on)
-        .child(kit::glass(Glass::Dock, 18.0))
-        .child(playing(s, width))
+        .child(kit::glass_alpha(Glass::Dock, 18.0, vis))
+        .child(playing(s, width, vis))
 }
 
 /// Where the bar starts and how wide it is in a window `w` wide.
@@ -356,7 +393,7 @@ pub fn bar_span(w: f32) -> (f32, f32) {
     (centre - max * 0.5, max)
 }
 
-fn playing(s: &State, width: f32) -> El {
+fn playing(s: &State, width: f32, vis: f32) -> El {
     let Some(t) = s.current() else { return el() };
     let lang = s.lang;
     // Three columns: the track on the left, the transport in the middle, the rest on the right.
@@ -365,6 +402,18 @@ fn playing(s: &State, width: f32) -> El {
     let narrow = width < 900.0;
     let mid_w = if narrow { (width * 0.34).clamp(250.0, 300.0) } else { (width * 0.36).clamp(280.0, 460.0) };
     let side_w = ((width - mid_w) * 0.5 - 14.0).max(120.0);
+    let can_match = !fx::cpu_mode() && s.page != Page::Home;
+
+    let mut now_text = col()
+        .grow(1.0)
+        .min_w(0.0)
+        .gap(2.0)
+        .offset(0.0, (1.0 - vis) * 8.0)
+        .child(kit::roll("bar-title", &t.full_title(), kit::track_title(s, t, "bar-title-link", th::H3, (side_w - BAR_COVER - 16.0).max(40.0))))
+        .child(kit::roll("bar-artist", &t.artists_line(), kit::artist_line_width(s, t, th::SMALL, false, "bar-art", (side_w - BAR_COVER - 16.0).max(72.0))));
+    if vis < 0.999 {
+        now_text = now_text.opacity(vis);
+    }
 
     let now = row()
         .key("bar-now")
@@ -383,25 +432,20 @@ fn playing(s: &State, width: f32) -> El {
         .child(if s.np_open {
             el().key("bar-cover-gap").w(BAR_COVER).h(BAR_COVER)
         } else {
-            kit::playing_cover(s, t, BAR_COVER, 10.0, "bar-cover-mark").key("bar-cover").matched("np-cover").animated_changes().motion(th::FLIGHT)
+            let cov = kit::playing_cover(s, t, BAR_COVER, 10.0, "bar-cover-mark").key("bar-cover");
+            if can_match { cov.matched("np-cover").animated_changes().motion(th::FLIGHT) } else { cov }
         })
-        .child(
-            col()
-                .grow(1.0)
-                .min_w(0.0)
-                .gap(2.0)
-                .child(kit::roll("bar-title", &t.full_title(), kit::track_title(s, t, "bar-title-link", th::H3, (side_w - BAR_COVER - 16.0).max(40.0))))
-                .child(kit::roll("bar-artist", &t.artists_line(), kit::artist_line_width(s, t, th::SMALL, false, "bar-art", (side_w - BAR_COVER - 16.0).max(72.0)))),
-        );
+        .child(now_text);
 
     // Not this one and liked at the two ends, shuffle and repeat inside them: as in the open player.
     let bad = t.clone();
-    let transport = row()
+    let mut transport = row()
         .key("bar-transport")
         .h(32.0)
         .gap(if narrow { 2.0 } else { 6.0 })
         .items_center()
         .justify_center()
+        .offset(0.0, (1.0 - vis) * 8.0)
         .child(kit::np_like_button(s, t, 32.0, 18.0))
         .child(shuffle_btn(s))
         .child(kit::skip_btn(s, false, "prev", &ni::PREV, 18.0, 32.0, th::text2()))
@@ -409,16 +453,21 @@ fn playing(s: &State, width: f32) -> El {
         .child(kit::skip_btn(s, true, "next", &ni::NEXT, 18.0, 32.0, th::text2()))
         .child(repeat_btn(s))
         .child(kit::quiet_btn("dock-dislike", &ni::DISLIKE, 18.0, 32.0, th::text3(), S::Dislike.get(lang)).on_press(move |s: &mut State| s.dislike(&bad)));
+    if vis < 0.999 {
+        transport = transport.opacity(vis);
+    }
     let time_w = if s.player.dur_ms >= 3_600_000 { 58.0 } else { 40.0 };
+    let seek_w = (mid_w - 2.0 * time_w - 16.0).max(40.0);
     let seek = row()
         .key("bar-seek")
         .w_full()
         .h(16.0)
         .gap(8.0)
         .items_center()
-        .child(label("0:00", th::MONO, th::text3()).live_text(&s.lives.clock).w(time_w).align(Align::End))
-        .child(row().grow(1.0).min_w(0.0).child(seek_bars("seek", crate::ui::np::seed_of(&t.id), 18.0)))
-        .child(label("-0:00", th::MONO, th::text3()).live_text(&s.lives.remaining).w(time_w));
+        .offset(0.0, (1.0 - vis) * 8.0)
+        .child(label("0:00", th::MONO, th::text3().alpha(vis)).live_text(&s.lives.clock).w(time_w).align(Align::End))
+        .child(row().grow(1.0).min_w(0.0).child(seek_bars_alpha(s, "seek", crate::ui::np::seed_of(&t.id), seek_w, 18.0, true, vis)))
+        .child(label("-0:00", th::MONO, th::text3().alpha(vis)).live_text(&s.lives.remaining).w(time_w));
     let middle = col().key("bar-mid").w(mid_w).gap(2.0).items_center().child(transport).child(seek);
 
     // The right side takes what fits, most needed first: More and the volume always, then the
@@ -426,7 +475,7 @@ fn playing(s: &State, width: f32) -> El {
     // volume slider beside the speaker. They stay in one order on screen.
     let rbtn = RIGHT_BTN;
     let pill_text = bar_quality_text(s);
-    let pill_w = rune::text::measure(&pill_text, &[], BADGE_STYLE, None).0.ceil() + 2.0 * 8.0 + 2.0 * 2.0 + 2.0;
+    let pill_w = kit::measure_w(&pill_text, BADGE_STYLE).ceil() + 2.0 * 8.0 + 2.0 * 2.0 + 2.0;
     let mut room = side_w - 2.0 * (rbtn + RIGHT_GAP);
     let mut take = |w: f32| {
         let fits = room >= w + RIGHT_GAP;
@@ -476,6 +525,10 @@ fn playing(s: &State, width: f32) -> El {
     right = right.child(
         kit::quiet_btn("bar-more", &ni::MORE, 18.0, rbtn, th::text2(), S::More.get(lang)).on_press(|s: &mut State| s.open_player_menu(rune::PopupAnchor::Key("bar-more".into()))),
     );
+    right = right.offset(0.0, (1.0 - vis) * 8.0);
+    if vis < 0.999 {
+        right = right.opacity(vis);
+    }
 
     row()
         .key("bar-playing")
@@ -506,6 +559,7 @@ pub(super) fn volume_slider(s: &State, key: &'static str, w: f32) -> El {
     let v = s.player.volume.clamp(0.0, 1.0);
     let fill_w = if v > 0.005 { (w * v).max(4.0) } else { 0.0 };
     let thumb_x = (w * v - 6.0).clamp(0.0, (w - 12.0).max(0.0));
+    let vol_spring = rune::Spring::new(0.11, 0.0);
     el().key(key)
         .role("slider")
         .label(S::Volume.get(s.lang))
@@ -513,15 +567,14 @@ pub(super) fn volume_slider(s: &State, key: &'static str, w: f32) -> El {
         .h(28.0)
         .cursor(Cursor::Pointer)
         .hov_group()
-        .instant_changes()
         .on_wheel(volume_wheel)
         .on_drag(|s: &mut State, d: &mut Drag, _tx: &mut Tx| {
             let f = if d.w > 0.0 { (d.x / d.w).clamp(0.0, 1.0) } else { 0.0 };
             s.set_volume(f);
         })
         .child(el().absolute(0.0, 12.0).w(w).h(4.0).radius(2.0).fill(th::veil(0.16)))
-        .child(el().absolute(0.0, 12.0).w(fill_w).h(4.0).radius(2.0).fill(th::text2()).gcol(th::text()))
-        .child(el().absolute(thumb_x, 8.0).w(12.0).h(12.0).radius(6.0).fill(th::text()).gop(0.0, 1.0))
+        .child(el().key(format!("{key}-fill")).absolute(0.0, 12.0).w(fill_w).h(4.0).radius(2.0).fill(th::text2()).gcol(th::text()).animated_changes().motion(vol_spring))
+        .child(el().key(format!("{key}-thumb")).absolute(thumb_x, 8.0).w(12.0).h(12.0).radius(6.0).fill(th::text()).gop(0.0, 1.0).animated_changes().motion(vol_spring))
 }
 
 /// The speaker and a slider beside it: pressing the speaker mutes (and brings the volume back),
@@ -672,10 +725,10 @@ pub fn repeat_btn(s: &State) -> El {
     kit::quiet_toggle("repeat", ic, 18.0, 32.0, s.player.repeat != Repeat::Off, S::Repeat.get(s.lang)).on_press(|s: &mut State| s.cycle_repeat())
 }
 
-/// The seek line, drawn as bars (`fx::BARS`): the played ones lit, the others dim, both in the text
-/// colour, and every bar along the row moving with the music. Dragging previews the position and
-/// seeks on release.
-pub fn seek_bars(key: &'static str, seed: f32, h: f32) -> El {
+/// The seek line: drawn with `fx::BARS` once its shader is ready, or as a lightweight native RUNE
+/// progress bar driven by a `Live<[f32; 4]>` handle (zero view rebuilds) when shaders are off.
+pub fn seek_bars_alpha(s: &State, key: &'static str, seed: f32, width: f32, h: f32, dock: bool, alpha: f32) -> El {
+    let a = alpha.clamp(0.0, 1.0);
     let drag = |s: &mut State, d: &mut Drag, _tx: &mut Tx| {
         let f = if d.w > 0.0 { (d.x / d.w).clamp(0.0, 1.0) } else { 0.0 };
         let up = d.phase == Phase::Up;
@@ -686,13 +739,33 @@ pub fn seek_bars(key: &'static str, seed: f32, h: f32) -> El {
             s.seek_frac(f);
         }
     };
-    let (pitch, bar) = if h < 24.0 { (5.0, 2.5) } else { (6.0, 3.0) };
-    el().key(key)
-        .role("slider")
-        .w_full()
-        .h(h)
-        .cursor(Cursor::Pointer)
-        .transition(Transition::none())
-        .on_drag(drag)
-        .child(el().key(format!("{key}-bars")).absolute(0.0, 0.0).w_full().h_full().transition(Transition::none()).fx(fx::BARS).fx_data([seed, pitch, bar, 0.0]))
+    let slot = el().key(key).role("slider").w_full().h(h).cursor(Cursor::Pointer).transition(Transition::none()).on_drag(drag);
+    if fx::bars_ready() {
+        let (pitch, bar) = if h < 24.0 { (5.0, 2.5) } else { (6.0, 3.0) };
+        return slot.child(el().key(format!("{key}-bars")).absolute(0.0, 0.0).w_full().h_full().transition(Transition::none()).fx(fx::BARS).fx_data([seed, pitch, bar, 1.0 - a]));
+    }
+    let w = width.max(40.0);
+    let frac = if s.player.dur_ms > 0 { (s.player.pos_ms as f32 / s.player.dur_ms as f32).clamp(0.0, 1.0) } else { 0.0 };
+    let (live, thumb_live) = s.update_seek_live(dock, w, frac);
+    let band_top = ((h - 12.0) * 0.5).max(0.0);
+    let thumb_rest = if s.scrubbing { 1.0 } else { 0.0 };
+    slot.hov_group().child(
+        el().key(format!("{key}-band"))
+            .absolute(0.0, band_top)
+            .w(w)
+            .h(12.0)
+            .transition(Transition::none())
+            .child(
+                el().key(format!("{key}-track"))
+                    .absolute(0.0, 4.0)
+                    .w(w)
+                    .h(4.0)
+                    .radius(2.0)
+                    .fill(th::veil(0.18 * a))
+                    .hov(th::veil(0.08 * a))
+                    .transition(Transition::none())
+                    .child(el().key(format!("{key}-fill")).radius(2.0).fill(th::text().alpha(a)).live_rect(live).transition(Transition::none())),
+            )
+            .child(el().key(format!("{key}-thumb")).radius(6.0).fill(th::text().alpha(a)).live_rect(thumb_live).gop(thumb_rest, 1.0).transition(Transition::none())),
+    )
 }

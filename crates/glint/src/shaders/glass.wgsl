@@ -80,7 +80,7 @@ fn fs_glass(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let spec = clamp((s1 + s2) * u.p2.x * band, 0.0, 0.16);
     let up = clamp(0.5 - 0.5 * n2.y, 0.0, 1.0);
     if (is_light) {
-        let hair = band * 0.11 * (1.0 - up * 0.35);
+        let hair = band * 0.14 * (1.0 - up * 0.28);
         col = mix(col, vec3<f32>(0.0), hair);
         col = mix(col, white, clamp(spec * 0.65, 0.0, 0.18));
     } else {

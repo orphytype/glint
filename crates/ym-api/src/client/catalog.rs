@@ -7,7 +7,7 @@ use reqwest::header::{AUTHORIZATION, USER_AGENT};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::parse::{as_i64, from_value, id_pairs, seg, unwrap_items};
+use super::parse::{as_i64, from_value, id_pairs, seg, unwrap_items_newest_first};
 use super::{APP_UA, BATCH, Client, Likeable, MAX_TEXT_BYTES, SearchKind, read_limited};
 use crate::models::{Account, Album, Artist, ArtistPage, Credit, Playlist, SearchResult, Track, TrackRef, donation_url, lossy_vec};
 use crate::{Error, Result};
@@ -44,17 +44,21 @@ impl Client {
 
     pub async fn liked_albums(&self, uid: i64) -> Result<Vec<Album>> {
         let v = self.get(&format!("/users/{uid}/likes/albums"), &[("rich", "true")]).await?;
-        Ok(unwrap_items(v, "album"))
+        Ok(unwrap_items_newest_first(v, "album"))
     }
 
     pub async fn liked_artists(&self, uid: i64) -> Result<Vec<Artist>> {
-        let v = self.get(&format!("/users/{uid}/likes/artists"), &[("with-timestamps", "false")]).await?;
-        Ok(unwrap_items(v, "artist"))
+        let v = self.get(&format!("/users/{uid}/likes/artists"), &[("with-timestamps", "true")]).await?;
+        Ok(unwrap_items_newest_first(v, "artist"))
     }
 
     pub async fn playlists(&self, uid: i64) -> Result<Vec<Playlist>> {
         let v = self.get(&format!("/users/{uid}/playlists/list"), &[]).await?;
-        Ok(lossy_vec(v))
+        let mut list: Vec<Playlist> = lossy_vec(v);
+        if list.iter().any(|p| p.modified.is_some() || p.created.is_some()) {
+            list.sort_by(|a, b| b.modified.as_deref().or(b.created.as_deref()).cmp(&a.modified.as_deref().or(a.created.as_deref())));
+        }
+        Ok(list)
     }
 
     /// A playlist with all its tracks resolved.
@@ -165,7 +169,7 @@ impl Client {
     /// The playlists the account liked, each as `"uid:kind"`.
     pub async fn liked_playlist_ids(&self, uid: i64) -> Result<Vec<String>> {
         let v = self.get(&format!("/users/{uid}/likes/playlists"), &[]).await?;
-        let lists: Vec<Playlist> = unwrap_items(v, "playlist");
+        let lists: Vec<Playlist> = unwrap_items_newest_first(v, "playlist");
         Ok(lists.into_iter().map(|p| format!("{}:{}", p.uid, p.kind)).collect())
     }
 

@@ -6,7 +6,7 @@ use ym_api::Track;
 use ym_audio::DiskCache;
 
 use super::{LYRIC_LEAD_MS, Load, LyricsUi, State};
-use crate::art::{ArtCache, COVER_MD, decode_px_for_key};
+use crate::art::{ArtCache, COVER_CARD, decode_px_for_key};
 use crate::net::{self, Backend};
 
 impl State {
@@ -19,14 +19,14 @@ impl State {
         self.player.index.and_then(|i| self.player.queue.get(i))
     }
 
-    /// Cover URL (also the cache key) at an explicit CDN size (`100`, `300`, or `600`).
+    /// Cover URL (also the cache key) at an explicit CDN size (`100`, `200`, or `600`).
     pub fn cover_key_px(template: Option<&str>, px: u32) -> Option<String> {
         template.map(|t| ym_api::cover::url(t, px))
     }
 
-    /// Canonical 300x300 cover URL for cards, headers, palettes, and desktop media controls.
+    /// Canonical 200x200 cover URL for cards, headers, palettes, and desktop media controls.
     pub fn cover_key(template: Option<&str>) -> Option<String> {
-        Self::cover_key_px(template, COVER_MD)
+        Self::cover_key_px(template, COVER_CARD)
     }
 
     pub fn load_lyrics_for_current(&mut self) {
@@ -69,17 +69,7 @@ impl State {
                 }
                 continue;
             }
-            spawn_cover_load(self.backend.clone(), self.art.clone(), key, self.cache.clone(), false);
-        }
-        for key in self.art.take_sharp_wanted() {
-            if self.headless {
-                #[cfg(feature = "tooling")]
-                if let Some(img) = paint_fixture_cover(&key) {
-                    self.art.finish_sharp(&key, Some(img));
-                }
-                continue;
-            }
-            spawn_cover_load(self.backend.clone(), self.art.clone(), key, self.cache.clone(), true);
+            spawn_cover_load(self.backend.clone(), self.art.clone(), key, self.cache.clone());
         }
         // Only rebuild the view when a watched cover or playing cover lands; list covers repaint via `Pixels::set`.
         let landed = self.art.watched_landed();
@@ -90,14 +80,12 @@ impl State {
         if self.palette_key.is_some() && self.palette_tpl.as_deref() == Some(tpl) {
             return fresh;
         }
-        let key = ym_api::cover::url(tpl, COVER_MD);
+        let key = ym_api::cover::url(tpl, COVER_CARD);
         if self.palette_key.as_deref() != Some(key.as_str()) {
-            self.art.want_sharp(&key);
             let _ = self.art.pixels(&key);
         }
         if let Some(p) = self.art.palette(&key)
             && let Some(thumb) = self.art.thumb(&key)
-            && !thumb.sharp.is_empty()
         {
             let tpl = tpl.to_owned();
             self.palette = p;
@@ -118,7 +106,7 @@ fn paint_fixture_cover(key: &str) -> Option<crate::art::Decoded> {
     Some(crate::art::Decoded { width: size, height: size, rgba })
 }
 
-fn spawn_cover_load(backend: Backend, art: ArtCache, key: String, disk: Option<Arc<DiskCache>>, sharp_only: bool) {
+fn spawn_cover_load(backend: Backend, art: ArtCache, key: String, disk: Option<Arc<DiskCache>>) {
     net::spawn(async move {
         let decode_px = decode_px_for_key(&key);
         // Fast path: compressed bytes warm in RAM or on disk, decoded on the bounded blocking pool.
@@ -131,11 +119,7 @@ fn spawn_cover_load(backend: Backend, art: ArtCache, key: String, disk: Option<A
             tokio::task::spawn_blocking(move || {
                 let raw = from_ram.or_else(|| disk2.as_ref().and_then(|d| d.get(&k2)))?;
                 let img = crate::art::decode(&raw, decode_px)?;
-                if sharp_only {
-                    art2.finish_sharp(&k2, Some(img));
-                } else {
-                    art2.finish(&k2, Some(img), Some(raw));
-                }
+                art2.finish(&k2, Some(img), Some(raw));
                 Some(())
             })
             .await
@@ -144,11 +128,6 @@ fn spawn_cover_load(backend: Backend, art: ArtCache, key: String, disk: Option<A
             .is_some()
         };
         if hit {
-            return;
-        }
-        if sharp_only {
-            let img = backend.image(&key, decode_px).await;
-            let _ = tokio::task::spawn_blocking(move || art.finish_sharp(&key, img)).await;
             return;
         }
         if let Some(raw) = backend.image_bytes(&key).await {

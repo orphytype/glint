@@ -6,7 +6,7 @@
 
 use rune::{El, Shape, Transition, el};
 
-use crate::app::{Load, Session, State};
+use crate::app::{Load, Page, Session, State};
 use crate::theme as th;
 use crate::{fx, mark, wordmark};
 
@@ -26,13 +26,13 @@ const BASELINE: f32 = 0.5;
 /// `MOVE`, and the screen stays at least `HOLD`. Once the app is ready it waits `SETTLE` more, so
 /// what came in under it has finished moving. It goes after `GIVE_UP` whatever happens, and fades
 /// out over `FADE`.
-const APPEAR: f64 = 0.16;
-const MOVE_AT: f64 = 0.06;
-const MOVE: f64 = 0.36;
-const HOLD: f64 = 0.48;
-const SETTLE: f64 = 0.08;
-const GIVE_UP: f64 = 5.0;
-const FADE: f64 = 0.24;
+const APPEAR: f64 = 0.14;
+const MOVE_AT: f64 = 0.04;
+const MOVE: f64 = 0.28;
+const HOLD: f64 = 0.34;
+const SETTLE: f64 = 0.04;
+const GIVE_UP: f64 = 2.2;
+const FADE: f64 = 0.22;
 
 /// Where the launch screen is, in the app's clock.
 #[derive(Clone, Copy, Debug, Default)]
@@ -59,7 +59,7 @@ pub fn waiting(s: &State) -> bool {
 
 /// The launch screen holds its static mark while the CPU window waits to hand over to the GPU.
 pub fn awaiting_gpu(s: &State) -> bool {
-    s.launch.is_some() && !s.headless && !fx::gpu_up() && window_shown(s)
+    s.launch.is_some() && !s.headless && !fx::cpu_mode() && fx::shaders_enabled() && !fx::gpu_up() && window_shown(s)
 }
 
 /// Moves the launch screen on. Returns whether it is still on screen, so the next frame comes.
@@ -70,7 +70,8 @@ pub fn step(s: &mut State) -> bool {
     if s.launch.is_none() {
         return false;
     }
-    let gpu_up = s.headless || fx::gpu_up();
+    let need_gpu = !s.headless && !fx::cpu_mode() && fx::shaders_enabled();
+    let gpu_up = !need_gpu || fx::gpu_up();
     if !gpu_up {
         if s.now >= GIVE_UP {
             s.launch = None;
@@ -78,7 +79,14 @@ pub fn step(s: &mut State) -> bool {
         }
         return false;
     }
-    let steady = (s.headless || fx::glass_ready()) && (s.session == Session::LoggedOut || !matches!(s.home, Load::Loading));
+    let screen_gpu_ready = if !need_gpu {
+        true
+    } else if s.session == Session::Live && s.page == Page::Home {
+        fx::wave_ready()
+    } else {
+        fx::glass_ready()
+    };
+    let steady = screen_gpu_ready && (s.session == Session::LoggedOut || s.page == Page::Home || !matches!(s.home, Load::Loading));
     let now = s.now;
     let Some(l) = s.launch.as_mut() else { return false };
     let t = now - *l.start.get_or_insert(now);
@@ -111,9 +119,20 @@ pub fn view(s: &State) -> Option<El> {
 
     // The lockup in capitals, its middle at 0: the mark's middle ends at `mark_x`, the word's
     // origin at `word_x`. The word starts with its right edge at the mark's middle.
-    let pebble = mark::pebble(192);
-    let (top, bottom) = pebble.iter().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p[1]), b.max(p[1])));
-    let (left, right) = pebble.iter().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p[0]), b.max(p[0])));
+    struct LockupMark {
+        pebble: Vec<[f32; 2]>,
+        glint: Vec<[f32; 2]>,
+        bounds: [f32; 4],
+    }
+    static LOCKUP_MARK: std::sync::OnceLock<LockupMark> = std::sync::OnceLock::new();
+    let lm = LOCKUP_MARK.get_or_init(|| {
+        let pebble = mark::pebble(192);
+        let (top, bottom) = pebble.iter().fold((f32::MAX, f32::MIN), |(a, b), pt| (a.min(pt[1]), b.max(pt[1])));
+        let (left, right) = pebble.iter().fold((f32::MAX, f32::MIN), |(a, b), pt| (a.min(pt[0]), b.max(pt[0])));
+        LockupMark { pebble, glint: mark::glint(192), bounds: [top, bottom, left, right] }
+    });
+    let (pebble, glint) = (&lm.pebble, &lm.glint);
+    let [top, bottom, left, right] = lm.bounds;
     let k = MARK_H / (bottom - top);
     let mark_w = (right - left) * k;
     let width = mark_w + GAP + wordmark::BOX[2];
@@ -128,7 +147,7 @@ pub fn view(s: &State) -> Option<El> {
     let (ink, paper) = (th::rgb(INK), th::rgb(PAPER));
     let scale = (0.86 + 0.14 * appear) * k * CAP;
     let mid = [(left + right) * 0.5, (top + bottom) * 0.5];
-    let place_mark = |pts: Vec<[f32; 2]>| pts.into_iter().map(|[x, y]| [ox + mark_x * CAP + (x - mid[0]) * scale, oy + (y - mid[1]) * scale]).collect::<Vec<_>>();
+    let place_mark = |pts: &[[f32; 2]]| pts.iter().map(|[x, y]| [ox + mark_x * CAP + (x - mid[0]) * scale, oy + (y - mid[1]) * scale]).collect::<Vec<_>>();
     let place_word = |pts: &[[f32; 2]]| pts.iter().map(|[x, y]| [ox + (word_x + x) * CAP, oy + (BASELINE + y) * CAP]).collect::<Vec<_>>();
 
     let mut shape = Shape::new();
@@ -147,7 +166,7 @@ pub fn view(s: &State) -> Option<El> {
         shape = shape.fill(vec![[far, 0.0], [cut, 0.0], [cut, ch], [far, ch]], ink);
     }
     let mark_a = paper.alpha(appear);
-    shape = shape.fill(place_mark(pebble), mark_a).fill(place_mark(mark::glint(192)), ink);
+    shape = shape.fill(place_mark(pebble), mark_a).fill(place_mark(glint), ink);
 
     Some(
         el().key("launch")

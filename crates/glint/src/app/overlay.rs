@@ -19,17 +19,33 @@ impl State {
         self.menu_open || self.menu.t > 0.001 || self.menu.v != 0.0
     }
 
-    /// Steps every menu, popover, sheet, and Now Playing spring.
+    /// Steps every menu, popover, sheet, settings modal, dock bar, and Now Playing spring.
     pub(crate) fn tick_menu(&mut self, dt: f32) -> bool {
-        let reduce = self.settings.reduce_motion;
+        let instant = self.settings.reduce_motion || crate::fx::cpu_mode();
         let np_target = self.np_open && self.current().is_some();
-        let mut changed = self.menu.step(self.menu_open, dt, reduce)
-            | self.tmenu.step(self.tmenu_open, dt, reduce)
-            | self.vol.step(self.vol_open, dt, reduce)
-            | self.np.glide(np_target, dt, reduce)
-            | self.pop.step(self.popover_open, dt, reduce)
-            | self.sheet_pop.morph(self.sheet_open, dt, reduce)
-            | (!self.sheet_dragging && self.sheet_drag.settle(0.0, 0.42, 0.86, dt));
+        let bar_target = self.session != super::Session::LoggedOut && self.current().is_some() && self.page != super::Page::Home;
+        let sheet_drag_moved = if !self.sheet_dragging {
+            if instant {
+                let had = self.sheet_drag.t != 0.0 || self.sheet_drag.v != 0.0;
+                if had {
+                    self.sheet_drag = Pop::default();
+                }
+                had
+            } else {
+                self.sheet_drag.settle(0.0, 0.42, 0.86, dt)
+            }
+        } else {
+            false
+        };
+        let mut changed = self.menu.step(self.menu_open, dt, instant)
+            | self.tmenu.step(self.tmenu_open, dt, instant)
+            | self.vol.step(self.vol_open, dt, instant)
+            | self.np.glide(np_target, dt, instant)
+            | self.pop.step(self.popover_open, dt, instant)
+            | self.sheet_pop.morph(self.sheet_open, dt, instant)
+            | self.settings_pop.step(self.settings_open, dt, instant)
+            | self.bar_pop.step(bar_target, dt, instant)
+            | sheet_drag_moved;
         if !self.sheet_open && self.sheet_pop.t == 0.0 && self.sheet_pop.v == 0.0 && self.sheet.is_some() {
             self.sheet = None;
             changed = true;
@@ -45,15 +61,31 @@ impl State {
         changed
     }
 
-    /// Whether any menu, sheet, or overlay spring is still animating.
+    /// Whether the Settings modal is visible (open or still closing).
+    pub fn settings_visible(&self) -> bool {
+        self.settings_open || self.settings_pop.t > 0.001 || self.settings_pop.v != 0.0
+    }
+
+    /// Whether the bottom player dock bar is visible (mounted or still sliding out).
+    pub fn bar_visible(&self) -> bool {
+        let want = self.session != super::Session::LoggedOut && self.current().is_some() && self.page != super::Page::Home;
+        want || (self.current().is_some() && (self.bar_pop.t > 0.001 || self.bar_pop.v != 0.0))
+    }
+
+    /// Whether any menu, sheet, modal, bar, or overlay spring is still animating.
     pub fn menu_moving(&self) -> bool {
+        let bar_target = self.session != super::Session::LoggedOut && self.current().is_some() && self.page != super::Page::Home;
         self.menu.moving(self.menu_open)
             || self.tmenu.moving(self.tmenu_open)
             || self.vol.moving(self.vol_open)
             || self.np.moving(self.np_open && self.current().is_some())
             || self.pop.moving(self.popover_open)
             || self.sheet_pop.moving(self.sheet_open)
+            || self.settings_pop.moving(self.settings_open)
+            || self.bar_pop.moving(bar_target)
             || (!self.sheet_dragging && (self.sheet_drag.t != 0.0 || self.sheet_drag.v != 0.0))
+            || (self.wave_arc - self.wave_arc_to).abs() > 0.0005
+            || self.wave_arc_vel.abs() > 0.002
     }
 
     /// Whether the volume card is visible (open or still closing).

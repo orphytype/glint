@@ -6,7 +6,6 @@ use rune_fx::{Fx, FxLayer, FxSlot, Shape, SparkleParams, rgb};
 use super::gpu::{Gpu, Pipe, Region, U};
 use super::{BARS, BUTTERFLY, FIELD, GLASS, Gfx, MORPH, SHAPE, SNAP, SPARKLES, STAGE, VEIL, WAVE_N, hex3, off_kind};
 use crate::app::State;
-use crate::store::Effects;
 use crate::theme;
 
 const MORPH_SECS: f32 = 1.5;
@@ -88,7 +87,7 @@ pub(super) struct FrameCtx<'a> {
     pub(super) srgb: bool,
     pub(super) dt: f32,
     pub(super) t: f32,
-    pub(super) quality: Effects,
+    pub(super) shaders: bool,
     pub(super) reduced: bool,
     pub(super) playing_level: bool,
     pub(super) song_live: bool,
@@ -103,6 +102,7 @@ pub(super) struct FrameCtx<'a> {
 
 pub(super) struct SlotSummary {
     pub(super) moving: bool,
+    pub(super) ribbon_moving: bool,
     pub(super) flows: bool,
     pub(super) audio_reactive: bool,
     pub(super) shapes_present: bool,
@@ -171,7 +171,7 @@ impl Gfx {
         self.layers.clear();
         self.placements.clear();
 
-        let mut summary = SlotSummary { moving: false, flows: false, audio_reactive: false, shapes_present: false, bars_n: 0 };
+        let mut summary = SlotSummary { moving: false, ribbon_moving: false, flows: false, audio_reactive: false, shapes_present: false, bars_n: 0 };
         let mut morph_stepped = false;
         let mut active_pyrs: Vec<(Region, u8)> = Vec::new();
 
@@ -188,7 +188,7 @@ impl Gfx {
             let d = i.uv;
             match kind {
                 FIELD => {
-                    if ctx.quality == Effects::Off {
+                    if !ctx.shaders {
                         continue;
                     }
                     let mut u = base(i, k, ctx.pass_size, ctx.srgb, 0.0, 0.0, true);
@@ -208,18 +208,22 @@ impl Gfx {
                         continue;
                     }
                     let has_snap = !self.snaps.is_empty();
+                    let is_light = theme::light();
                     let (mut refr, mut chroma, mut blur) = if has_snap { (s.refr, s.chroma, s.blur) } else { (0.0, 0.0, 0.0) };
-                    let mut tint = s.tint + 0.10 * hover + 0.16 * press;
-                    match ctx.quality {
-                        Effects::Off => {
-                            (refr, chroma, blur) = (0.0, 0.0, 0.0);
-                            tint += 0.35;
+                    let base_tint = if is_light {
+                        match variant {
+                            0 => 0.72,
+                            1 => 0.68,
+                            2 => 0.62,
+                            _ => 0.66,
                         }
-                        Effects::Light => {
-                            chroma = 0.0;
-                            refr *= 0.6;
-                        }
-                        Effects::Full => {}
+                    } else {
+                        s.tint
+                    };
+                    let mut tint = base_tint + 0.08 * hover + 0.14 * press;
+                    if !ctx.shaders {
+                        (refr, chroma, blur) = (0.0, 0.0, 0.0);
+                        tint += 0.25;
                     }
                     let mut u = base(i, k, ctx.pass_size, ctx.srgb, ctx.t, 0.0, false);
                     let reach = refr * k + 8.0 * k;
@@ -254,8 +258,9 @@ impl Gfx {
                     } else {
                         0.0
                     };
+                    let sat = if is_light { s.sat.min(0.95) } else { s.sat };
                     u.p0 = [refr * k, s.edge * k, chroma, sigma];
-                    u.p1 = [0.0, s.sat, 0.0, s.ambient];
+                    u.p1 = [0.0, sat, 0.0, s.ambient];
                     u.p2 = [s.spec, s.spec_exp, s.rim, s.rim_w];
                     u.p3 = [0.0, 1.0 - hide, -0.9, 2.0];
                     u.tint = rgb4(ctx.canvas, tint.clamp(0.0, 0.95));
@@ -264,7 +269,7 @@ impl Gfx {
                     self.jobs.push((n as u32, Job { pipe: Pipe::Glass, u, region, tag, shared }));
                 }
                 VEIL => {
-                    if ctx.quality == Effects::Off || (d[0] == 0.0 && d[1] == 0.0) {
+                    if !ctx.shaders || (d[0] == 0.0 && d[1] == 0.0) {
                         continue;
                     }
                     let mut u = base(i, k, ctx.pass_size, ctx.srgb, ctx.t, 0.0, true);
@@ -283,34 +288,28 @@ impl Gfx {
                     self.jobs.push((n as u32, Job { pipe: Pipe::Veil, u, region, tag, shared: false }));
                 }
                 MORPH => {
-                    let run = d[0] > 0.5 && !ctx.reduced && ctx.quality != Effects::Off;
+                    let run = d[0] > 0.5 && !ctx.reduced && ctx.shaders;
                     let want = if run { 1.0 } else { 0.0 };
                     if !morph_stepped {
                         morph_stepped = true;
-                        self.marker_run += (want - self.marker_run) * (1.0 - (-ctx.dt * 9.0).exp());
-                        if ctx.reduced || ctx.quality == Effects::Off {
+                        self.marker_run += (want - self.marker_run) * (1.0 - (-ctx.dt * 6.5).exp());
+                        if ctx.reduced || !ctx.shaders {
                             self.marker_run = want;
                         }
-                        let b = &ctx.st.spectrum;
-                        let raw = [b[0..5].iter().sum::<f32>() / 5.0, b[5..16].iter().sum::<f32>() / 11.0, b[16..32].iter().sum::<f32>() / 16.0];
-                        let punch = [ctx.st.drive.kick, ctx.st.drive.snare.max(ctx.st.drive.syllable * 0.85), ctx.st.drive.hats];
-                        let avg_k = 1.0 - (-ctx.dt * 2.8).exp();
+                        let swell = self.smooth.beat * 0.18;
                         for j in 0..3 {
                             if run && ctx.playing_level {
-                                self.morph_avg[j] += (raw[j] - self.morph_avg[j]) * avg_k;
-                                let avg = self.morph_avg[j].max(0.03);
-                                let flux = ((raw[j] - avg) / avg).clamp(-0.65, 1.35);
-                                let target = (0.25 * self.smooth.norm[j] + 0.45 * (0.32 + flux * 0.68).clamp(0.0, 1.0) + 0.60 * punch[j]).clamp(0.0, 1.0);
-                                let rate = if target > self.morph_bars[j] { 26.0 } else { 9.0 };
+                                let target = (0.78 * self.smooth.norm[j] + swell).clamp(0.0, 1.0);
+                                let rate = if target > self.morph_bars[j] { 4.8 } else { 2.8 };
                                 self.morph_bars[j] += (target - self.morph_bars[j]) * (1.0 - (-ctx.dt * rate).exp());
                             } else {
-                                self.morph_bars[j] *= (-ctx.dt * 9.0).exp();
+                                self.morph_bars[j] *= (-ctx.dt * 4.5).exp();
                             }
                         }
                     }
                     let mut u = base(i, k, ctx.pass_size, ctx.srgb, 0.0, 0.0, true);
                     let live = if ctx.playing_level { 1.0 } else { 0.0 };
-                    u.p0 = [self.morph_t, MORPH_SECS, if ctx.reduced || ctx.quality == Effects::Off { 0.0 } else { self.marker_run }, live];
+                    u.p0 = [self.morph_t, MORPH_SECS, if ctx.reduced || !ctx.shaders { 0.0 } else { self.marker_run }, live];
                     u.p1 = [self.morph_bars[0], self.morph_bars[1], self.morph_bars[2], self.smooth.beat];
                     summary.moving |= (self.marker_run - want).abs() > 0.002;
                     u.tint = rgb4(if d[1] > 0.5 { [1.0, 1.0, 1.0] } else { ctx.accent }, 1.0);
@@ -330,7 +329,7 @@ impl Gfx {
                     self.snaps.push(n as u32);
                 }
                 _ => {
-                    if ctx.quality == Effects::Off && kind == SPARKLES {
+                    if !ctx.shaders && kind == SPARKLES {
                         continue;
                     }
                     let [x, y, w, h] = i.rect.map(|v| v / k);
@@ -353,7 +352,7 @@ impl Gfx {
         let m = &mut self.bars[slot];
         let p = &ctx.st.player;
         let target = if p.dur_ms > 0 { (p.pos_ms as f32 / p.dur_ms as f32).clamp(0.0, 1.0) } else { 0.0 };
-        let still = ctx.reduced || ctx.quality == Effects::Off;
+        let still = ctx.reduced || !ctx.shaders;
         if m.seed < 0.0 || still {
             let age = if m.seed < 0.0 && ctx.bars_were_up { APPEAR_S } else { m.age };
             *m = BarMem { seed: d[0], from: d[0], swap: 1.0, shown: target, age, gone: 0.0, real: self.wave_mix };
@@ -376,6 +375,7 @@ impl Gfx {
         }
         summary.moving |= m.swap < 1.0 || m.age < APPEAR_S || self.bars_live > 0.0;
         let appear = if still { 1.0 } else { ease_out((m.age / APPEAR_S).clamp(0.0, 1.0)) };
+        let alpha = appear * (1.0 - d[3].clamp(0.0, 1.0));
         let wave = ctx.st.current().and_then(|t| ctx.st.waveforms.get(&t.id).map(|w| (t.id.as_str(), w)));
         if let Some((id, w)) = wave
             && id != self.wave_id
@@ -411,7 +411,7 @@ impl Gfx {
         u.p1 = [band(4), band(5), band(6), band(7)];
         u.p2 = [band(8), band(9), band(10), band(11)];
         u.p3 = [d[1].max(2.0), d[2].max(1.0), self.smooth.beat, self.bars_t];
-        u.p4 = [m.from, m.swap, appear, m.real + if self.wave_from_real { 2.0 } else { 0.0 }];
+        u.p4 = [m.from, m.swap, alpha, m.real + if self.wave_from_real { 2.0 } else { 0.0 }];
         u.tint = rgb4(ctx.ink, 1.0);
         u.ink = rgb4(ctx.ink, 0.28);
         summary.audio_reactive |= !still && p.playing;

@@ -51,6 +51,39 @@ impl State {
             write_time(&mut text, left);
             self.lives.remaining.set(text.as_str());
         }
+        let frac = if dur > 0 { (pos as f32 / dur as f32).clamp(0.0, 1.0) } else { 0.0 };
+        let wd = self.seek_w_dock.get();
+        if wd > 0.0 {
+            self.update_seek_live(true, wd, frac);
+        }
+        let wn = self.seek_w_np.get();
+        if wn > 0.0 {
+            self.update_seek_live(false, wn, frac);
+        }
+    }
+
+    /// Updates a native seek bar's `Live` fill and hover-thumb rects only when its 0.5 pt
+    /// quantized pixel width changes.
+    pub fn update_seek_live(&self, dock: bool, width: f32, frac: f32) -> (&rune::Live<[f32; 4]>, &rune::Live<[f32; 4]>) {
+        let w = (width * frac).max(if frac > 0.002 { 4.0 } else { 0.0 });
+        let q = (w * 2.0).round() as u32;
+        let fill_w = q as f32 * 0.5;
+        let thumb_x = (width * frac - 6.0).clamp(0.0, (width - 12.0).max(0.0));
+        if dock {
+            self.seek_w_dock.set(width);
+            if self.seek_px_dock.replace(q) != q {
+                self.lives.seek_dock.set([0.0, 0.0, fill_w, 4.0]);
+                self.lives.seek_dock_thumb.set([thumb_x, 0.0, 12.0, 12.0]);
+            }
+            (&self.lives.seek_dock, &self.lives.seek_dock_thumb)
+        } else {
+            self.seek_w_np.set(width);
+            if self.seek_px_np.replace(q) != q {
+                self.lives.seek_np.set([0.0, 0.0, fill_w, 4.0]);
+                self.lives.seek_np_thumb.set([thumb_x, 0.0, 12.0, 12.0]);
+            }
+            (&self.lives.seek_np, &self.lives.seek_np_thumb)
+        }
     }
 
     pub fn playback_snapshot(&self) -> Option<PlaybackSnapshot> {
@@ -149,10 +182,24 @@ impl State {
                     self.player.dur_ms = d.as_millis() as u64;
                 }
             }
-            e.spectrum(&mut self.spectrum);
-            self.level = e.level();
-            self.tone = e.tone();
-            self.drive = e.drive();
+            if crate::fx::shaders_enabled() {
+                e.spectrum(&mut self.spectrum);
+                self.level = e.level();
+                self.tone = e.tone();
+                self.drive = e.drive();
+            } else {
+                self.level = 0.0;
+            }
+            // In CPU mode, defer prefetching the next track until the final 18 s so two full
+            // lossless tracks do not sit in RAM for the whole song.
+            if crate::fx::cpu_mode()
+                && playing
+                && self.player.next.is_none()
+                && self.player.next_loading.is_none()
+                && (self.player.dur_ms == 0 || self.player.dur_ms.saturating_sub(self.player.pos_ms) <= 18_000)
+            {
+                self.prefetch_next();
+            }
         } else {
             let running = self.player.index.is_some() && self.player.playing && !self.player.loading;
             if (running && self.player.sim_started) || (running && self.headless) {

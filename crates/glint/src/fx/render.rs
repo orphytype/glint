@@ -11,11 +11,10 @@ use super::gpu::{Binds, Gpu, Pipe};
 use super::slots::{APPEAR_S, BarMem, FrameCtx};
 use super::stage::find_cover_rect;
 use super::{
-    BARS, BUTTERFLY, FLOW_EASE_S, FLOW_S, GLASS_READY, GPU_UP, Gfx, LAST_DRAW_CLOCK, MORPH, OFF_FPS, READY, SHAPES_READY, STAT_PYR_BYTES, STAT_PYR_COUNT, STAT_UBUFS, TICK_ARMED,
-    WANTS_TICK, off_mask,
+    BARS, BARS_READY, BUTTERFLY, FLOW_EASE_S, FLOW_S, GLASS_READY, GPU_UP, Gfx, LAST_DRAW_CLOCK, MOOD_READY, MORPH, OFF_FPS, PIPES_SETTLED_GEN, READY, RIBBON_READY, STAGE_READY,
+    STAT_PYR_BYTES, STAT_PYR_COUNT, STAT_UBUFS, TICK_ARMED, TICK_STEP_US, WANTS_TICK, WAVE_READY, off_mask,
 };
-use crate::app::State;
-use crate::store::Effects;
+use crate::app::{Page, Session, State};
 use crate::theme;
 
 /// Dev tool (`GLINT_FXOFF=fps`): GPU frame time read back via timestamp queries.
@@ -43,7 +42,7 @@ fn look_of(f: &Frame<'_, State>, limit: usize) -> u64 {
     };
     let st = &f.rt.state;
     eat(u64::from(f.size.0) << 32 | u64::from(f.size.1));
-    eat(st.settings.effects as u64 | u64::from(st.settings.reduce_motion) << 8 | u64::from(theme::light()) << 9);
+    eat(u64::from(st.settings.shaders) | u64::from(st.settings.reduce_motion) << 8 | u64::from(theme::light()) << 9);
     for (n, instance) in f.rt.instances.iter().take(limit).enumerate() {
         if instance.rect[2] <= 0.0 || instance.rect[3] <= 0.0 {
             continue;
@@ -66,7 +65,35 @@ impl Gfx {
         let (device, queue, size) = (f.device, f.queue, f.size);
         let pass_size = [size.0, size.1];
         let st = &f.rt.state;
-        let quality = st.settings.effects;
+        let shaders = st.shaders_active();
+        if !shaders {
+            // Shaders are completely off: drop compositor GPU state and use RUNE's default frame
+            // path so Windows partial-frame dirty-rect rendering stays active.
+            self.gpu = None;
+            self.fx = None;
+            self.prof = None;
+            self.jobs.clear();
+            self.snaps.clear();
+            self.at.clear();
+            self.layers.clear();
+            self.placements.clear();
+            READY.store(false, Ordering::Relaxed);
+            GLASS_READY.store(false, Ordering::Relaxed);
+            WAVE_READY.store(false, Ordering::Relaxed);
+            STAGE_READY.store(false, Ordering::Relaxed);
+            BARS_READY.store(false, Ordering::Relaxed);
+            MOOD_READY.store(false, Ordering::Relaxed);
+            RIBBON_READY.store(false, Ordering::Relaxed);
+            self.was_building = false;
+            STAT_PYR_COUNT.store(0, Ordering::Relaxed);
+            STAT_PYR_BYTES.store(0, Ordering::Relaxed);
+            STAT_UBUFS.store(0, Ordering::Relaxed);
+            WANTS_TICK.store(false, Ordering::Relaxed);
+            self.animating = st.ui_animating || st.menu_moving() || st.scroll_restore.is_some();
+            self.drew_own = false;
+            f.draw_ui();
+            return;
+        }
         let reduced = st.settings.reduce_motion;
         let accent = theme::accent_srgb(st.settings.accent, self.smooth.accent);
         let dt = f.dt.clamp(0.0, 0.1) as f32;
@@ -75,7 +102,7 @@ impl Gfx {
         let srgb = f.srgb_blend();
         let (canvas, ink) = (theme::canvas(), theme::ink());
         let playing_level = self.smooth.level > 0.002;
-        if !reduced && quality != Effects::Off {
+        if !reduced {
             self.field_t += dt * (0.12 + self.smooth.level * 1.4);
         }
         if playing_level || !self.flowing {
@@ -85,26 +112,30 @@ impl Gfx {
         }
         let flow = ((FLOW_S + FLOW_EASE_S - self.idle) / FLOW_EASE_S).clamp(0.0, 1.0);
         let flow = flow * flow * (3.0 - 2.0 * flow);
-        if !reduced && quality != Effects::Off {
+        if !reduced {
             let want = if st.player.playing { self.smooth.norm[3] } else { 0.0 };
             self.shape_music += (want - self.shape_music) * (1.0 - (-dt * 3.0).exp());
             self.shape_t += dt * flow * (1.0 + 0.5 * self.shape_music);
+            // Exact music-player-wave cycle clock (8.467 s loop), gently nudged in speed by
+            // filtered live audio energy so playback never jerks or stalls.
+            const WAVE_CYCLE_S: f32 = 254.0 / 30.0;
+            let e_want = if st.player.playing { (0.60 * self.smooth.level + 0.40 * self.smooth.norm[3]).clamp(0.0, 1.0) } else { 0.0 };
+            self.wave_energy += (e_want - self.wave_energy) * (1.0 - (-dt * 1.4).exp());
+            self.wave_t = (self.wave_t + dt * (0.90 + 0.42 * self.wave_energy)).rem_euclid(WAVE_CYCLE_S);
         }
         let stage_fx = st.settings.stage.effects;
         let heard = st.player.playing && self.smooth.level > 0.002;
-        let song_live = heard && !reduced && quality == Effects::Full && stage_fx > 0;
-        if quality != Effects::Off && stage_fx > 0 {
+        let song_live = heard && !reduced && stage_fx > 0;
+        if stage_fx > 0 {
             self.song.hear(dt, &st.tone, &st.spectrum, &st.drive, self.smooth.norm[3], heard);
         }
         if song_live {
-            let pace = if stage_fx == 1 { 0.45 } else { 1.0 };
-            self.song.advance(dt * pace * (self.smooth.tempo / 120.0).clamp(0.75, 1.5));
+            self.song.advance(dt * (self.smooth.tempo / 120.0).clamp(0.75, 1.5));
         }
-        if !reduced && quality == Effects::Full && stage_fx > 0 {
-            let pace = if stage_fx == 1 { 0.45 } else { 1.0 };
-            self.song.ground_t += dt * flow * pace;
+        if !reduced && stage_fx > 0 {
+            self.song.ground_t += dt * flow;
         }
-        let bars_want = if st.player.playing && !reduced && quality != Effects::Off { 1.0 } else { 0.0 };
+        let bars_want = if st.player.playing && !reduced { 1.0 } else { 0.0 };
         let rate = if bars_want > self.bars_live { 9.0 } else { 6.0 };
         self.bars_live += (bars_want - self.bars_live) * (1.0 - (-dt * rate).exp());
         if (bars_want - self.bars_live).abs() < 0.002 {
@@ -113,7 +144,8 @@ impl Gfx {
         self.bars_t += dt * self.bars_live;
         let bars_were_up = self.bars.iter().any(|b| b.seed >= 0.0 && b.age >= APPEAR_S);
         if self.morph_on && !reduced {
-            self.morph_t += dt;
+            let speed = 0.84 + 0.28 * self.smooth.level.clamp(0.0, 1.0);
+            self.morph_t += dt * speed;
         }
         self.morph_on = false;
 
@@ -127,16 +159,59 @@ impl Gfx {
                 Gpu::new(device, f.device_key())
             }
         };
-        gpu.ensure(device, f.format);
+        // Queue only the pipelines the active screen actually needs so startup is fast and DXC heap stays small.
+        if st.session != Session::Live {
+            gpu.ensure_pipes(device, f.format, &[Pipe::Field, Pipe::Glass, Pipe::Veil]);
+        } else {
+            let on_home = st.page == Page::Home && !st.np_open && st.np.t <= 0.001;
+            let overlay = st.settings_open
+                || st.menu_open
+                || st.vol_open
+                || st.popover.is_some()
+                || st.track_menu.is_some()
+                || st.sheet.is_some()
+                || st.download_confirm.is_some()
+                || st.name_dialog.is_some()
+                || st.delete_playlist_confirm.is_some()
+                || st.delete_download_confirm.is_some()
+                || st.np_open
+                || st.np.t > 0.001;
+            if st.page == Page::Home {
+                gpu.ensure_wave_field(device, queue);
+                if st.settings.butterflies {
+                    gpu.ensure_pipes(device, f.format, &[Pipe::Wave, Pipe::Field, Pipe::Butterfly]);
+                } else {
+                    gpu.ensure_pipes(device, f.format, &[Pipe::Wave, Pipe::Field]);
+                }
+            }
+            if st.np_open || st.np.t > 0.001 {
+                gpu.ensure_pipes(device, f.format, &[Pipe::Stage, Pipe::Bars, Pipe::Ribbon]);
+            }
+            if !on_home || overlay {
+                gpu.ensure_glass(device, f.format);
+                if st.current().is_some() && !st.np_open && st.np.t <= 0.001 && st.page != Page::Home {
+                    gpu.ensure_pipe(device, f.format, Pipe::Bars);
+                }
+            }
+            if st.page == Page::Explore {
+                gpu.ensure_pipes(device, f.format, &[Pipe::Mood, Pipe::Ribbon]);
+            } else if st.page == Page::Search {
+                gpu.ensure_pipe(device, f.format, Pipe::Ribbon);
+            }
+        }
+        gpu.take_wave_field();
         let first_gpu = !GPU_UP.load(Ordering::Relaxed) && !GPU_UP.swap(true, Ordering::Relaxed);
+        let ready_up = !READY.load(Ordering::Relaxed) && !READY.swap(true, Ordering::Relaxed);
         let glass_up = !GLASS_READY.load(Ordering::Relaxed) && gpu.glass_ready(f.format) && !GLASS_READY.swap(true, Ordering::Relaxed);
-        let shapes_up = !SHAPES_READY.load(Ordering::Relaxed) && gpu.shapes_ready(f.format) && !SHAPES_READY.swap(true, Ordering::Relaxed);
-        let core_up = !READY.load(Ordering::Relaxed) && gpu.core_ready(f.format) && !READY.swap(true, Ordering::Relaxed);
-        let building = !gpu.ready();
-        let came_up = first_gpu || glass_up || shapes_up || core_up;
+        let wave_up = !WAVE_READY.load(Ordering::Relaxed) && gpu.wave_ready(f.format) && !WAVE_READY.swap(true, Ordering::Relaxed);
+        let stage_up = !STAGE_READY.load(Ordering::Relaxed) && gpu.stage_ready(f.format) && !STAGE_READY.swap(true, Ordering::Relaxed);
+        let bars_up = !BARS_READY.load(Ordering::Relaxed) && gpu.bars_ready(f.format) && !BARS_READY.swap(true, Ordering::Relaxed);
+        let mood_up = !MOOD_READY.load(Ordering::Relaxed) && gpu.mood_ready(f.format) && !MOOD_READY.swap(true, Ordering::Relaxed);
+        let ribbon_up = !RIBBON_READY.load(Ordering::Relaxed) && gpu.ribbon_ready(f.format) && !RIBBON_READY.swap(true, Ordering::Relaxed);
+        let mut building = !gpu.ready();
+        let came_up = first_gpu || ready_up || glass_up || wave_up || stage_up || bars_up || mood_up || ribbon_up;
         gpu.begin();
-        if quality != Effects::Off
-            && let Some(th) = &st.cover_thumb
+        if let Some(th) = &st.cover_thumb
             && gpu.set_art(device, queue, art_id(st.palette_key.as_deref()), th)
         {
             self.art_change = 0.0;
@@ -150,9 +225,16 @@ impl Gfx {
         }
 
         let cover_rect = if st.np_open || st.np.t > 0.001 { find_cover_rect(&f.rt.instances, &f.rt.marks) } else { None };
-        let ctx =
-            FrameCtx { device, queue, st, pass_size, srgb, dt, t, quality, reduced, playing_level, song_live, flow, cover_mix, canvas, ink, accent, bars_were_up, cover_rect };
+        let ctx = FrameCtx { device, queue, st, pass_size, srgb, dt, t, shaders, reduced, playing_level, song_live, flow, cover_mix, canvas, ink, accent, bars_were_up, cover_rect };
         let summary = self.prepare_slots(&mut gpu, &f.rt.instances, &f.rt.marks, &ctx);
+        for (_, job) in &self.jobs {
+            gpu.ensure_pipe(device, f.format, job.pipe);
+        }
+        building |= !gpu.ready();
+        if self.was_building && !building {
+            PIPES_SETTLED_GEN.fetch_add(1, Ordering::Relaxed);
+        }
+        self.was_building = building;
 
         let snap_limit = self.snaps.last().copied().unwrap_or(0) as usize;
         let look = look_of(f, snap_limit);
@@ -163,12 +245,8 @@ impl Gfx {
                 .iter()
                 .take_while(|(n, _)| (*n as usize) < snap_limit)
                 .any(|(_, job)| matches!(job.pipe, Pipe::Bars | Pipe::Wave | Pipe::Mood | Pipe::Ribbon | Pipe::Butterfly | Pipe::Stage));
-        let field_dynamic =
-            !reduced && quality != Effects::Off && playing_level && self.jobs.iter().take_while(|(n, _)| (*n as usize) < snap_limit).any(|(_, job)| job.pipe == Pipe::Field);
         let pyramid_key = if fast_dynamic {
-            look ^ ((f.rt.clock * 12.0) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        } else if field_dynamic {
-            look ^ ((f.rt.clock * 2.0) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            look ^ ((f.rt.clock * 6.0) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
         } else {
             look
         };
@@ -187,8 +265,13 @@ impl Gfx {
                 self.shapes.clear();
             }
         }
-        let audio_live = quality != Effects::Off && !reduced && summary.audio_reactive && (self.smooth.level > 0.002 || self.smooth.beat > 0.01 || self.smooth.stirring());
-        let want_tick = summary.moving || audio_live || art_fading;
+        let audio_live = !reduced && summary.audio_reactive && (self.smooth.level > 0.002 || self.smooth.beat > 0.01 || self.smooth.stirring());
+        let want_tick = summary.moving || summary.ribbon_moving || audio_live || art_fading;
+        let ribbon_only = summary.ribbon_moving && !summary.moving && !audio_live && !art_fading;
+        let wave_only = st.page == Page::Home && !st.np_open && st.np.t <= 0.001 && !ribbon_only;
+        // The 3D-texture Home wave takes ~0.1 ms on GPU, so it runs smoothly at 60 Hz; heavy
+        // procedural shaders stay at 30 Hz and ribbon-only frames at 24 Hz.
+        TICK_STEP_US.store(if ribbon_only { 41_667 } else if wave_only { 16_667 } else { 33_333 }, Ordering::Relaxed);
         let armed = TICK_ARMED.swap(false, Ordering::Relaxed);
         WANTS_TICK.store(want_tick, Ordering::Relaxed);
         let need_kick = want_tick && !armed;
@@ -281,6 +364,16 @@ impl Gfx {
             }
         });
         gpu.finish(device, queue, pass_size);
+        // Drop unused 4 MiB RUNE image/glyph atlas pages after cover evictions or every 10 s
+        // even while Home's wave shader animates continuously (pages drawn this frame stay intact).
+        let evict_gen = f.rt.state.art_evict_gen;
+        let moving = f.rt.state.menu_moving() || f.rt.state.is_resizing();
+        if !moving && (evict_gen != self.last_art_evict_gen || f.rt.clock - self.last_atlas_rest >= 10.0) {
+            f.rt.images.rest();
+            f.rt.text.rest();
+            self.last_art_evict_gen = evict_gen;
+            self.last_atlas_rest = f.rt.clock;
+        }
         let (pyrs, pyr_bytes, ubufs) = gpu.stats();
         STAT_PYR_COUNT.store(pyrs, Ordering::Relaxed);
         STAT_PYR_BYTES.store(pyr_bytes, Ordering::Relaxed);

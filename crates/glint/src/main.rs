@@ -73,11 +73,24 @@ fn main() {
         rune::set_app_id("glint");
         desktop::set_window_icon();
     }
-    rune::prewarm_gpu();
     // Where the window was last closed, if that is still on a display.
     let store = if headless { Store::none() } else { Store::open() };
     let settings = store.load();
+    let cpu_mode = !headless && (settings.cpu_mode || std::env::var_os("GLINT_CPU").is_some_and(|v| v != "0" && !v.is_empty()));
+    fx::set_cpu_mode(cpu_mode);
+    fx::set_effects_off(cpu_mode || !settings.shaders);
+    rune::set_gpu_memory_policy(rune::GpuMemoryPolicy::Manual { block_size: (4 << 20)..(4 << 20) });
+    if cpu_mode {
+        #[cfg(any(windows, target_os = "linux"))]
+        if std::env::var_os("RUNE_CPU_FIRST").is_none() {
+            // SAFETY: called once on the main thread during startup before any worker threads spawn.
+            unsafe { std::env::set_var("RUNE_CPU_FIRST", "only") };
+        }
+    } else {
+        rune::prewarm_gpu();
+    }
     if !headless {
+        net::sweep_temp_streams();
         diag_log::init(store.logs_dir(), settings.logging);
     }
     let spec = rune::AppSpec {
@@ -107,6 +120,7 @@ fn main() {
         min_size: Some((0.0, 0.0)),
         fonts: APP_FONTS,
         families: ("Commissioner", "IBM Plex Mono"),
+        on_key: Some(ui::mini::on_key),
         ..rune::AppSpec::new("Glint Mini", mini_size, ui::mini::MiniState::default, ui::mini::view)
     };
     let mini_sub = rune::App::new(mini_spec)
@@ -115,7 +129,9 @@ fn main() {
         .srgb_blend(true);
     let (mini_handle, mini_win) = if !headless {
         let mini_opts = rune::WindowOptions {
-            transparent: true,
+            // Transparent windows bypass RUNE's CPU-only renderer and spin up a full GPU device,
+            // so keep the mini player opaque in CPU mode to stay 100% CPU-rendered and low-RAM.
+            transparent: !cpu_mode,
             borderless: true,
             always_on_top: settings.mini_always_on_top,
             visible: false,
@@ -134,11 +150,36 @@ fn main() {
         .on_window(desktop::place::keep_window)
         .on_focus(on_focus)
         .on_rest(|s: &mut State, _tx: &mut Tx| {
-            s.art.trim_idle();
+            let mut keep = Vec::with_capacity(2 + s.pinned_items.len());
+            if let Some(tpl) = s.current().and_then(|t| t.cover_template()) {
+                if let Some(md) = State::cover_key(Some(tpl)) {
+                    keep.push(md);
+                }
+                if !fx::cpu_mode()
+                    && let Some(lg) = State::cover_key_px(Some(tpl), art::COVER_LG)
+                {
+                    keep.push(lg);
+                }
+            }
+            for item in &s.pinned_items {
+                if let Some(sm) = State::cover_key_px(item.cover.as_deref(), art::COVER_SM) {
+                    keep.push(sm);
+                }
+            }
+            let refs: Vec<&str> = keep.iter().map(String::as_str).collect();
+            let _ = s.art.trim_offscreen(&refs);
+            if s.page != Page::Home || s.np_open {
+                ui::blobs::clear_cache();
+            }
+            if s.now - s.ws_trimmed_at >= 20.0 {
+                diag_log::trim_working_set();
+                s.ws_trimmed_at = s.now;
+            }
             s.log_mem("rest");
             false
-        })
-        .compositor(fx::Gfx::new())
+        });
+    let app = if cpu_mode { app } else { app.compositor(fx::Gfx::new()) };
+    let app = app
         .srgb_blend(true)
         // Closing the window only hides it; whether that ends the app is decided in `on_close`.
         .keep_running()
@@ -156,6 +197,7 @@ fn main() {
                 s.remax = desktop::place::hold(app);
             }
             fx::release_gpu();
+            s.trim_hidden_memory();
             // With the mini player open the app goes on in it.
             if s.mini_open {
                 return;
@@ -203,6 +245,25 @@ fn main() {
 
 /// Runs at the start of every frame: advances the player and turns what it found into requests.
 fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
+    if s.restart_pending && !s.headless {
+        s.restart_pending = false;
+        if let Some(win) = &s.mini_win
+            && let Some(p) = win.placement()
+        {
+            s.settings.mini_pos = Some(p.position);
+        }
+        s.save_settings_now();
+        desktop::place::save(&s.store);
+        s.shutdown_desktop();
+        rune::release_instance();
+        if let Ok(exe) = std::env::current_exe() {
+            let mut cmd = std::process::Command::new(exe);
+            cmd.env_remove("RUNE_CPU_FIRST");
+            let _ = cmd.spawn();
+        }
+        tx.quit();
+        return false;
+    }
     let was = s.track_mark();
     let mut changed = s.tick(t);
     s.animate_if_moved(tx, &was);
@@ -227,27 +288,34 @@ fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
     startup_report(tx);
     // The compositor tiers came up: rebuild the view with glass or shape slots as each finishes.
     {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
         static GPU: AtomicBool = AtomicBool::new(false);
-        static GLASS: AtomicBool = AtomicBool::new(false);
-        static SHAPES: AtomicBool = AtomicBool::new(false);
-        static SLOTS: AtomicBool = AtomicBool::new(false);
+        static TIERS: AtomicU8 = AtomicU8::new(0);
         if !GPU.load(Ordering::Relaxed) && fx::gpu_up() && !GPU.swap(true, Ordering::Relaxed) {
             diag_log::write_system(&s.settings, s.update_method, s.win_size.get());
+            s.startup_trim_at = Some(s.now + 3.0);
             s.log_mem("gpu:ready");
             changed = true;
         }
-        if !GLASS.load(Ordering::Relaxed) && fx::glass_ready() && !GLASS.swap(true, Ordering::Relaxed) {
-            changed = true;
-        }
-        if !SHAPES.load(Ordering::Relaxed) && fx::shapes_ready() && !SHAPES.swap(true, Ordering::Relaxed) {
-            changed = true;
-        }
-        if !SLOTS.load(Ordering::Relaxed) && fx::ready() && !SLOTS.swap(true, Ordering::Relaxed) {
+        let tiers = u8::from(fx::glass_ready())
+            | (u8::from(fx::wave_ready()) << 1)
+            | (u8::from(fx::mood_ready()) << 2)
+            | (u8::from(fx::ribbon_ready()) << 3)
+            | (u8::from(fx::ready()) << 4)
+            | (u8::from(fx::stage_ready()) << 5)
+            | (u8::from(fx::bars_ready()) << 6);
+        if TIERS.swap(tiers, Ordering::Relaxed) != tiers {
             changed = true;
         }
     }
-    let visible = s.app.as_ref().is_none_or(rune::AppHandle::is_visible);
+    let visible = s.headless || s.app.as_ref().is_none_or(rune::AppHandle::is_visible);
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static WAS_VISIBLE: AtomicBool = AtomicBool::new(true);
+        if WAS_VISIBLE.swap(visible, Ordering::Relaxed) && !visible {
+            s.trim_hidden_memory();
+        }
+    }
     if !visible {
         fx::release_gpu();
     } else if s.remax
@@ -270,8 +338,8 @@ fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
         // Started in the tray: the launch screen begins once the window is shown.
         tx.wake_after(Duration::from_millis(250));
     } else if ui::splash::awaiting_gpu(s) {
-        // Safety wake if GPU init takes unusually long; far enough out to keep CPU handover quiet.
-        tx.wake_after(Duration::from_secs(2));
+        // Short safety wake while the CPU splash hands over to the GPU so readiness is never missed.
+        tx.wake_after(Duration::from_millis(120));
     }
 
     // A hidden window (closed to the tray) is only woken when asked: keep the player's clock, the
@@ -295,8 +363,10 @@ fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
         }
     }
     let dt = (s.now - s.prev_now).clamp(0.0, 0.05) as f32;
-    // Passive shader effects, butterflies, and word-by-word lyrics share one 30 Hz cadence.
-    const FX_STEP: f64 = 1.0 / 30.0;
+    // Compositor shaders run at 24 Hz when only the My Wave ribbon is active, else 30 Hz.
+    // Word-by-word lyrics rebuild on a lighter 18 Hz (GPU) / 12 Hz (CPU) cadence.
+    let fx_step = fx::tick_step_s();
+    let lyric_step = if fx::cpu_mode() { 1.0 / 12.0 } else { 1.0 / 18.0 };
     let resizing = s.is_resizing();
     // Rebuild the glass once the last size holds, even on a paused or otherwise idle page.
     if resizing {
@@ -320,7 +390,7 @@ fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
             tx.wake_after(Duration::from_millis(50));
         }
     }
-    // Menus, the player page, and the details sheet step on springs at full display refresh rate.
+    // Menus, the open player, and the details sheet step on springs at full display refresh rate.
     let menu_moving = s.menu_moving();
     if menu_moving {
         if !visible {
@@ -328,17 +398,40 @@ fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
         }
         changed = true;
     }
-    // The sung line comes forward and the one before steps back, frame by frame.
-    let lines_moving = !resizing && s.np_open && s.np_panel() == NpTab::Lyrics && ui::np::step_lines(s, dt);
-    if lines_moving {
-        if !visible {
-            tx.wake_after(Duration::from_millis(50));
+    let _ = dt;
+    s.ui_animating = visible && (splash_moving || menu_moving || s.scroll_restore.is_some());
+
+    // Blink the focused text input's caret on a standard 530 ms cadence; resets solid on every edit
+    // or caret movement, and schedules zero wakes when no text input is focused.
+    const CARET_HALF_S: f64 = 0.53;
+    if visible && !s.headless {
+        if let Some(sig) = s.focused_edit_sig() {
+            if sig != s.caret_sig {
+                s.caret_sig = sig;
+                s.caret_since = s.now;
+                if !s.caret_visible {
+                    s.caret_visible = true;
+                    changed = true;
+                }
+                tx.wake_after(Duration::from_secs_f64(CARET_HALF_S));
+            } else {
+                let elapsed = (s.now - s.caret_since).max(0.0);
+                let phase = ((elapsed / CARET_HALF_S).floor() as u64).is_multiple_of(2);
+                if phase != s.caret_visible {
+                    s.caret_visible = phase;
+                    changed = true;
+                }
+                let rem = CARET_HALF_S - (elapsed % CARET_HALF_S);
+                tx.wake_after(Duration::from_secs_f64(rem.max(0.02)));
+            }
+        } else if s.caret_sig != 0 || !s.caret_visible {
+            s.caret_sig = 0;
+            if !s.caret_visible {
+                s.caret_visible = true;
+                changed = true;
+            }
         }
-        changed = true;
     }
-    // Keep the compositor in continuous VSync-paced rendering while any UI spring moves,
-    // instead of sleeping on poll timers (which clamp to 16.7 ms and drop to 30 FPS on Windows).
-    s.ui_animating = visible && (splash_moving || menu_moving || lines_moving || s.scroll_restore.is_some());
 
     let fx_on = visible && fx::wants_tick();
     let bugs_on = visible && s.bugs_alive();
@@ -364,11 +457,27 @@ fn poll(s: &mut State, t: f64, tx: &mut Tx) -> bool {
                 bug_wait = s.swarm.step(s.now, bug_dt, &geom, scroll);
             }
             if wiping_now {
-                changed = true;
+                use std::sync::atomic::{AtomicU32, Ordering};
+                static LAST_LYRIC_BUCKET: AtomicU32 = AtomicU32::new(u32::MAX);
+                let div = if fx::cpu_mode() { 80 } else { 55 };
+                let bucket = s.lyric_ms() / div;
+                if LAST_LYRIC_BUCKET.swap(bucket, Ordering::Relaxed) != bucket || ui::np::counting(s) {
+                    changed = true;
+                }
             }
-            let wait =
-                if fx_on || wiping_now { Duration::from_secs_f64(FX_STEP) } else { bug_wait.map_or(Duration::from_secs_f64(FX_STEP), |d| d.max(Duration::from_secs_f64(FX_STEP))) };
-            s.fx_next = if (fx_on || wiping_now) && s.fx_next > 0.0 && s.now - s.fx_next < FX_STEP { s.fx_next + FX_STEP } else { s.now + wait.as_secs_f64() };
+            let step = if fx_on {
+                fx_step
+            } else if wiping_now {
+                lyric_step
+            } else {
+                fx_step
+            };
+            let wait = if fx_on || wiping_now {
+                Duration::from_secs_f64(step)
+            } else {
+                bug_wait.map_or(Duration::from_secs_f64(step), |d| d.max(Duration::from_secs_f64(step)))
+            };
+            s.fx_next = if (fx_on || wiping_now) && s.fx_next > 0.0 && s.now - s.fx_next < step { s.fx_next + step } else { s.now + wait.as_secs_f64() };
             if !s.ui_animating {
                 tx.wake_after(Duration::from_secs_f64((s.fx_next - s.now).max(0.004)));
                 if fx_on && !changed {

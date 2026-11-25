@@ -5,7 +5,10 @@ use ym_api::{SearchResult, ShelfKind, WAVE_PRESETS};
 
 use super::garden::garden_hover;
 use super::home::shelf;
-use super::shared::{GRID_GAP, album_card, artist_card, column, fit, grid, heading_side, hscroll, playlist_card, row_arrows, start_wave_with, track_list, wave_hue, wave_title};
+use super::shared::{
+    GRID_GAP, album_card_lazy, artist_card_lazy, card_row_h, column, fit, heading_side, hscroll, hscroll_range, playlist_card_lazy, row_arrows, start_wave_with, track_list,
+    virtual_grid, wave_hue, wave_title,
+};
 use crate::app::{Load, Page, SearchTab, Source, State};
 use crate::i18n::{Lang, S};
 use crate::theme as th;
@@ -44,7 +47,7 @@ pub(super) fn search(s: &State, w: f32) -> El {
         .grow(1.0)
         .color(th::text())
         .placeholder(S::SearchHint.get(lang), th::text3())
-        .caret(p.accent, p.accent.alpha(0.30))
+        .caret(s.caret_color(s.search.edit.focused, p.accent), p.accent.alpha(0.30))
         .on_edit(|s: &mut State| &mut s.search.edit)
         .on_submit(|s: &mut State, _tx: &mut Tx| {
             let t = s.search.edit.text.clone();
@@ -93,7 +96,7 @@ pub(super) fn search(s: &State, w: f32) -> El {
     let at = SEARCH_TABS.iter().position(|t| *t == s.search.tab).unwrap_or(0);
     body = body.child(kit::rise(row().w_full().child(kit::tab_track("stabs", tabs, at)), 2));
 
-    let (_, card) = fit(w, 144.0, GRID_GAP, 8);
+    let (cols, card) = fit(w, 144.0, GRID_GAP, 8);
     let card = card.min(196.0);
     let tab = s.search.tab;
     let kind_loading = tab != SearchTab::All && s.search.more.is_loading();
@@ -117,9 +120,9 @@ pub(super) fn search(s: &State, w: f32) -> El {
                     .w_full()
                     .gap(20.0)
                     .child(label(S::ShowingFor.get(lang).replace("{}", other), th::BODY, th::text2()).key("sr-relaid").truncate())
-                    .child(results(s, r, tab, w, card))
+                    .child(results(s, r, tab, w, cols, card))
             } else {
-                results(s, r, tab, w, card)
+                results(s, r, tab, w, cols, card)
             }
         }
         _ => el(),
@@ -128,7 +131,7 @@ pub(super) fn search(s: &State, w: f32) -> El {
     kit::scroll_page("search", body)
 }
 
-fn results(s: &State, r: &SearchResult, tab: SearchTab, w: f32, card: f32) -> El {
+fn results(s: &State, r: &SearchResult, tab: SearchTab, w: f32, cols: usize, card: f32) -> El {
     let lang = s.lang;
     let to = |tab: SearchTab| move |s: &mut State| s.set_search_tab(tab);
     let mut tb = col().w_full().gap(32.0);
@@ -139,28 +142,49 @@ fn results(s: &State, r: &SearchResult, tab: SearchTab, w: f32, card: f32) -> El
             }
             if !r.artists.results.is_empty() {
                 let ar_size = (card * 0.86).floor();
-                let cards: Vec<El> = r.artists.results.iter().take(14).map(|a| artist_card(s, a, ar_size)).collect();
+                let n = r.artists.results.len().min(14);
+                let vis = hscroll_range("sr-artists", n, ar_size, w);
+                let cards: Vec<El> = r.artists.results.iter().take(n).enumerate().map(|(idx, a)| artist_card_lazy(s, a, ar_size, vis.contains(&idx))).collect();
                 let more = kit::more_link("sr-artists-more", S::ShowAll.get(lang)).on_press(to(SearchTab::Artists));
                 let side = heading_side(row_arrows(s, "sr-artists", cards.len(), ar_size, w), Some(more));
-                tb = tb.child(kit::rise(col().gap(14.0).child(kit::heading("sr-artists-h", S::Artists.get(lang), side)).child(hscroll("sr-artists".into(), cards)), 4));
+                tb = tb.child(kit::rise(col().gap(14.0).child(kit::heading("sr-artists-h", S::Artists.get(lang), side)).child(hscroll(s, "sr-artists".into(), ar_size, cards)), 4));
             }
             if !r.albums.results.is_empty() {
-                let cards: Vec<El> = r.albums.results.iter().take(14).map(|a| album_card(s, a, card)).collect();
+                let n = r.albums.results.len().min(14);
+                let vis = hscroll_range("sr-albums", n, card, w);
+                let cards: Vec<El> = r.albums.results.iter().take(n).enumerate().map(|(idx, a)| album_card_lazy(s, a, card, vis.contains(&idx))).collect();
                 let more = kit::more_link("sr-albums-more", S::ShowAll.get(lang)).on_press(to(SearchTab::Albums));
                 let side = heading_side(row_arrows(s, "sr-albums", cards.len(), card, w), Some(more));
-                tb = tb.child(kit::rise(col().gap(14.0).child(kit::heading("sr-albums-h", S::Albums.get(lang), side)).child(hscroll("sr-albums".into(), cards)), 5));
+                tb = tb.child(kit::rise(col().gap(14.0).child(kit::heading("sr-albums-h", S::Albums.get(lang), side)).child(hscroll(s, "sr-albums".into(), card, cards)), 5));
             }
             if !r.playlists.results.is_empty() {
-                let cards: Vec<El> = r.playlists.results.iter().take(14).map(|a| playlist_card(s, a, card)).collect();
+                let n = r.playlists.results.len().min(14);
+                let vis = hscroll_range("sr-playlists", n, card, w);
+                let cards: Vec<El> = r.playlists.results.iter().take(n).enumerate().map(|(idx, a)| playlist_card_lazy(s, a, card, vis.contains(&idx))).collect();
                 let more = kit::more_link("sr-playlists-more", S::ShowAll.get(lang)).on_press(to(SearchTab::Playlists));
                 let side = heading_side(row_arrows(s, "sr-playlists", cards.len(), card, w), Some(more));
-                tb = tb.child(kit::rise(col().gap(14.0).child(kit::heading("sr-playlists-h", S::Playlists.get(lang), side)).child(hscroll("sr-playlists".into(), cards)), 6));
+                tb = tb.child(kit::rise(col().gap(14.0).child(kit::heading("sr-playlists-h", S::Playlists.get(lang), side)).child(hscroll(s, "sr-playlists".into(), card, cards)), 6));
             }
         }
         SearchTab::Tracks => tb = tb.child(track_list("sr-rows", r.tracks.results.len(), ListSrc::Search)),
-        SearchTab::Albums => tb = tb.child(grid(r.albums.results.iter().take(60).map(|a| album_card(s, a, card)).collect())),
-        SearchTab::Artists => tb = tb.child(grid(r.artists.results.iter().take(60).map(|a| artist_card(s, a, card)).collect())),
-        SearchTab::Playlists => tb = tb.child(grid(r.playlists.results.iter().take(60).map(|a| playlist_card(s, a, card)).collect())),
+        SearchTab::Albums => {
+            let n = r.albums.results.len().min(60);
+            tb = tb.child(virtual_grid(format!("sr-al-grid-{cols}"), n, cols, card_row_h(card, false), move |s, pos, load_art| {
+                s.search_view().and_then(|r| r.albums.results.get(pos)).map_or_else(el, |a| album_card_lazy(s, a, card, load_art))
+            }));
+        }
+        SearchTab::Artists => {
+            let n = r.artists.results.len().min(60);
+            tb = tb.child(virtual_grid(format!("sr-ar-grid-{cols}"), n, cols, card_row_h(card, true), move |s, pos, load_art| {
+                s.search_view().and_then(|r| r.artists.results.get(pos)).map_or_else(el, |a| artist_card_lazy(s, a, card, load_art))
+            }));
+        }
+        SearchTab::Playlists => {
+            let n = r.playlists.results.len().min(60);
+            tb = tb.child(virtual_grid(format!("sr-pl-grid-{cols}"), n, cols, card_row_h(card, false), move |s, pos, load_art| {
+                s.search_view().and_then(|r| r.playlists.results.get(pos)).map_or_else(el, |p| playlist_card_lazy(s, p, card, load_art))
+            }));
+        }
     }
     tb
 }
@@ -279,12 +303,13 @@ fn mood_tile(s: &State, id: &'static str, w: f32, h: f32) -> El {
         .radius(12.0)
         .cursor(Cursor::Pointer)
         .press_scale(th::PRESS)
-        .linear_gradient(0.0, [(0.0, tint(0.05)), (1.0, tint(if hot { 0.24 } else { 0.15 }))])
-        .border(1.0, tint(if on { 0.7 } else { 0.22 }))
+        .fill(th::veil(if hot { 0.075 } else { 0.045 }))
+        .border(1.0, tint(if on { 0.55 } else if hot { 0.28 } else { 0.15 }))
         .hov_group()
         .transition(Transition::none())
         .on_hover_change(garden_hover(id))
         .on_press(move |s: &mut State| if mood_playing(s, id) { s.toggle_pause() } else { start_wave_with(s, id) })
+        .child(el().absolute(0.0, 0.0).w_full().h_full().radius(12.0).fill(tint(if on { 0.14 } else if hot { 0.095 } else { 0.055 })))
         .child(art)
         .child(
             col().gap(3.0).max_w(w - side - 30.0).child(label(name.to_owned(), th::name_on(17.0), th::text()).truncate()).child(

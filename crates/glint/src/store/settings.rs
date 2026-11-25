@@ -2,9 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum Effects {
-    #[default]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+enum LegacyEffects {
     Full,
     Light,
     Off,
@@ -81,9 +80,9 @@ pub enum MiniStyle {
 impl MiniStyle {
     pub fn size(self) -> (f32, f32) {
         match self {
-            MiniStyle::Compact => (340.0, 68.0),
-            MiniStyle::Standard => (360.0, 138.0),
-            MiniStyle::Cover => (240.0, 286.0),
+            MiniStyle::Compact => (392.0, 68.0),
+            MiniStyle::Standard => (376.0, 148.0),
+            MiniStyle::Cover => (256.0, 310.0),
         }
     }
 
@@ -96,15 +95,14 @@ impl MiniStyle {
     }
 }
 
-/// The look's current default (see [`StageLook::v`]). Version 4 combined flash and reaction into
-/// one visual effects choice (off, calm, lively).
-const STAGE_V: u8 = 4;
+/// The look's current default (see [`StageLook::v`]). Version 5 simplified stage effects to on/off.
+const STAGE_V: u8 = 5;
 
-/// How the picture behind the open player looks, as chosen in its panel (`0..=2`: off, calm, lively).
+/// How the picture behind the open player looks (`0` off, `1` on).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StageLook {
-    /// Visual effects behind the cover: 0 off, 1 calm, 2 lively.
+    /// Visual effects behind the cover: 0 off, 1 on.
     pub effects: u8,
     /// Legacy fields kept for migrating settings saved before `STAGE_V = 4`.
     #[serde(alias = "rays", default, skip_serializing)]
@@ -128,13 +126,9 @@ impl StageLook {
             return StageLook::default();
         }
         let effects = if self.v < 4 {
-            match (self.flash.min(2), self.react.min(2)) {
-                (0, 0) => 0,
-                (_, 2) | (2, _) => 2,
-                _ => 1,
-            }
+            u8::from(self.flash > 0 || self.react > 0)
         } else {
-            self.effects.min(2)
+            u8::from(self.effects > 0)
         };
         StageLook { effects, flash: 0, react: 0, v: STAGE_V }
     }
@@ -210,7 +204,13 @@ pub struct Settings {
     pub lang: Option<String>,
     /// Index into `theme::ACCENTS`; 0 follows the cover art.
     pub accent: usize,
-    pub effects: Effects,
+    /// Custom GPU shaders (pre-rendered when on, off when false).
+    pub shaders: bool,
+    /// Legacy 3-tier effects field migrated once into `shaders`.
+    #[serde(default, skip_serializing)]
+    effects: Option<LegacyEffects>,
+    /// CPU-only renderer with lower RAM use (applies on next launch).
+    pub cpu_mode: bool,
     pub theme: ThemeMode,
     pub reduce_motion: bool,
     pub quality: QualityPref,
@@ -286,7 +286,9 @@ impl Default for Settings {
         Settings {
             lang: None,
             accent: 0,
-            effects: Effects::Full,
+            shaders: true,
+            effects: None,
+            cpu_mode: false,
             theme: ThemeMode::Dark,
             reduce_motion: false,
             quality: QualityPref::Balanced,
@@ -306,7 +308,7 @@ impl Default for Settings {
             close_to_tray: false,
             autostart: false,
             autostart_hidden: true,
-            butterflies: true,
+            butterflies: false,
             word_lyrics: true,
             fkcensor: true,
             play_on_launch: false,
@@ -328,6 +330,9 @@ impl Default for Settings {
 impl Settings {
     /// Pulls every value into its valid range, so a hand-edited file cannot break the app.
     pub fn sanitized(mut self) -> Settings {
+        if let Some(old) = self.effects.take() {
+            self.shaders = old != LegacyEffects::Off;
+        }
         self.accent = self.accent.min(crate::theme::ACCENTS.len() - 1);
         self.volume = if self.volume.is_finite() { self.volume.clamp(0.0, 1.0) } else { 0.8 };
         self.mini_opacity = if self.mini_opacity.is_finite() { self.mini_opacity.clamp(0.65, 1.0) } else { 0.95 };

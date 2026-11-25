@@ -201,6 +201,49 @@ impl Client {
         read_limited(resp, max, &mut progress).await
     }
 
+    /// Streams a (checked) absolute URL straight to `path` on disk using a small 64 KiB buffer,
+    /// returning `(total_bytes, head_bytes)` without ever holding the whole audio file in RAM.
+    pub(super) async fn fetch_to_file(&self, url: &str, max: u64, path: &std::path::Path) -> Result<(u64, Vec<u8>)> {
+        use std::io::Write as _;
+
+        let resp = self.inner.http.get(url).header(USER_AGENT, CLIENT_ID).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(Error::Http { status: status.as_u16(), body: String::new() });
+        }
+        let total = resp.content_length();
+        if total.is_some_and(|t| t > max) {
+            return Err(Error::Api("response is too large".into()));
+        }
+        let file = std::fs::File::create(path).map_err(|e| Error::Api(e.to_string()))?;
+        let mut writer = std::io::BufWriter::with_capacity(64 * 1024, file);
+        let mut resp = resp;
+        let mut written = 0u64;
+        let mut head = Vec::with_capacity(4096);
+        while let Some(chunk) = resp.chunk().await? {
+            if written.saturating_add(chunk.len() as u64) > max {
+                drop(writer);
+                let _ = std::fs::remove_file(path);
+                return Err(Error::Api("response is too large".into()));
+            }
+            if head.len() < 4096 {
+                let take = (4096 - head.len()).min(chunk.len());
+                head.extend_from_slice(&chunk[..take]);
+            }
+            if let Err(e) = writer.write_all(&chunk) {
+                drop(writer);
+                let _ = std::fs::remove_file(path);
+                return Err(Error::Api(e.to_string()));
+            }
+            written += chunk.len() as u64;
+        }
+        if let Err(e) = writer.flush() {
+            let _ = std::fs::remove_file(path);
+            return Err(Error::Api(e.to_string()));
+        }
+        Ok((written, head))
+    }
+
     pub(crate) async fn fetch_text(&self, url: &str) -> Result<String> {
         let bytes = self.fetch(url, MAX_TEXT_BYTES, Some(20), |_, _| {}).await?;
         Ok(String::from_utf8_lossy(&bytes).into_owned())

@@ -2,11 +2,11 @@
 
 use std::cell::RefCell;
 
-use rune::{LiveText, PopupAnchor, TextEdit};
+use rune::{Live, LiveText, PopupAnchor, TextEdit};
 use ym_api::{Album, Artist, Lyrics, Playlist, Track};
 use ym_audio::{Engine, EqSettings};
 
-use super::types::{LibTab, Load, Page, PinnedItem, TrackSort};
+use super::types::{AlbumSort, ArtistSort, DiscKind, LibTab, Load, Page, PinnedItem, PlaylistSort, TrackSort};
 use crate::i18n::{Lang, S};
 use crate::store::Repeat;
 
@@ -29,14 +29,59 @@ pub enum FromName {
 }
 
 impl PlayingFrom {
-    /// Formats "My Wave · Calm" or "Album · Name", dropping the name if it repeats the kind.
+    /// Short, scannable source label for pills in Now Playing and on Home: omits verbose prefixes
+    /// (since the pill shows a matching kind icon) so the badge never outgrows the track title.
     pub fn line(&self, lang: Lang) -> String {
-        let kind = self.kind.get(lang);
         let name = match &self.name {
             FromName::Text(t) => t.trim(),
             FromName::Word(w) => w.get(lang).trim(),
         };
-        if name.is_empty() || name.to_lowercase() == kind.trim().to_lowercase() { kind.to_owned() } else { format!("{kind} · {name}") }
+        if self.wave {
+            if self.kind == S::WaveTitle {
+                let title = S::WaveTitle.get(lang);
+                if name.is_empty() || name.eq_ignore_ascii_case(title) || name == S::WaveOnYour.get(lang) {
+                    return title.to_owned();
+                }
+                return format!("{} · {name}", S::WaveShort.get(lang));
+            }
+            if self.kind == S::WaveByCollection {
+                return format!("{} · {}", S::WaveShort.get(lang), S::Collection.get(lang));
+            }
+            if !name.is_empty() {
+                return format!("{} · {name}", S::WaveShort.get(lang));
+            }
+            return self.kind.get(lang).to_owned();
+        }
+        if self.kind == S::Liked {
+            return S::Liked.get(lang).to_owned();
+        }
+        if matches!(self.name, FromName::Word(S::ListeningHistory)) {
+            return S::HistoryShort.get(lang).to_owned();
+        }
+        if self.kind == S::Single {
+            return if name.is_empty() { S::Single.get(lang).to_owned() } else { format!("{} · {name}", S::Single.get(lang)) };
+        }
+        if !name.is_empty() {
+            return name.to_owned();
+        }
+        self.kind.get(lang).to_owned()
+    }
+
+    /// Context-aware variant for pills near the playing track: when playing a single whose name
+    /// matches the track title, shows just "Single" instead of repeating the track title twice.
+    pub fn line_for_track(&self, lang: Lang, track: Option<&Track>) -> String {
+        if !self.wave && self.kind == S::Single {
+            let name = match &self.name {
+                FromName::Text(t) => t.trim(),
+                FromName::Word(w) => w.get(lang).trim(),
+            };
+            if let Some(t) = track
+                && (name.is_empty() || name.eq_ignore_ascii_case(t.title.trim()) || name.eq_ignore_ascii_case(t.full_title().trim()))
+            {
+                return S::Single.get(lang).to_owned();
+            }
+        }
+        self.line(lang)
     }
 }
 
@@ -44,6 +89,10 @@ impl PlayingFrom {
 pub struct Library {
     pub tab: LibTab,
     pub sort: TrackSort,
+    pub playlist_sort: PlaylistSort,
+    pub album_sort: AlbumSort,
+    pub album_kind: DiscKind,
+    pub artist_sort: ArtistSort,
     /// Collection search query and cached matching/sorted indices for liked tracks.
     pub filter: TextEdit,
     pub shown: RefCell<Vec<usize>>,
@@ -132,6 +181,14 @@ pub struct DownloadActivity {
 pub struct Lives {
     pub clock: LiveText,
     pub remaining: LiveText,
+    /// Native seek-bar fill rect `[x, y, w, h]` for the dock when shaders are off.
+    pub seek_dock: Live<[f32; 4]>,
+    /// Native seek-bar thumb rect `[x, y, w, h]` for the dock when shaders are off.
+    pub seek_dock_thumb: Live<[f32; 4]>,
+    /// Native seek-bar fill rect `[x, y, w, h]` for Now Playing when shaders are off.
+    pub seek_np: Live<[f32; 4]>,
+    /// Native seek-bar thumb rect `[x, y, w, h]` for Now Playing when shaders are off.
+    pub seek_np_thumb: Live<[f32; 4]>,
 }
 
 /// What a popover lists.
@@ -159,8 +216,6 @@ pub enum Popover {
     LibSort { anchor: String },
     /// Release sort order and kind filter on an artist page.
     DiscSort { anchor: String },
-    /// My Wave tuning knobs and shape style on Home.
-    WaveTune { anchor: String },
     /// Available app update summary and install action from the title bar icon.
     Update { anchor: String },
 }
@@ -187,7 +242,6 @@ impl Popover {
             | Popover::TrackSort { anchor }
             | Popover::LibSort { anchor }
             | Popover::DiscSort { anchor }
-            | Popover::WaveTune { anchor }
             | Popover::Update { anchor } => anchor,
         }
     }

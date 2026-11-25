@@ -8,7 +8,7 @@ use ym_api::Track;
 use super::{APP_URL, DownloadState, Load, Page, PinnedItem, Session, Source, State, Toast};
 use crate::i18n::{Lang, S};
 use crate::net::{self, Backend};
-use crate::store::{Effects, ThemeMode};
+use crate::store::ThemeMode;
 use crate::theme::{self, Pal};
 
 impl State {
@@ -75,6 +75,7 @@ impl State {
         self.menu_open = false;
         self.tmenu_open = false;
         self.close_volume();
+        self.blur_edits();
         if self.np_open != open {
             let under = (self.page.clone(), false);
             let over = (self.page.clone(), true);
@@ -94,9 +95,15 @@ impl State {
             }
             crate::diag_log::event("ui", if open { "np open" } else { "np close" });
             self.log_mem(if open { "np:open" } else { "np:close" });
-            self.art_trim_at = Some(self.now + 2.5);
         }
         self.np_open = open;
+        if !open {
+            // Drop Now Playing's 600x600 hero texture shortly after the collapse spring finishes.
+            self.art_trim_at = Some(self.now + 0.4);
+        }
+        if self.settings.reduce_motion || crate::fx::cpu_mode() {
+            self.np = super::Pop { t: if open { 1.0 } else { 0.0 }, v: 0.0 };
+        }
     }
 
     pub fn toast(&mut self, text: impl Into<String>) {
@@ -122,6 +129,21 @@ impl State {
     /// Samples current memory and GPU/art counters into the local diagnostic log.
     pub fn log_mem(&self, reason: &str) {
         crate::diag_log::log_memory(reason, self.art.stats(), crate::fx::gpu_stats());
+    }
+
+    /// Reclaims offscreen covers, CPU shape caches, unused waveforms, and freed working-set pages
+    /// when the main window hides to the tray or mini player.
+    pub fn trim_hidden_memory(&mut self) {
+        let keep = self.current().and_then(|t| State::cover_key(t.cover_template()));
+        self.art.trim_hidden(keep.as_deref());
+        crate::ui::blobs::clear_cache();
+        if !crate::fx::shaders_enabled() {
+            self.waveforms.clear();
+        }
+        if !self.settings.backdrop.on {
+            self.backdrop = None;
+        }
+        crate::diag_log::trim_working_set();
     }
 }
 
@@ -214,6 +236,18 @@ impl State {
         self.save_playback_now();
     }
 
+    /// Saves current settings and queues an immediate process relaunch on the next poll turn.
+    pub fn restart_now(&mut self) {
+        self.save_settings_now();
+        if self.headless {
+            return;
+        }
+        self.restart_pending = true;
+        if let Some(app) = &self.app {
+            app.wake();
+        }
+    }
+
     pub fn save_settings_async(&mut self) {
         self.sync_settings_fields();
         self.store.save_settings_async(self.settings.clone());
@@ -298,6 +332,11 @@ impl State {
         }
     }
 
+    /// Whether custom GPU shaders are active right now (off in CPU mode or when disabled in Settings).
+    pub fn shaders_active(&self) -> bool {
+        self.settings.shaders && !crate::fx::cpu_mode()
+    }
+
     /// Whether the Home butterflies should animate this frame.
     pub fn bugs_alive(&self) -> bool {
         self.page == Page::Home
@@ -305,7 +344,7 @@ impl State {
             && self.session != Session::LoggedOut
             && self.settings.butterflies
             && !self.settings.reduce_motion
-            && self.settings.effects != Effects::Off
+            && self.shaders_active()
     }
 
     /// Advances all per-frame state. Returns true when the view needs a rebuild.
@@ -337,6 +376,33 @@ impl State {
             }
         }
         changed |= self.tick_menu(anim_dt);
+        let arc_diff = self.wave_arc_to - self.wave_arc;
+        if arc_diff.abs() > 0.0005 || self.wave_arc_vel.abs() > 0.002 {
+            if self.settings.reduce_motion || crate::fx::cpu_mode() {
+                self.wave_arc = self.wave_arc_to;
+                self.wave_arc_vel = 0.0;
+            } else {
+                let omega = std::f32::consts::TAU / 0.24;
+                let zeta = 0.96;
+                let steps = (anim_dt * 240.0).ceil().clamp(1.0, 24.0);
+                let h = anim_dt / steps;
+                for _ in 0..steps as u32 {
+                    let accel = omega * omega * (self.wave_arc_to - self.wave_arc) - 2.0 * zeta * omega * self.wave_arc_vel;
+                    self.wave_arc_vel += accel * h;
+                    self.wave_arc += self.wave_arc_vel * h;
+                }
+                if (self.wave_arc_to - self.wave_arc).abs() <= 0.0005 && self.wave_arc_vel.abs() <= 0.005 {
+                    self.wave_arc = self.wave_arc_to;
+                    self.wave_arc_vel = 0.0;
+                    if self.wave_arc.abs() > 1200.0 {
+                        let shift = (self.wave_arc / 12.0).floor() * 12.0;
+                        self.wave_arc -= shift;
+                        self.wave_arc_to -= shift;
+                    }
+                }
+            }
+            changed = true;
+        }
         changed |= self.tick_player(dt);
         changed |= self.drive_art();
         if self.launch_play && matches!(self.backend, Backend::Live(_)) && self.boot_playback_done {
@@ -388,9 +454,58 @@ impl State {
         if (self.playback_dirty && since > 1.0) || (self.player.playing && since > 15.0) {
             self.save_playback_async();
         }
-        // Trim off-screen decoded covers periodically even while playback keeps `on_rest` from firing.
-        if self.art_trim_at.is_some_and(|at| self.now >= at) || self.now - self.art_trimmed_at >= 30.0 {
-            self.art.trim_idle();
+        let pipes_gen = crate::fx::pipes_settled_gen();
+        if pipes_gen != self.pipes_gen_seen {
+            self.pipes_gen_seen = pipes_gen;
+            if self.now - self.ws_trimmed_at >= 12.0 {
+                self.startup_trim_at = Some(self.now + 1.5);
+            }
+        }
+        if !self.menu_moving() && !self.is_resizing() && self.startup_trim_at.is_some_and(|at| self.now >= at) && (crate::fx::cpu_mode() || !self.shaders_active() || crate::fx::ready()) {
+            self.startup_trim_at = None;
+            crate::diag_log::trim_working_set();
+            self.ws_trimmed_at = self.now;
+            self.log_mem("startup:trim");
+        }
+        // Evict offscreen covers promptly once animations settle (mounted covers are never touched
+        // so visible rows never flash). Only keep the active track's 600px cover while Now Playing
+        // is actually open; never call `trim_working_set` mid-transition.
+        let keep_covers = || -> Vec<String> {
+            let mut v = Vec::with_capacity(2 + self.pinned_items.len());
+            if let Some(tpl) = self.current().and_then(|t| t.cover_template()) {
+                if let Some(card) = State::cover_key(Some(tpl)) {
+                    v.push(card);
+                }
+                if self.np_open
+                    && !crate::fx::cpu_mode()
+                    && let Some(lg) = State::cover_key_px(Some(tpl), crate::art::COVER_LG)
+                {
+                    v.push(lg);
+                }
+            }
+            for item in &self.pinned_items {
+                if let Some(sm) = State::cover_key_px(item.cover.as_deref(), crate::art::COVER_SM) {
+                    v.push(sm);
+                }
+            }
+            v
+        };
+        let due_nav_trim = self.art_trim_at.is_some_and(|at| self.now >= at);
+        let due_periodic_trim = self.now - self.art_trimmed_at >= 3.0;
+        if !self.menu_moving() && !self.is_resizing() && (due_nav_trim || due_periodic_trim) {
+            let keep = keep_covers();
+            let refs: Vec<&str> = keep.iter().map(String::as_str).collect();
+            let evicted = self.art.trim_offscreen(&refs);
+            if evicted {
+                self.art_evict_gen = self.art_evict_gen.wrapping_add(1);
+            }
+            if self.page != Page::Home || self.np_open {
+                crate::ui::blobs::clear_cache();
+            }
+            if evicted && self.now - self.ws_trimmed_at >= 18.0 {
+                crate::diag_log::trim_working_set();
+                self.ws_trimmed_at = self.now;
+            }
             self.art_trim_at = None;
             self.art_trimmed_at = self.now;
         }

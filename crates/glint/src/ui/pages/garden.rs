@@ -1,27 +1,42 @@
-//! Home's My Wave shape garden, mood tiles, skeleton outlines, and butterfly overlay.
+//! Home's editorial My Wave layout: a full-bleed 3D-textured fluid wave backdrop behind a centered,
+//! fully responsive two-column composition holding the hero player stage on the left and a refined
+//! infinitely looping Cormorant preset arc wheel on the right at every window size.
 
 use crate::fx::Slot as _;
-use rune::{Cursor, El, Transition, Tx, col, el, icon, row};
+use rune::{Align, Cursor, El, TextStyle, Transition, Tx, col, el, icon, row};
 
-use super::shared::{name_on, start_wave_with, wave_hue, wave_name_tuned, wave_title};
-use crate::app::{Popover, State};
+use super::shared::{start_wave_with, wave_hue, wave_title};
+use crate::app::{FromName, Page, PlayingFrom, State};
 use crate::i18n::S;
 use crate::theme as th;
-use crate::ui::blobs::{self, Family, Fill, Look, Rng};
+use crate::ui::blobs::{self, Fill, Look, Rng};
 use crate::ui::{
     dock, icons,
     kit::{self, Hover as _, label},
-    outline,
+    np_icons as ni,
 };
 
-pub(super) const MOODS: [&str; 7] = ["favorite", "discover", "popular", "energetic", "calm", "fun", "sad"];
+/// Curated arc order of all 12 My Wave presets: Favorite sits cleanly between Discover and Popular
+/// near the center of the wheel, and Russian sits at the end right before Foreign.
+const ARC_PRESETS: [&str; 12] = [
+    "workbackground",
+    "fun",
+    "energetic",
+    "onyourwave",
+    "discover",
+    "favorite",
+    "popular",
+    "calm",
+    "sad",
+    "without-words",
+    "russian",
+    "not-russian",
+];
 
-/// Layout keys that butterflies perch on or steer around.
+/// Layout keys that butterflies perch on or steer around when enabled in Settings.
 pub fn bug_spots(s: &State) -> Vec<(String, bool)> {
     let seed = s.home_seed;
-    let mut v = vec![("home-title".to_owned(), false), ("home-reroll".to_owned(), false), (format!("hm-wave-shape-{seed}"), true)];
-    v.extend(MOODS.iter().map(|id| (format!("hm-mood-{id}-{seed}"), true)));
-    v
+    vec![("hm-stage".to_owned(), true), ("hm-arc".to_owned(), false), (format!("hm-wave-shape-{seed}"), true)]
 }
 
 pub(super) fn bug_layer(s: &State) -> El {
@@ -56,22 +71,127 @@ pub(super) fn garden_hover(id: &'static str) -> impl Fn(&mut State, bool, &mut T
     }
 }
 
-pub(super) fn garden(s: &State, cw: f32) -> El {
+/// Rounds `v` to the nearest even integer within `[lo, hi]` so icon glyphs stay pixel-centered.
+fn even(v: f32, lo: f32, hi: f32) -> f32 {
+    ((v * 0.5).round() * 2.0).clamp(lo, hi)
+}
+
+fn smooth(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
+
+fn recede_el(mut e: El, stay: f32, dy: f32) -> El {
+    let stay = stay.clamp(0.0, 1.0);
+    if stay < 0.999 {
+        e = e.offset(0.0, (1.0 - stay) * dy).scale(0.97 + 0.03 * stay).opacity(stay);
+    }
+    e
+}
+
+/// Builds the sleek frosted top eyebrow pill on Home: golden My Wave badge when playing a My Wave
+/// preset or idle, or a clickable source pill (Album, Single, Playlist, Artist, Liked, History)
+/// when playing outside My Wave. Always housed in a subtle translucent pill so it stays crisp even
+/// over bright yellow/light covers.
+fn stage_eyebrow(s: &State, cur: Option<&ym_api::Track>, wave_on: bool, stage_w: f32, u: f32, colors: (rune::Color, rune::Color, rune::Color)) -> (El, f32) {
     let lang = s.lang;
+    let (chip_bg, chip_border, cell_hov) = colors;
+    let eyebrow_col = if th::light() { th::rgb(0x9e6300) } else { th::rgb(0xffdc4e) };
+    let pill_h = even(26.0 * u, 22.0, 28.0);
+    let pill_px = (12.0 * u).clamp(9.0, 14.0).round();
+    let font_sz = (12.5 * u).clamp(11.0, 13.5);
+    let glyph_sz = even(13.5 * u, 12.0, 14.0);
+    let max_pill = (stage_w - 40.0).clamp(140.0, 260.0);
+
+    let wave_pill = |text: String| {
+        row()
+            .key("hm-source")
+            .h(pill_h)
+            .max_w(max_pill)
+            .px(pill_px)
+            .gap(6.0)
+            .radius(pill_h * 0.5)
+            .items_center()
+            .fill(chip_bg)
+            .border(1.0, chip_border)
+            .animated_changes()
+            .motion(th::SLIDE)
+            .child(kit::wave_glyph(glyph_sz + 1.0, eyebrow_col))
+            .child(label(text, TextStyle::new(font_sz, 600.0).family(th::SANS).tracking(0.1).lh(pill_h - 8.0), eyebrow_col).truncate().min_w(0.0))
+    };
+
+    let Some(track) = cur else {
+        return (wave_pill(S::WaveTitle.get(lang).to_owned()), pill_h);
+    };
+    if wave_on && s.playing_from.as_ref().is_none_or(|f| f.kind == S::WaveTitle) {
+        let title = if s.wave_choice == "onyourwave" {
+            S::WaveTitle.get(lang).to_owned()
+        } else {
+            format!("{} · {}", S::WaveShort.get(lang), wave_title(&s.wave_choice).get(lang))
+        };
+        return (wave_pill(title), pill_h);
+    }
+    let fallback = || match track.albums.first() {
+        Some(al) => {
+            let mut kind = crate::app::album_kind_name(al);
+            if kind == S::Album && al.track_count.is_none() && al.title.trim().eq_ignore_ascii_case(track.title.trim()) {
+                kind = S::Single;
+            }
+            PlayingFrom { wave: false, kind, name: FromName::Text(al.title.clone()), page: Some(Page::Album(al.id.clone())) }
+        }
+        None => PlayingFrom { wave: false, kind: S::Track, name: FromName::Word(S::NowPlaying), page: None },
+    };
+    let from = s.playing_from.clone().unwrap_or_else(fallback);
+    let text = from.line_for_track(lang, Some(track));
+    let ink = if wave_on { eyebrow_col } else { th::text().alpha(0.90) };
+    let glyph = kit::source_glyph(&from, if wave_on { eyebrow_col } else { th::text().alpha(0.80) }, glyph_sz);
+    let page = from.page;
+    let mut pill = row()
+        .key("hm-source")
+        .role(if page.is_some() { "link" } else { "note" })
+        .label(text.as_str())
+        .h(pill_h)
+        .max_w(max_pill)
+        .px(pill_px)
+        .gap(6.0)
+        .radius(pill_h * 0.5)
+        .items_center()
+        .fill(chip_bg)
+        .border(1.0, chip_border)
+        .animated_changes()
+        .motion(th::SLIDE)
+        .child(glyph)
+        .child(label(text, TextStyle::new(font_sz, 580.0).family(th::SANS).lh(pill_h - 8.0), ink).truncate().min_w(0.0));
+    if let Some(p) = page {
+        pill = pill.cursor(Cursor::Pointer).hov(cell_hov).press_scale(0.97).on_press(move |s: &mut State| s.go(p.clone()));
+    }
+    (pill, pill_h)
+}
+
+pub(super) fn garden(s: &State, cw: f32, h: f32) -> El {
+    let lang = s.lang;
+    let light = th::light();
     let seed = s.home_seed;
     let mut rng = Rng::new(seed);
-    let (big, bx, by, cell, spots, total_h) = garden_layout(cw);
     let hover = if kit::under() { None } else { s.garden_hover };
+    let page_w = cw.max(320.0);
+    let stage_h = h.max(420.0);
 
-    let mut g = el().key("garden").w_full().h(total_h).transition(Transition::none());
+    let wave_on = dock::wave_playing(s);
+    let cur = s.current();
+    let has_track = cur.is_some();
+    let playing = has_track && s.player.playing;
+    let mood_name = wave_title(&s.wave_choice).get(lang).to_owned();
 
-    let now = dock::wave_playing(s);
-    let playing = now && s.player.playing;
-    let hue = wave_hue(&s.wave_choice);
-    let wave_cover_ready = s.palette_key.is_some() && s.current().and_then(|t| t.cover_template()).is_some_and(|tpl| s.palette_tpl.as_deref() == Some(tpl));
+    let hue = if !crate::fx::wave_ready() && has_track && s.palette.wave[1] > 0.12 {
+        s.palette.wave[0]
+    } else {
+        wave_hue(&s.wave_choice)
+    };
+    let wave_cover_ready = s.palette_key.is_some() && cur.and_then(|t| t.cover_template()).is_some_and(|tpl| s.palette_tpl.as_deref() == Some(tpl));
     let fill = {
         let mut wc = s.wave_cover.borrow_mut();
-        if !now {
+        if !has_track {
             *wc = (false, None);
         } else if wave_cover_ready && !wc.0 {
             *wc = (true, s.palette_key.clone());
@@ -82,205 +202,515 @@ pub(super) fn garden(s: &State, cw: f32) -> El {
             _ => Fill::Hue(hue),
         }
     };
-    let look = Look { hovered: hover == Some("wave"), ..Look::default() };
     let wave_seed = rng.seed();
-    let wave_shape = blobs::wave(format!("hm-wave-shape-{seed}"), wave_seed, fill, look, s.settings.wave_look, big).absolute(0.0, 0.0);
-    let tune_open = s.popover_open && matches!(s.popover, Some(Popover::WaveTune { .. }));
-    let tune = kit::quiet_toggle("hm-wave-tune", &icons::TUNE, 18.0, 34.0, tune_open, S::WaveTune.get(lang))
-        .absolute((big * 0.80).min(big - 36.0), (big * 0.08).max(4.0))
-        .on_press(|s: &mut State| s.open_popover(Popover::WaveTune { anchor: "hm-wave-tune".into() }));
+    let look = Look { chosen: has_track, hovered: hover == Some("wave"), order: 0 };
+
     let go = move |s: &mut State| {
-        if dock::wave_playing(s) {
+        if s.current().is_some() {
             s.toggle_pause();
         } else {
             let id = s.wave_choice.clone();
             start_wave_with(s, &id);
         }
     };
-    let mood = wave_name_tuned(s, &s.wave_choice);
-    let line = match (now, s.current()) {
-        (true, Some(t)) => format!("{} · {mood}\n{} — {}", S::WaveNowPlaying.get(lang), t.full_title(), t.artists_line()),
-        _ => format!("{}: {mood}", S::Mood.get(lang)),
-    };
-    let wave_name = S::WaveTitle.get(lang);
-    let room_w = big * 0.66;
-    let mut title_size = (big * 0.088).clamp(18.0, 34.0);
-    for _ in 0..2 {
-        let room = room_w - 22.0 - 4.0 - (title_size * 0.95).round();
-        let (tw, _) = rune::text::measure(wave_name, &[], th::name_on(title_size), None);
-        if tw > room {
-            title_size = (title_size * room / tw).floor().max(15.0);
-        }
-    }
-    let glyph = (title_size * 0.95).round();
-    let play_icon = icon(if playing { &icons::PAUSE } else { &icons::PLAY }, glyph).color(th::text()).gop(0.86, 1.0);
-    let line_el = row().w_full().justify_center().child(label(line.clone(), th::SMALL, th::text().alpha(0.76)).align(rune::Align::Center).max_lines(2).wrap().max_w(room_w));
-    let words = col()
-        .absolute((big - room_w) * 0.5, 0.0)
-        .w(room_w)
-        .h(big)
-        .justify_center()
-        .items_center()
-        .gap(2.0)
-        .transition(Transition::none())
-        .child(
-            row()
-                .key("hero-go")
-                .role("button")
-                .label(if playing { S::Pause.get(lang) } else { S::Play.get(lang) })
-                .max_w(room_w)
-                .pl(6.0)
-                .pr(14.0)
-                .py(4.0)
-                .gap(4.0)
-                .radius(14.0)
-                .items_center()
-                .cursor(Cursor::Pointer)
-                .hov_group()
-                .press_scale(0.96)
-                .on_press(go)
-                .child(play_icon)
-                .child(label(wave_name, th::name_on(title_size), th::text())),
-        )
-        .child(kit::roll("hero-line", &line, line_el));
-    g = g.child(
-        el().key("hm-wave")
-            .absolute(bx, by)
-            .w(big)
-            .h(big)
-            .transition(Transition::none())
-            .on_hover_change(garden_hover("wave"))
-            .on_pointer_move_any(move |p: rune::PointerEvent, _tx: &mut Tx| {
-                let r = blobs::radius(Family::Liquid, big);
-                crate::fx::set_wave_pointer((p.x - big * 0.5) / r, (p.y - big * 0.5) / r);
-            })
-            .children(shape_bone("hm-wave-bone", Family::Liquid, wave_seed, s.settings.wave_look.form, big, 0, s.settings.reduce_motion))
-            .child(wave_shape)
-            .child(kit::rise(words, 1))
-            .child(tune),
-    );
 
-    let fg = th::text();
-    let calm = ((cell - 104.0) / 76.0).clamp(0.0, 1.0);
-    let jit = 7.0 * calm;
-    let lo = 1.0 - 0.05 * calm;
-    let hi = 1.0 + 0.12 * calm;
-    for (i, id) in MOODS.into_iter().enumerate() {
-        let size = cell * rng.range(lo, hi);
-        let (jx, jy) = (rng.range(-jit, jit), rng.range(-jit, jit));
-        let x = spots[i][0] + (cell - size) * 0.5 + jx;
-        let y = spots[i][1] + (cell - size) * 0.5 + jy;
-        let on = now && s.wave_choice == id;
-        let name = wave_title(id).get(lang);
-        let look = Look { chosen: on, hovered: hover == Some(id), order: 1 + i as u32 };
-        let shape_seed = rng.seed();
-        let family = blobs::mood_family(id);
-        let tile = el()
-            .key(format!("hm-mood-{id}-{seed}"))
+    // Always side-by-side (left hero player stage + right Cormorant arc wheel), centered cleanly
+    // inside a generous max band on ultrawide displays and proportionally scaled down on compact windows.
+    let content_w = page_w.min(1560.0);
+    let content_x = ((page_w - content_w) * 0.5).max(0.0).round();
+    let stage_w = (content_w * 0.62).clamp(280.0, 960.0).round();
+    let arc_w = (content_w - stage_w).max(180.0);
+
+    // Continuous proportional scale factors for left stage (`u`) and right arc (`arc_u`).
+    let u = (stage_w / 720.0).min(stage_h / 760.0).clamp(0.58, 1.16);
+    let arc_u = (arc_w / 420.0).min(stage_h / 760.0).clamp(0.60, 1.15);
+
+    // Refined frosted surface tokens.
+    let bar_bg = if light { th::rgb(0xffffff).alpha(0.84) } else { th::rgb(0x0c0e15).alpha(0.50) };
+    let chip_bg = if light { th::rgb(0xffffff).alpha(0.74) } else { th::rgb(0x0c0e15).alpha(0.38) };
+    let bar_border = if light { th::rgb(0x000000).alpha(0.08) } else { th::rgb(0xffffff).alpha(0.14) };
+    let chip_border = if light { th::rgb(0x000000).alpha(0.07) } else { th::rgb(0xffffff).alpha(0.12) };
+    let cell_hov = if light { th::rgb(0x000000).alpha(0.065) } else { th::rgb(0xffffff).alpha(0.12) };
+    let div_col = if light { th::rgb(0x000000).alpha(0.08) } else { th::rgb(0xffffff).alpha(0.12) };
+
+    let np_t = s.np.t.clamp(0.0, 1.0);
+    let recede = smooth(np_t / 0.52);
+    let stay = 1.0 - recede;
+
+    let (eyebrow, eyebrow_h) = stage_eyebrow(s, cur, wave_on, stage_w, u, (chip_bg, chip_border, cell_hov));
+    let eyebrow = recede_el(eyebrow, stay, -12.0);
+
+    // Dynamic even-pixel control sizing so compact windows stay crisp and every icon stays dead-center.
+    let btn_s = even(38.0 * u, 30.0, 40.0);
+    let play_s = even(46.0 * u, 36.0, 48.0);
+    let ic_sm = even(18.0 * u, 14.0, 18.0);
+    let ic_md = even(20.0 * u, 16.0, 20.0);
+    let bar_h = play_s + 14.0;
+    let bar_px = (10.0 * u).clamp(6.0, 12.0).round();
+    let div_mx = (6.0 * u).clamp(3.0, 8.0).round();
+    let play_mx = (4.0 * u).clamp(2.0, 5.0).round();
+
+    let cover_side = even(196.0 * u, 112.0, 224.0);
+    let cover_r = (cover_side * 0.115).clamp(14.0, 24.0).round();
+    let cover_mt = (16.0 * u).clamp(10.0, 20.0).round();
+    let title_sz = (22.0 * u).clamp(15.5, 26.0).round();
+    let title_lh = title_sz + 5.0;
+    let title_mt = (18.0 * u).clamp(10.0, 22.0).round();
+    let art_sz = (14.5 * u).clamp(12.0, 16.0);
+    let art_lh = (art_sz + 5.0).round();
+    let art_mt = (3.0 * u).clamp(2.0, 5.0).round();
+    let bar_mt = (16.0 * u).clamp(10.0, 20.0).round();
+
+    // Lock the 3D wave ring dead center onto the album cover (left half of the centered band).
+    let stage_cx = content_x + stage_w * 0.5;
+    let cover_cy = if has_track {
+        let above = eyebrow_h + cover_mt;
+        let below = title_mt + title_lh + art_mt + art_lh + bar_mt + bar_h;
+        stage_h * 0.5 + (above - below) * 0.5
+    } else {
+        stage_h * 0.5
+    };
+    let fx = (stage_cx / page_w).clamp(0.20, 0.65);
+    let fy = (cover_cy / stage_h).clamp(0.28, 0.68);
+    let min_w_frac = (stage_w / page_w).clamp(0.42, 0.78);
+    crate::fx::set_wave_frame(fx, fy, min_w_frac, 1.02);
+
+    let aura = blobs::wave_aura(format!("hm-wave-shape-{seed}"), wave_seed, fill, look, s.settings.wave_look, page_w, stage_h, 0.0).absolute(0.0, 0.0);
+
+    let bar_icon = |key: &'static str, ic: &'static rune::Icon, glyph: f32, col: rune::Color, tip: &str| {
+        row()
+            .key(key)
             .role("button")
-            .label(name)
-            .checked(on)
-            .absolute(x, y)
-            .w(size)
-            .h(size)
+            .label(tip)
+            .help(tip)
+            .w(btn_s)
+            .h(btn_s)
+            .radius(btn_s * 0.5)
+            .center()
+            .cursor(Cursor::Pointer)
+            .hov(cell_hov)
+            .press_scale(th::PRESS)
+            .child(icon(ic, glyph).color(col))
+    };
+
+    let vol = s.player.volume;
+    let vol_ic = if vol < 0.01 {
+        &ni::VOLUME_MUTE
+    } else if vol < 0.5 {
+        &ni::VOLUME_LOW
+    } else {
+        &ni::VOLUME
+    };
+    let vol_open = s.vol_open;
+    let vol_btn = row()
+        .key("hm-vol")
+        .role("button")
+        .label(S::Volume.get(lang))
+        .help(S::Volume.get(lang))
+        .checked(vol_open)
+        .w(btn_s)
+        .h(btn_s)
+        .radius(btn_s * 0.5)
+        .center()
+        .fill(if vol_open { cell_hov } else { rune::Color::TRANSPARENT })
+        .cursor(Cursor::Pointer)
+        .hov(cell_hov)
+        .press_scale(th::PRESS)
+        .on_wheel(dock::volume_wheel)
+        .on_hover_change(|s: &mut State, over: bool, _tx: &mut Tx| {
+            s.vol_button_hover = over;
+            if over {
+                s.vol_open = true;
+                s.vol_close_at = None;
+            } else {
+                s.vol_close_at = Some(s.now + 0.28);
+            }
+        })
+        .on_press(State::toggle_mute)
+        .child(icon(vol_ic, ic_sm).color(th::text().alpha(0.86)));
+
+    let prev_btn = if s.can_prev() {
+        bar_icon("hm-prev", &ni::PREV, ic_md, th::text().alpha(0.92), S::Previous.get(lang)).on_press(|s: &mut State| s.prev())
+    } else {
+        row().key("hm-prev").role("button").label(S::Previous.get(lang)).disabled(true).w(btn_s).h(btn_s).center().child(icon(&ni::PREV, ic_md).color(th::veil(0.22)))
+    };
+    let next_btn = if s.can_next() {
+        bar_icon("hm-next", &ni::NEXT, ic_md, th::text().alpha(0.92), S::Next.get(lang)).on_press(|s: &mut State| s.next())
+    } else {
+        row().key("hm-next").role("button").label(S::Next.get(lang)).disabled(true).w(btn_s).h(btn_s).center().child(icon(&ni::NEXT, ic_md).color(th::veil(0.22)))
+    };
+
+    let play_bg = if light { th::rgb(0x141418).alpha(0.92) } else { th::rgb(0xffffff).alpha(0.95) };
+    let play_fg = if light { th::rgb(0xffffff) } else { th::rgb(0x101218) };
+    let (play_glyph_raw, play_state) = if has_track && s.player.loading {
+        (kit::spin(icon(&icons::SPINNER, ic_md).color(play_fg)), "load")
+    } else if playing {
+        (icon(&ni::PAUSE, ic_md).color(play_fg), "pause")
+    } else {
+        (icon(&ni::PLAY, ic_md).color(play_fg), "play")
+    };
+    let play_glyph = if has_track {
+        kit::swap_glyph(format!("hm-play-{}-{play_state}", play_s as u32), play_glyph_raw, play_s, ic_md, true)
+    } else {
+        play_glyph_raw
+    };
+
+    let divider = || el().w(1.0).h((14.0 * u).clamp(10.0, 16.0).round()).mx(div_mx).fill(div_col);
+
+    // ---- left hero player stage ----------------------------------------------------------------
+    let stage_enter = if crate::fx::cpu_mode() { Transition::none() } else { kit::pop_in(0.985, 12.0, th::PAGE_IN) };
+    let mut stage_content = col()
+        .key("hm-stage-body")
+        .w_full()
+        .h_full()
+        .items_center()
+        .justify_center()
+        .transition(stage_enter)
+        .child(eyebrow);
+
+    if let Some(t) = cur {
+        let cover = if s.np_open {
+            el().key("hm-cover-gap").w(cover_side).h(cover_side)
+        } else {
+            let cov = el()
+                .key("hm-cover")
+                .role("button")
+                .label(S::NowPlaying.get(lang))
+                .w(cover_side)
+                .h(cover_side)
+                .radius(cover_r)
+                .border(1.0, th::veil(if light { 0.12 } else { 0.22 }))
+                .cursor(Cursor::Pointer)
+                .press_scale(0.97)
+                .transition(Transition::none())
+                .on_press(|s: &mut State| s.set_np(true))
+                .child(kit::playing_cover(s, t, cover_side, cover_r, "hm-cover-mark"));
+            if crate::fx::cpu_mode() { cov } else { cov.matched("np-cover").animated_changes().motion(th::FLIGHT) }
+        };
+
+        let text_max_w = (stage_w - (48.0 * u).clamp(24.0, 64.0)).clamp(200.0, 460.0);
+        let title_style = TextStyle::new(title_sz, 650.0).family(th::SANS).tracking(-0.35).lh(title_lh);
+        let track_title = row()
+            .key("hm-track-title")
+            .role("button")
+            .label(t.full_title())
+            .max_w(text_max_w)
+            .px(8.0)
+            .py(1.0)
+            .radius(10.0)
+            .center()
+            .cursor(Cursor::Pointer)
+            .hov(th::veil(if light { 0.055 } else { 0.085 }))
+            .press_scale(0.985)
+            .transition(Transition::none())
+            .on_press(|s: &mut State| s.set_np(true))
+            .child(label(t.full_title(), title_style, th::text()).truncate().align(Align::Center).max_w(text_max_w - 16.0));
+        let track_title = recede_el(row().key("hm-title-slot").w(text_max_w).justify_center().child(kit::roll("hm-title", &t.full_title(), row().w(text_max_w).justify_center().child(track_title))), stay, 14.0);
+
+        let art_style = TextStyle::new(art_sz, 450.0).family(th::SANS).lh(art_lh);
+        let artists_line = if t.artists.is_empty() {
+            el().h(art_lh)
+        } else {
+            let raw_w = kit::measure_w(&t.artists_line(), art_style).ceil() + 4.0;
+            let art_w = raw_w.min(text_max_w);
+            let inner = row()
+                .key(format!("hm-artists-{}", t.id))
+                .w(text_max_w)
+                .h(art_lh)
+                .justify_center()
+                .items_center()
+                .transition(Transition::none())
+                .child(kit::artists_row_in_width(s, &t.artists, art_style, false, "hm-art", th::text().alpha(0.76), art_w, true));
+            recede_el(row().key("hm-art-slot").w(text_max_w).h(art_lh).justify_center().child(kit::roll("hm-art", &t.artists_line(), inner)), stay, 16.0)
+        };
+
+        let play_pill = row()
+            .key("hero-go")
+            .role("button")
+            .label(if playing { S::Pause.get(lang) } else { S::Play.get(lang) })
+            .w(play_s)
+            .h(play_s)
+            .radius(play_s * 0.5)
+            .center()
+            .fill(play_bg)
+            .cursor(Cursor::Pointer)
+            .press_scale(0.93)
+            .on_press(go)
+            .child(play_glyph);
+
+        let bad = t.clone();
+        let like_t = t.clone();
+        let liked = s.is_liked(&t.id);
+        let dislike_b = bar_icon("hm-dislike", &ni::DISLIKE, ic_sm, th::text().alpha(0.86), S::Dislike.get(lang)).on_press(move |s: &mut State| s.dislike(&bad));
+        let like_glyph = kit::swap_glyph(
+            format!("hm-like-{}-{liked}", t.id),
+            icon(if liked { &ni::HEART_FILL } else { &ni::HEART }, ic_sm).color(if liked { th::rgb(0xff4f70) } else { th::text().alpha(0.86) }),
+            btn_s,
+            ic_sm,
+            s.burst_on && s.burst_track == t.id,
+        );
+        let mut like_b = row()
+            .key("hm-like")
+            .role("button")
+            .label(if liked { S::Unlike.get(lang) } else { S::Like.get(lang) })
+            .help(if liked { S::Unlike.get(lang) } else { S::Like.get(lang) })
+            .checked(liked)
+            .w(btn_s)
+            .h(btn_s)
+            .radius(btn_s * 0.5)
+            .center()
+            .cursor(Cursor::Pointer)
+            .hov(cell_hov)
+            .press_scale(th::PRESS)
+            .on_press(move |s: &mut State| {
+                let liking = !s.is_liked(&like_t.id);
+                s.toggle_like(&like_t);
+                if liking {
+                    s.like_burst = s.now;
+                    s.burst_track = like_t.id.clone();
+                    s.burst_on = true;
+                }
+            })
+            .child(like_glyph);
+        if s.burst_on && s.burst_track == t.id {
+            like_b = like_b.child(
+                el().key("hm-burst")
+                    .fx(crate::fx::SPARKLES)
+                    .fx_data([s.like_burst as f32, 14.0, 6.0, 0.0])
+                    .fx_bleed(40.0)
+                    .absolute(0.0, 0.0)
+                    .w_full()
+                    .h_full()
+                    .radius(btn_s * 0.5),
+            );
+        }
+        let more_b = bar_icon("hm-more", &ni::MORE, ic_sm, th::text().alpha(0.86), S::More.get(lang))
+            .on_press(|s: &mut State| s.open_player_menu(rune::PopupAnchor::Key("hm-more".into())));
+
+        let control_bar = recede_el(
+            row()
+                .key("hm-control-bar")
+                .h(bar_h)
+                .px(bar_px)
+                .gap(2.0)
+                .radius(bar_h * 0.5)
+                .items_center()
+                .justify_center()
+                .fill(bar_bg)
+                .border(1.0, bar_border)
+                .child(vol_btn)
+                .child(dislike_b)
+                .child(divider())
+                .child(prev_btn)
+                .child(play_pill.mx(play_mx))
+                .child(next_btn)
+                .child(divider())
+                .child(like_b)
+                .child(more_b),
+            stay,
+            20.0,
+        );
+
+        stage_content = stage_content
+            .child(cover.mt(cover_mt))
+            .child(track_title.mt(title_mt))
+            .child(artists_line.mt(art_mt))
+            .child(control_bar.mt(bar_mt));
+    } else {
+        let idle_ic = even(68.0 * u, 46.0, 80.0);
+        let idle_px = blobs::ym_preset_icon(&s.wave_choice, true);
+        let idle_sz = (44.0 * u).clamp(28.0, 52.0).round();
+        let idle_style = TextStyle::new(idle_sz, 500.0).family(th::DISPLAY).italic().tracking(-0.4).lh(idle_sz + 8.0);
+        let listen_pill = row()
+            .key("hero-go")
+            .role("button")
+            .label(S::Listen.get(lang))
+            .h(play_s)
+            .px((22.0 * u).clamp(14.0, 26.0).round())
+            .gap(8.0)
+            .radius(play_s * 0.5)
+            .center()
+            .fill(play_bg)
             .cursor(Cursor::Pointer)
             .press_scale(0.95)
+            .on_press(go)
+            .child(play_glyph)
+            .child(label(S::Listen.get(lang), TextStyle::new((15.0 * u).clamp(13.0, 16.0), 650.0).family(th::SANS).lh(20.0), play_fg));
+
+        let control_bar = row()
+            .key("hm-control-bar")
+            .h(bar_h)
+            .px(bar_px)
+            .gap(2.0)
+            .radius(bar_h * 0.5)
+            .items_center()
+            .justify_center()
+            .fill(bar_bg)
+            .border(1.0, bar_border)
+            .child(vol_btn)
+            .child(divider())
+            .child(prev_btn)
+            .child(listen_pill.mx(play_mx))
+            .child(next_btn);
+
+        stage_content = stage_content
+            .child(el().w(idle_ic).h(idle_ic).mt((18.0 * u).round()).pixels_fit(&idle_px, rune::SurfaceFit::Fill))
+            .child(label(mood_name, idle_style, th::text()).align(Align::Center).max_lines(2).max_w((stage_w - 40.0).max(200.0)).mt((8.0 * u).round()))
+            .child(control_bar.mt((28.0 * u).clamp(18.0, 34.0).round()));
+    }
+
+    let stage = el()
+        .key("hm-stage")
+        .w(stage_w)
+        .h(stage_h)
+        .transition(Transition::none())
+        .on_hover_change(garden_hover("wave"))
+        .on_pointer_move_any(move |p: rune::PointerEvent, _tx: &mut Tx| {
+            let nx = (p.x / stage_w.max(1.0) - 0.5) * 2.0;
+            let ny = (p.y / stage_h.max(1.0) - 0.5) * 2.0;
+            crate::fx::set_wave_pointer(nx, ny);
+        })
+        .child(stage_content);
+
+    // ---- right infinitely-looping Cormorant preset arc wheel -----------------------------------
+    let n = ARC_PRESETS.len() as isize;
+    let ic_box = even(44.0 * arc_u, 28.0, 50.0);
+    let pitch = (stage_h / 8.0).clamp(52.0, 82.0).round();
+    let item_h = (ic_box + 12.0).max(42.0);
+    let center_y = stage_h * 0.5;
+    let arc_pos = s.wave_arc;
+    let vis_span = (stage_h / (2.0 * pitch) + 1.35).max(4.0);
+    let fade_edge = (stage_h * 0.13).clamp(56.0, 110.0).round();
+
+    let arc_enter = if crate::fx::cpu_mode() {
+        Transition::none()
+    } else {
+        Transition::asymmetric(Transition::offset(18.0, 0.0), Transition::none()).springs(th::PAGE_IN)
+    };
+    let mut arc = el()
+        .key("hm-arc")
+        .w(arc_w)
+        .h(stage_h)
+        .offset(26.0 * recede, 0.0)
+        .clip_fade(0.0, fade_edge, 0.0, fade_edge)
+        .transition(arc_enter)
+        .on_wheel(move |s: &mut State, e: rune::WheelEvent, tx: &mut Tx| {
+            if e.mods.ctrl || e.mods.cmd || e.dy == 0.0 || e.dx.abs() > e.dy.abs() {
+                return false;
+            }
+            let delta = if e.precise { -e.dy / 64.0 } else { -(e.dy / 40.0).clamp(-1.5, 1.5) * 0.9 };
+            s.wave_arc_to += delta;
+            if s.settings.reduce_motion || crate::fx::cpu_mode() {
+                s.wave_arc = s.wave_arc_to;
+                s.wave_arc_vel = 0.0;
+            } else {
+                tx.wake_after(std::time::Duration::from_millis(16));
+            }
+            true
+        });
+
+    let pad_l = (arc_w * 0.08).clamp(8.0, 42.0).round();
+    let curve = (34.0 * arc_u).clamp(14.0, 42.0);
+    let item_gap = (12.0 * arc_u).clamp(8.0, 16.0).round();
+    let base_slot = arc_pos.round() as isize;
+    let half = vis_span.ceil() as isize;
+    for offset in -half..=half {
+        let slot = base_slot + offset;
+        let rel = slot as f32 - arc_pos;
+        if rel.abs() > vis_span {
+            continue;
+        }
+        let idx = slot.rem_euclid(n) as usize;
+        let id = ARC_PRESETS[idx];
+        let norm = (rel / 3.5).clamp(-1.35, 1.35);
+        // Gentle rightward bow cradling the left wave's circular silhouette: furthest right at the
+        // equator (`rel == 0`), curving inward left toward the wave at top and bottom.
+        let x = (pad_l + curve * (1.0 - (norm * norm).min(1.0))).round();
+        let y = (center_y + rel * pitch - item_h * 0.5).round();
+        let focus = (1.0 - (rel.abs() / 3.4).min(1.0)).powf(1.25);
+        let edge_op = (1.0 - (rel.abs() / vis_span).powf(2.4)).clamp(0.0, 1.0);
+
+        let chosen = s.wave_choice == id && (wave_on || !has_track);
+        let active = chosen && wave_on;
+        let name = wave_title(id).get(lang);
+        let ic_side = ((ic_box - 8.0) + 6.0 * focus).round().max(22.0);
+        let px = blobs::ym_preset_icon(id, active || chosen);
+
+        // Upright Cormorant display serif: uniform size across items, active preset stands out by brightness.
+        let fs = ((20.0 + 2.0 * focus) * arc_u).clamp(15.5, 25.0).round();
+        let label_style = TextStyle::new(fs, 500.0).family(th::DISPLAY).tracking(-0.15).lh(fs + 4.0);
+        let label_col = if chosen { th::text() } else { th::text().alpha(0.28 + 0.28 * focus) };
+        let row_w = (arc_w - x - 10.0).max(120.0);
+
+        let item_op = (if chosen { edge_op.max(0.55) } else { edge_op }) * stay;
+        let item = row()
+            .key(format!("hm-arc-slot-{slot}"))
+            .role("button")
+            .label(name)
+            .checked(chosen)
+            .absolute(x, y)
+            .w(row_w)
+            .h(item_h)
+            .px(6.0)
+            .gap(item_gap)
+            .items_center()
+            .opacity(item_op)
+            .cursor(Cursor::Pointer)
+            .press_scale(0.98)
             .transition(Transition::none())
             .on_hover_change(garden_hover(id))
-            .on_press(move |s: &mut State| start_wave_with(s, id))
-            .children(shape_bone(&format!("hm-mood-bone-{id}"), family, shape_seed, 0, size, i + 1, s.settings.reduce_motion))
-            .child(blobs::shape(format!("hm-mood-shape-{id}-{seed}"), family, shape_seed, Fill::Hue(wave_hue(id)), look, size, size).absolute(0.0, 0.0))
-            .child(name_on(name, family, size, fg));
-        g = g.child(tile);
-    }
-    g
-}
+            .on_press_tx(move |s: &mut State, tx: &mut Tx| {
+                s.wave_arc_to = slot as f32;
+                if s.settings.reduce_motion || crate::fx::cpu_mode() {
+                    s.wave_arc = s.wave_arc_to;
+                    s.wave_arc_vel = 0.0;
+                } else {
+                    tx.wake_after(std::time::Duration::from_millis(16));
+                }
+                if dock::wave_playing(s) && s.wave_choice == id {
+                    s.toggle_pause();
+                } else {
+                    start_wave_with(s, id);
+                }
+            })
+            .child(el().w(ic_box).h(ic_box).center().child(el().w(ic_side).h(ic_side).pixels_fit(&px, rune::SurfaceFit::Fill)))
+            .child(el().grow(1.0).min_w(0.0).child(label(name, label_style, label_col).truncate().min_w(0.0)));
 
-fn shape_bone(key: &str, family: Family, seed: f32, form: u8, side: f32, order: usize, reduce: bool) -> Option<El> {
-    if crate::fx::shapes_ready() {
-        return None;
+        arc = arc.child(item);
     }
-    let points = outline::outline(family, form, seed, side);
-    let bone = el().key(key.to_owned()).transition(Transition::opacity().springs(th::SOFT));
-    let base = th::veil(if th::light() { 0.065 } else { 0.07 });
-    let glow = th::veil(if th::light() { 0.085 } else { 0.095 });
-    let animate = !reduce && (crate::fx::gpu_up() || crate::app::is_headless());
-    let period = 1.65;
-    let delay = order as f64 * 0.08;
-    if points.len() < 3 {
-        let d = 2.0 * blobs::radius(family, side);
-        let mut fallback = bone.absolute((side - d) * 0.5, (side - d) * 0.5).w(d).h(d).radius(d * 0.5).fill(base);
-        if animate {
-            let band = (d * 0.65).max(48.0);
-            let travel = d + band * 2.2;
-            let (x0, x1) = (-band, travel - band);
-            let spec = rune::LoopSpec { delay, ..rune::LoopSpec::slide(period, [x0 / band, 0.0], [x1 / band, 0.0]).easing(rune::Easing::LINEAR) };
-            let sheen = el().key(format!("{key}-shimmer")).absolute(0.0, 0.0).w(band).h_full().clip_fade(band * 0.5, 0.0, band * 0.5, 0.0).fill(glow).looping(spec);
-            fallback = fallback.clip_rounded(d * 0.5).child(sheen);
-        }
-        return Some(fallback);
-    }
-    let mut out = bone.absolute(0.0, 0.0).w(side).h(side).shape(rune::Shape::new().fill(points.clone(), base));
-    if animate {
-        let band = (side * 0.65).max(48.0);
-        let travel = side + band * 2.2;
-        let (x0, x1) = (-band, travel - band);
-        let spec = |a: f32, b: f32| rune::LoopSpec { delay, ..rune::LoopSpec::slide(period, [a, 0.0], [b, 0.0]).easing(rune::Easing::LINEAR) };
-        let hi_shape = el().absolute(0.0, 0.0).w(side).h(side).shape(rune::Shape::new().fill(points, glow));
-        let lit = el().absolute(0.0, 0.0).w(band).h_full().looping(spec(-x0 / band, -x1 / band)).child(hi_shape);
-        let sheen =
-            el().key(format!("{key}-shimmer")).absolute(0.0, 0.0).w(band).h_full().clip_fade(band * 0.5, 0.0, band * 0.5, 0.0).looping(spec(x0 / band, x1 / band)).child(lit);
-        out = out.child(sheen);
-    }
-    Some(out)
-}
 
-/// Computes `(big_size, big_x, big_y, cell_size, mood_positions, total_height)` cleanly across
-/// wide desktop windows and compact small windows alike.
-fn garden_layout(cw: f32) -> (f32, f32, f32, f32, [[f32; 2]; 7], f32) {
-    const N: usize = MOODS.len();
-    const COLS: usize = 4;
-    let mut spots = [[0.0f32; 2]; N];
-    if cw >= 640.0 {
-        let t = ((cw - 640.0) / 360.0).clamp(0.0, 1.0);
-        let gap = 10.0 + 8.0 * t;
-        let sep = 14.0 + 18.0 * t;
-        let min_cell = 104.0 + 36.0 * t;
-        let beside_min = COLS as f32 * min_cell + (COLS as f32 - 1.0) * gap;
-        let big = (cw * (0.35 + 0.05 * t)).clamp(216.0, 410.0).min(cw - sep - beside_min).max(204.0);
-        let mw = (cw - big - sep).max(beside_min);
-        let cell = ((mw - gap * (COLS as f32 - 1.0)) / COLS as f32).clamp(96.0, 186.0);
-        let rows = N.div_ceil(COLS);
-        let grid_w = COLS as f32 * cell + (COLS as f32 - 1.0) * gap;
-        let grid_h = rows as f32 * cell + (rows as f32 - 1.0) * gap;
-        let pair_w = big + sep + grid_w;
-        let x0 = ((cw - pair_w) * 0.5).max(0.0);
-        let total_h = big.max(grid_h);
-        let by = (total_h - big) * 0.5;
-        let gx0 = x0 + big + sep;
-        let my = (total_h - grid_h) * 0.5;
-        for (i, spot) in spots.iter_mut().enumerate() {
-            let (r, c) = (i / COLS, i % COLS);
-            let in_row = (N - r * COLS).min(COLS);
-            let shift = (COLS - in_row) as f32 * (cell + gap) * 0.5;
-            *spot = [gx0 + shift + c as f32 * (cell + gap), my + r as f32 * (cell + gap)];
-        }
-        return (big, x0, by, cell, spots, total_h);
-    }
-    // Ultra-narrow window: center My Wave cleanly above a balanced 4 + 3 mood grid.
-    let gap = 10.0;
-    let big = (cw * 0.52).clamp(200.0, 252.0);
-    let cell = ((cw - gap * (COLS as f32 - 1.0)) / COLS as f32).clamp(84.0, 132.0);
-    let rows = N.div_ceil(COLS);
-    let grid_w = COLS as f32 * cell + (COLS as f32 - 1.0) * gap;
-    let grid_h = rows as f32 * cell + (rows as f32 - 1.0) * gap;
-    let gx0 = ((cw - grid_w) * 0.5).max(0.0);
-    let my = big + 14.0;
-    for (i, spot) in spots.iter_mut().enumerate() {
-        let (r, c) = (i / COLS, i % COLS);
-        let in_row = (N - r * COLS).min(COLS);
-        let shift = (COLS - in_row) as f32 * (cell + gap) * 0.5;
-        *spot = [gx0 + shift + c as f32 * (cell + gap), my + r as f32 * (cell + gap)];
-    }
-    (big, (cw - big) * 0.5, 0.0, cell, spots, my + grid_h)
+    let foreground = row()
+        .key("hm-band")
+        .absolute(content_x, 0.0)
+        .w(content_w)
+        .h(stage_h)
+        .items_center()
+        .transition(Transition::none())
+        .child(stage)
+        .child(arc);
+
+    let mini_corner = recede_el(
+        row()
+            .key("hm-mini")
+            .role("button")
+            .label(S::MiniPlayer.get(lang))
+            .help(S::MiniPlayer.get(lang))
+            .checked(s.mini_open)
+            .pin(None, None, Some(20.0), Some(20.0))
+            .w(38.0)
+            .h(38.0)
+            .radius(19.0)
+            .center()
+            .fill(chip_bg)
+            .border(1.0, chip_border)
+            .cursor(Cursor::Pointer)
+            .hov(cell_hov)
+            .press_scale(th::PRESS)
+            .on_press(|s: &mut State| s.toggle_mini_player())
+            .child(icon(&ni::MINI, 17.0).color(if s.mini_open { s.pal().accent } else { th::text().alpha(0.78) })),
+        stay,
+        14.0,
+    );
+
+    el().key("garden").w_full().h(stage_h).transition(Transition::none()).child(aura).child(foreground).child(mini_corner)
 }

@@ -1,5 +1,4 @@
-//! The Storage page (disk use and history) and the About page (version, updates, diagnostics,
-//! links).
+//! Storage (disk usage, cache cleanup, history) and About (version, updates, logs, links) pages.
 
 use rune::{Align, Cursor, El, Icon, Tx, col, el, row};
 
@@ -12,7 +11,7 @@ use crate::ui::{
     kit::{self, Hover as _, label},
 };
 
-const TOTAL: rune::TextStyle = rune::TextStyle::new(30.0, 600.0).family(th::SANS).tracking(-0.6).lh(36.0).features("'tnum' 1");
+const TOTAL: rune::TextStyle = rune::TextStyle::new(26.0, 620.0).family(th::SANS).tracking(-0.5).lh(32.0).features("'tnum' 1");
 const STORE_HUES: [u32; 3] = [0x5e5ce6, 0x30b158, 0xff9f0a];
 const REPO: &str = "https://github.com/orphytype/glint";
 
@@ -77,36 +76,24 @@ pub(super) fn storage(s: &State) -> Vec<El> {
     let total = images + audio + metadata;
     let kinds = [(S::CacheImages, images), (S::CacheAudio, audio), (S::CacheMetadata, metadata)];
 
-    let mut bar = row().key("store-bar").w_full().h(10.0).radius(5.0).gap(2.0).fill(veil(0.07));
+    let mut bar = row().key("store-bar").w_full().h(8.0).radius(4.0).gap(2.0).fill(veil(0.07));
     if total > 0 {
         let nonzero: Vec<(usize, u64)> = kinds.iter().enumerate().filter(|(_, (_, b))| *b > 0).map(|(i, (_, b))| (i, *b)).collect();
         let last = nonzero.len().saturating_sub(1);
         for (pos, (i, bytes)) in nonzero.into_iter().enumerate() {
-            let l = if pos == 0 { 5.0 } else { 0.0 };
-            let r = if pos == last { 5.0 } else { 0.0 };
+            let l = if pos == 0 { 4.0 } else { 0.0 };
+            let r = if pos == last { 4.0 } else { 0.0 };
             bar = bar.child(el().key(format!("store-bar-{i}")).h_full().min_w(4.0).grow(bytes as f32 / total as f32).corners([l, r, r, l]).fill(th::rgb(STORE_HUES[i])));
         }
     }
-    let legend = row().w_full().gap(18.0).flex_wrap().children(kinds.iter().enumerate().map(|(i, (name, bytes))| {
+    let legend = row().w_full().gap(16.0).flex_wrap().children(kinds.iter().enumerate().map(|(i, (name, bytes))| {
         row()
-            .gap(7.0)
+            .gap(6.0)
             .items_center()
-            .child(el().w(8.0).h(8.0).radius(4.0).fill(th::rgb(STORE_HUES[i])))
+            .child(el().w(7.0).h(7.0).radius(3.5).fill(th::rgb(STORE_HUES[i])))
             .child(label(name.get(lang).to_owned(), th::SMALL, th::text2()))
             .child(figure(size(*bytes, lang)))
     }));
-    let used = col()
-        .key("store-used")
-        .w_full()
-        .padding(18.0)
-        .gap(12.0)
-        .radius(GROUP_R)
-        .fill(veil(0.035))
-        .border(1.0, veil(0.065))
-        .child(col().gap(2.0).child(label(S::StorageUsed.get(lang).to_owned(), th::SMALL, th::text3())).child(label(size(total, lang), TOTAL, th::text())))
-        .child(bar)
-        .child(legend);
-
     let delete = if total > 0 {
         danger_btn("content-delete", S::DeleteContent.get(lang)).on_press(|s: &mut State| {
             delete_content(s);
@@ -116,7 +103,27 @@ pub(super) fn storage(s: &State) -> Vec<El> {
     } else {
         figure(S::HistoryEmpty.get(lang).to_owned())
     };
-    vec![used, group("set-store", None, vec![item(S::StorageContent.get(lang), Some(S::StorageContentNote.get(lang)), delete)], None), super::general::history(s)]
+    let used = col()
+        .key("store-used")
+        .w_full()
+        .padding(16.0)
+        .gap(12.0)
+        .radius(GROUP_R)
+        .fill(veil(0.028))
+        .border(1.0, veil(0.055))
+        .children(found_mark("store-used"))
+        .child(
+            row()
+                .w_full()
+                .items_center()
+                .justify_between()
+                .child(col().gap(2.0).child(label(S::StorageUsed.get(lang).to_owned(), th::SMALL, th::text3())).child(label(size(total, lang), TOTAL, th::text())))
+                .child(delete),
+        )
+        .child(bar)
+        .child(legend);
+
+    vec![used, super::general::history(s)]
 }
 
 fn updates(s: &State, k: &rune_kit::Kit) -> El {
@@ -148,11 +155,11 @@ fn updates(s: &State, k: &rune_kit::Kit) -> El {
         }
         Ui::Installing => (S::UpdateInstalling.get(lang).to_owned(), None, el()),
     };
-    let mut says = col().grow(1.0).min_w(0.0).gap(3.0).child(label(status, th::BODY_M, th::text()).wrap().align(Align::Start));
+    let mut says = col().grow(1.0).min_w(0.0).gap(2.0).child(label(status, th::BODY, th::text()).wrap().align(Align::Start));
     if let Some(n) = note {
         says = says.child(label(n.to_owned(), th::SMALL, th::text2()).wrap().align(Align::Start));
     }
-    let now = row().key("set-version").w_full().min_h(54.0).px(ROW_PAD).py(12.0).gap(24.0).items_center().children(found_mark("set-version")).child(says).child(control);
+    let now = row().key("set-version").w_full().min_h(46.0).px(ROW_PAD).py(9.0).gap(16.0).items_center().children(found_mark("set-version")).child(says).child(control);
     let auto = toggle(k, s.settings.auto_update, S::AutoUpdate.get(lang), |s| {
         s.settings.auto_update = !s.settings.auto_update;
         s.mark_settings_dirty();
@@ -166,9 +173,9 @@ fn link_row(key: &str, ic: &'static Icon, name: &str, url: &'static str) -> El {
         .role("link")
         .label(name)
         .w_full()
-        .h(48.0)
+        .h(42.0)
         .px(ROW_PAD)
-        .gap(12.0)
+        .gap(11.0)
         .items_center()
         .cursor(Cursor::Pointer)
         .hov(veil(0.04))
@@ -178,24 +185,33 @@ fn link_row(key: &str, ic: &'static Icon, name: &str, url: &'static str) -> El {
             let _ = tx.open_url(url);
         })
         .children(found_mark(key))
-        .child(rune::icon(ic, 16.0).color(th::text2()))
-        .child(label(name.to_owned(), th::BODY_M, th::text()).grow(1.0).min_w(0.0))
-        .child(rune::icon(&icons::EXTERNAL, 14.0).color(th::text3()).gcol(th::text2()))
+        .child(rune::icon(ic, 15.0).color(th::text2()))
+        .child(label(name.to_owned(), th::BODY, th::text()).grow(1.0).min_w(0.0))
+        .child(rune::icon(&icons::EXTERNAL, 13.0).color(th::text3()).gcol(th::text2()))
 }
 
 pub(super) fn about(s: &State, k: &rune_kit::Kit) -> Vec<El> {
     let lang = s.lang;
-    let version = row().h(22.0).px(9.0).radius(11.0).center().fill(veil(0.07)).child(label(format!("v{}", env!("CARGO_PKG_VERSION")), th::MONO, th::text2()));
-    let hero = col()
+    let version = row().h(20.0).px(8.0).radius(10.0).center().fill(veil(0.07)).child(label(format!("v{}", env!("CARGO_PKG_VERSION")), th::MONO, th::text2()));
+    let hero = row()
         .key("set-about")
         .w_full()
-        .pt(12.0)
-        .pb(4.0)
-        .gap(10.0)
+        .px(ROW_PAD)
+        .py(14.0)
+        .gap(14.0)
         .items_center()
-        .child(app_mark(72.0))
-        .child(row().gap(10.0).items_center().mt(6.0).child(label("Glint".to_owned(), th::H0, th::text())).child(version))
-        .child(label(S::AboutText.get(lang).to_owned(), th::SMALL, th::text2()).wrap().align(Align::Center).max_w(420.0));
+        .radius(GROUP_R)
+        .fill(veil(0.028))
+        .border(1.0, veil(0.055))
+        .child(app_mark(48.0))
+        .child(
+            col()
+                .grow(1.0)
+                .min_w(0.0)
+                .gap(3.0)
+                .child(row().gap(8.0).items_center().child(label("Glint".to_owned(), th::H2, th::text())).child(version))
+                .child(label(S::AboutText.get(lang).to_owned(), th::SMALL, th::text2()).truncate()),
+        );
     let log_toggle = toggle(k, s.settings.logging, S::DiagLogs.get(lang), |s| {
         s.settings.logging = !s.settings.logging;
         crate::diag_log::set_enabled(s.settings.logging);
@@ -205,33 +221,32 @@ pub(super) fn about(s: &State, k: &rune_kit::Kit) -> Vec<El> {
         s.mark_settings_dirty();
     });
     let log_bytes = crate::diag_log::total_bytes();
-    let log_actions = row()
-        .gap(8.0)
-        .items_center()
-        .child(figure(size(log_bytes, lang)))
-        .child(kit::btn_small("logs-open", S::OpenLogs.get(lang), Some(&icons::FOLDER)).on_press(|s: &mut State| s.open_logs_folder()))
-        .children((log_bytes > 0).then(|| {
-            kit::btn_small("logs-clear", S::ClearShort.get(lang), Some(&icons::TRASH)).on_press(|s: &mut State| {
-                crate::diag_log::clear();
-                let text = s.tr(S::LogsCleared);
-                s.toast(text);
-            })
-        }));
-    let diagnostics = group(
-        "set-diag",
-        Some(S::Diagnostics.get(lang)),
-        vec![item(S::DiagLogs.get(lang), Some(S::DiagLogsNote.get(lang)), log_toggle), item(S::DiagLogFiles.get(lang), None, log_actions)],
-        None,
-    );
+    let mut diag_rows = vec![item(S::DiagLogs.get(lang), None, log_toggle)];
+    if s.settings.logging || log_bytes > 0 {
+        let log_actions = row()
+            .gap(8.0)
+            .items_center()
+            .child(figure(size(log_bytes, lang)))
+            .child(kit::btn_small("logs-open", S::OpenLogs.get(lang), Some(&icons::FOLDER)).on_press(|s: &mut State| s.open_logs_folder()))
+            .children((log_bytes > 0).then(|| {
+                kit::btn_small("logs-clear", S::ClearShort.get(lang), Some(&icons::TRASH)).on_press(|s: &mut State| {
+                    crate::diag_log::clear();
+                    let text = s.tr(S::LogsCleared);
+                    s.toast(text);
+                })
+            }));
+        diag_rows.push(item(S::DiagLogFiles.get(lang), None, log_actions));
+    }
+    let diagnostics = group("set-diag", Some(S::Diagnostics.get(lang)), diag_rows, None);
     let links = group(
         "set-links",
         Some(S::Links.get(lang)),
         vec![
             link_row("set-source", &icons::CODE, S::SourceCode.get(lang), REPO),
-            link_row("set-issues", &icons::ALERT, S::ReportIssue.get(lang), "https://github.com/orphytype/glint/issues"),
-            link_row("set-license", &icons::INFO, S::License.get(lang), "https://github.com/orphytype/glint/blob/main/LICENSE"),
+            link_row("set-issues", &icons::BUG, S::ReportIssue.get(lang), "https://github.com/orphytype/glint/issues"),
+            link_row("set-license", &icons::LICENSE, S::License.get(lang), "https://github.com/orphytype/glint/blob/main/LICENSE"),
         ],
-        Some(S::Credits.get(lang)),
+        None,
     );
     vec![hero, updates(s, k), diagnostics, links]
 }

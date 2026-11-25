@@ -1,6 +1,6 @@
 //! The window. Back to front: the page backdrop, the current page (beside the rail), the frame
 //! snapshot (the one copy of the frame that all the blur is made from), the progressive blur at the
-//! top and bottom of the page, the rail, the title bar (the way back), the player bar, the menus
+//! bottom of the page, the rail, the title bar (the way back), the player bar, the menus
 //! and the toasts. The Now Playing page covers the rail and the bar with its own player; while it
 //! comes or goes it is drawn over them, on its own spring (`State::np`).
 
@@ -8,10 +8,10 @@ use crate::fx::Slot as _;
 use rune::{Cursor, Cx, El, Transition, el, icon, row};
 
 use super::icons;
-use super::kit::{self, BAR_GAP, BAR_H, RAIL_W, TITLE_H, label};
+use super::kit::{self, BAR_GAP, BAR_H, Hover as _, RAIL_W, TITLE_H, label};
 use super::{dock, login, np, pages};
-use crate::app::{Session, State};
-use crate::fx::{self, Glass};
+use crate::app::{Page, Session, State};
+use crate::fx;
 use crate::i18n::S;
 use crate::theme::{self as th};
 use rune::col;
@@ -43,12 +43,13 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         }
     }
     fx::set_resizing(s.is_resizing());
-    fx::set_effects_off(s.settings.effects == crate::store::Effects::Off);
+    fx::set_effects_off(!s.shaders_active());
     s.win_w.set(w);
-    // Until the GPU takes over, the launch screen covers the whole window, so the page under it is
-    // left out. Its turned mood names would stop the CPU from painting the first frame, and its
-    // skeleton shimmer would hold back the hand-over to the GPU.
+    // Until the GPU takes over (only when shaders are active on GPU), the launch screen covers the
+    // whole window so the page under it is left out. In CPU mode or with shaders off, draw at once.
     if !s.headless
+        && !fx::cpu_mode()
+        && fx::shaders_enabled()
         && !fx::gpu_up()
         && let Some(launch) = super::splash::view(s)
     {
@@ -58,22 +59,27 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         measure_bugs(s, cx, h);
     }
     let ins = cx.chrome_insets();
-    s.art.begin_view();
     let logged_in = s.session != Session::LoggedOut;
     let np_open = s.np_open && s.current().is_some();
-    // The player comes over the window on a spring of its own (`State::np`): while it moves, it is
-    // drawn over the page, the rail and the bar, which stay put underneath; once it covers the
-    // window it is all there is.
-    let np_t = if s.current().is_some() { s.np.t } else { 0.0 };
-    let np_full = np_open && np_t >= 1.0;
-    let np_moving = logged_in && !np_full && (np_open || np_t > 0.0);
-    // The player bar is only there while something plays.
-    let bar_on = logged_in && s.current().is_some();
+    let np_t = s.np.t.clamp(0.0, 1.0);
+    let np_full = np_open && np_t >= 0.999;
+    let np_moving = (np_t > 0.001 || s.np.v != 0.0) && s.current().is_some();
+    // Pause `view_gen` while full-screen Now Playing hides the underlying page so its covers stay
+    // cached and never reload or blink when collapsing Now Playing.
+    if np_full {
+        s.art.clear_watched();
+    } else {
+        s.art.begin_view();
+    }
+    // The player bar is shown while something plays, except on Home (which has its own inline player).
+    let stage_home = s.page == Page::Home;
+    let bar_on = logged_in && s.current().is_some() && !stage_home;
+    let bar_vis = logged_in && s.bar_visible();
     kit::set_bar_on(bar_on);
     // What the pointer is on, of the surfaces that float over the page: the page (and, under the
     // volume card, the bar) is built taking no hover while it is on one.
     let on_card = logged_in && !np_open && s.vol_visible() && s.vol_card_hover;
-    let on_surface = s.over_titlebar || (bar_on && !np_full && s.over_bar) || on_card;
+    let on_surface = s.over_titlebar || (bar_on && !np_open && s.over_bar) || on_card;
     kit::set_under(on_surface);
 
     // Hover washes and the group styles they drive come up over a moment instead of at once.
@@ -91,44 +97,59 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
             // own fade out would play on top of the player).
             let page = if np_open { pages::page(s, w, h).transition(Transition::none()) } else { pages::page(s, w, h) };
             let page = page.paint_order(PAINT_PAGE);
-            app = app
-                .child(page)
-                .child(kit::snapshot())
-                .child(kit::veil_top(TITLE_H + 24.0))
-                .child(kit::veil_bottom(if bar_on { BAR_H + BAR_GAP + 28.0 } else { 40.0 }))
-                .child(kit::page_scrollbar(h))
-                .child(dock::rail(s, w, ins.leading));
+            // Skip allocating a full-window backdrop snapshot on Stage Home when no glass dock,
+            // veil, or floating menu reads it (saves ~21-42 MiB on ultrawide displays).
+            let need_snap = !stage_home || bar_vis || s.menu_visible() || s.vol_visible() || s.track_menu_visible() || s.popover_visible() || s.sheet_visible();
+            app = app.child(page);
+            if need_snap {
+                app = app.child(kit::snapshot());
+            }
+            if !stage_home {
+                app = app.child(kit::veil_bottom(if bar_on { BAR_H + BAR_GAP + 28.0 } else { 40.0 }));
+            }
+            app = app.child(kit::page_scrollbar(h)).child(dock::rail(s, w, ins.leading, np_t));
         }
-        // Opening: bar sits beneath `np` so `np-cover` flies unobstructed above everything.
-        if bar_on && np_open && !np_full {
+        // Opening (or sliding off when returning to Home): bar sits beneath `np` so `np-cover` flies unobstructed.
+        if bar_vis && (np_open || stage_home) && !np_full {
             kit::set_under(on_card);
-            app = app.child(dock::bar(s, w));
+            app = app.child(dock::bar(s, w, np_open, np_t));
             kit::set_under(on_surface);
         }
         if np_full || np_moving {
             app = app.child(np::page(s, w, h, if np_full { 1.0 } else { np_t }, np_open, np_full));
         }
-        // Single backdrop snapshot when settled on Now Playing, so opening/closing never runs two
-        // full-screen backdrop copies and blur pyramid sets in the same frame.
-        if np_full {
+        // Take a post-Now-Playing backdrop snapshot only when a glass overlay (menu/popover/sheet)
+        // is actually open on top of Now Playing, avoiding idle full-screen copies and blur pyramids.
+        let np_overlay = s.menu_visible() || s.track_menu_visible() || s.popover_visible() || s.sheet_visible();
+        if np_full && np_overlay {
             app = app.child(kit::snapshot());
         }
         // Closing (or browsing): bar sits above the fading `np` curtain so `bar-cover` flies cleanly
         // back down into the mini-player without being hidden behind `np-canvas`.
-        if bar_on && !np_open {
+        if bar_vis && !np_open && !stage_home {
             kit::set_under(on_card);
-            app = app.child(dock::bar(s, w));
+            app = app.child(dock::bar(s, w, false, np_t));
             kit::set_under(on_surface);
         }
     } else {
         app = app.child(kit::snapshot()).child(login::page(s));
     }
     kit::set_under(false);
-    app = app.child(titlebar(s, ins.leading, ins.trailing, logged_in, np_open));
+    app = app.child(titlebar(s, ins.leading, ins.trailing, logged_in, np_open, np_t));
     if logged_in && (np_full || np_moving) {
-        app = app.child(np_close(s, ins.leading, if np_open { np_t } else { 0.0 }, np_full));
-        if np_open {
-            app = app.child(np_source(s, w, h, ins.leading, ins.trailing, np_t, np_full));
+        let smooth = |x: f32| {
+            let x = x.clamp(0.0, 1.0);
+            x * x * (3.0 - 2.0 * x)
+        };
+        let chrome_a = if np_full {
+            1.0
+        } else if np_open {
+            smooth((np_t - 0.14) / 0.62)
+        } else {
+            smooth((np_t - 0.30) / 0.60)
+        };
+        if chrome_a > 0.005 {
+            app = app.child(np_close(s, ins.leading, chrome_a, np_open)).child(np_source(s, w, h, ins.leading, ins.trailing, chrome_a, np_open, np_full));
         }
     }
     if logged_in && s.menu_visible() {
@@ -160,7 +181,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     if logged_in && s.delete_playlist_confirm.is_some() {
         app = app.child(super::menu::delete_playlist_confirm(s, w));
     }
-    if logged_in && s.settings_open {
+    if logged_in && s.settings_visible() {
         app = app.child(super::settings::modal(s, w, h));
     }
     if logged_in && s.popover_visible() && over_settings {
@@ -192,7 +213,7 @@ fn measure_bugs(s: &State, cx: &mut Cx<State>, h: f32) {
 
 /// The top band of the page: the way back (or out of the player) on the left, the window controls
 /// on the right (or on the left on macOS), and the rest of it drags the window.
-fn titlebar(s: &State, lead: f32, trail: f32, logged_in: bool, np: bool) -> El {
+fn titlebar(s: &State, lead: f32, trail: f32, logged_in: bool, np: bool, np_t: f32) -> El {
     let left = if logged_in && !np { RAIL_W } else { 0.0 };
     // `lead` is measured from the window's left edge (`x = 0`), while `titlebar` starts at `left`.
     // Keep the back/forward arrows close to the rail on Windows/Linux and just right of the
@@ -214,12 +235,23 @@ fn titlebar(s: &State, lead: f32, trail: f32, logged_in: bool, np: bool) -> El {
         .on_hover_change(|s: &mut State, on: bool, _tx: &mut rune::Tx| s.over_titlebar = on);
     if logged_in && !np {
         // Back and forward, always there; one with nowhere to go is faint and takes no press.
-        // (Over the player, the way out is its own element, `np_close`.)
-        let back = dock::nav_chip("back", &icons::CHEVRON_LEFT, S::Back.get(s.lang), s.can_back());
-        let fwd = dock::nav_chip("forward", &icons::CHEVRON_RIGHT, S::Forward.get(s.lang), s.can_forward());
-        r = r
+        // Smoothly lift and settle back when Now Playing collapses.
+        let flat = s.page == Page::Home || np_t > 0.01;
+        let nav_vis = (1.0 - (np_t / 0.48).clamp(0.0, 1.0)).clamp(0.0, 1.0);
+        let nav_vis = nav_vis * nav_vis * (3.0 - 2.0 * nav_vis);
+        let back = dock::nav_chip("back", &icons::CHEVRON_LEFT, S::Back.get(s.lang), s.can_back(), flat);
+        let fwd = dock::nav_chip("forward", &icons::CHEVRON_RIGHT, S::Forward.get(s.lang), s.can_forward(), flat);
+        let mut arrows = row()
+            .key("titlebar-nav")
+            .items_center()
+            .gap(6.0)
+            .offset(0.0, -(1.0 - nav_vis) * 8.0)
             .child(if s.can_back() { back.on_press(|s: &mut State| s.back()) } else { back })
-            .child(if s.can_forward() { fwd.on_press(|s: &mut State| s.go_forward()) } else { fwd }.ml(6.0));
+            .child(if s.can_forward() { fwd.on_press(|s: &mut State| s.go_forward()) } else { fwd });
+        if nav_vis < 0.999 {
+            arrows = arrows.opacity(nav_vis);
+        }
+        r = r.child(arrows);
     }
     // A new version waits beside the window's controls.
     if logged_in && let Some(pill) = dock::update_pill(s) {
@@ -232,18 +264,26 @@ fn titlebar(s: &State, lead: f32, trail: f32, logged_in: bool, np: bool) -> El {
 /// Name"; pressing it leads there. It is glass, as tall as the way out beside it and in the same
 /// colours, and like it comes and goes through its glass's own `hide` (`t`: how far the player is
 /// open).
-fn chip_surface(radius: f32, alpha: f32, glass_on: bool) -> El {
-    if glass_on {
-        return kit::glass_alpha(Glass::Chip, radius, alpha);
-    }
+/// Unified cover-tinted frosted chip surface for Now Playing's collapse button and source pill.
+/// Uses the exact same visual layers throughout opening and settled states so the button never
+/// snaps colour late when Now Playing finishes opening.
+fn chip_surface(s: &State, radius: f32, alpha: f32) -> El {
     let a = alpha.clamp(0.0, 1.0);
-    el().absolute(0.0, 0.0).w_full().h_full().radius(radius).fill(th::pop().alpha(0.72 * a)).border(2.0, th::veil(0.13 * a)).transition(Transition::none())
+    let is_light = th::light();
+    let base_fill = if is_light { th::bg().alpha(0.68 * a) } else { th::bg().alpha(0.32 * a) };
+    let border = th::veil(if is_light { 0.12 } else { 0.15 } * a);
+    let surface = el().absolute(0.0, 0.0).w_full().h_full().radius(radius).fill(base_fill).border(1.0, border).transition(Transition::none());
+    match super::blobs::cover_tint(s.palette.wave, is_light, (if is_light { 0.10 } else { 0.18 }) * a) {
+        Some(tint) => surface.child(el().absolute(0.0, 0.0).w_full().h_full().radius(radius).fill(tint)),
+        None => surface.child(el().absolute(0.0, 0.0).w_full().h_full().radius(radius).fill(th::veil(if is_light { 0.04 } else { 0.06 } * a))),
+    }
 }
 
-fn np_source(s: &State, w: f32, h: f32, lead: f32, trail: f32, t: f32, settled: bool) -> El {
+#[expect(clippy::too_many_arguments, reason = "explicit chrome layout, alpha, and interaction state")]
+fn np_source(s: &State, w: f32, h: f32, lead: f32, trail: f32, t: f32, interactive: bool, settled: bool) -> El {
     let Some(from) = &s.playing_from else { return el() };
     let t = t.clamp(0.0, 1.0);
-    let text = from.line(s.lang);
+    let text = from.line_for_track(s.lang, s.current());
     let (cover_x, cover) = np::cover_span(s, w, h);
     let c = dock::CHIP;
     // Stay centered over the cover, never touching `np-close` on the left, the window caption
@@ -260,12 +300,12 @@ fn np_source(s: &State, w: f32, h: f32, lead: f32, trail: f32, t: f32, settled: 
         cx = (min_x + win_right) * 0.5;
         half = (win_right - min_x) * 0.5;
     }
-    let max_pw = (half * 2.0).max(80.0);
-    let overhead = 14.0 + 18.0 + 8.0 + 14.0;
+    let max_pw = (half * 2.0).clamp(80.0, 260.0);
+    let overhead = 14.0 + 16.0 + 7.0 + 14.0;
     let max_text = (max_pw - overhead).max(0.0);
-    let tw = rune::text::measure(&text, &[], th::SMALL, None).0.ceil().min(max_text);
+    let tw = kit::measure_w(&text, th::SMALL).ceil().min(max_text);
     let pw = (overhead + tw + 2.0).min(max_pw);
-    let glyph = if from.wave { kit::wave_glyph(18.0, th::text().alpha(t)) } else { icon(&icons::QUEUE, 16.0).color(th::text().alpha(t)).w(18.0) };
+    let glyph = kit::source_glyph(from, th::text().alpha(t), 15.0);
     let page = from.page.clone();
     let px = cx - pw * 0.5;
     let slide = if s.is_resizing() || !settled { rune::Spring::NONE } else { th::SLIDE };
@@ -277,30 +317,31 @@ fn np_source(s: &State, w: f32, h: f32, lead: f32, trail: f32, t: f32, settled: 
         .w(pw)
         .max_w(max_pw)
         .h(c)
-        .px(14.0)
-        .gap(8.0)
+        .px(13.0)
+        .gap(7.0)
         .radius(c * 0.5)
+        .offset(0.0, -(1.0 - t) * 12.0)
         .items_center()
         .no_window_drag()
         .transition(Transition::none())
         .animated_changes()
         .motion(slide)
-        .child(chip_surface(c * 0.5, t, settled))
+        .child(chip_surface(s, c * 0.5, t))
         .child(glyph)
         .child(label(text, th::SMALL, th::text().alpha(t)).truncate().grow(1.0).min_w(0.0));
-    if let Some(p) = page {
-        pill = pill.cursor(Cursor::Pointer).press_scale(th::PRESS).on_press(move |s: &mut State| s.go(p.clone()));
+    if interactive
+        && let Some(p) = page
+    {
+        pill = pill.cursor(Cursor::Pointer).hov(th::veil(0.06)).press(th::veil(0.10)).press_scale(th::PRESS).on_press(move |s: &mut State| s.go(p.clone()));
     }
     pill
 }
 
-/// The way out of the player, at the window's top left. It is glass, which cannot take a group
-/// fade, so it comes and goes with the player through its own `hide` (`t`: how far the player is
-/// open).
-fn np_close(s: &State, lead: f32, t: f32, settled: bool) -> El {
+/// The way out of the player, at the window's top left.
+fn np_close(s: &State, lead: f32, t: f32, interactive: bool) -> El {
     let t = t.clamp(0.0, 1.0);
     let c = dock::CHIP;
-    row()
+    let mut btn = row()
         .key("np-close")
         .role("button")
         .label(S::Close.get(s.lang))
@@ -309,15 +350,17 @@ fn np_close(s: &State, lead: f32, t: f32, settled: bool) -> El {
         .w(c)
         .h(c)
         .radius(c * 0.5)
+        .offset(0.0, -(1.0 - t) * 12.0)
         .center()
-        .cursor(Cursor::Pointer)
         .no_window_drag()
-        .press_scale(th::PRESS)
         .transition(Transition::none())
         .motion(rune::Spring::NONE)
-        .child(chip_surface(c * 0.5, t, settled))
-        .child(icon(&icons::CHEVRON_DOWN, kit::GLYPH).color(th::text().alpha(t)))
-        .on_press(|s: &mut State| s.set_np(false))
+        .child(chip_surface(s, c * 0.5, t))
+        .child(icon(&icons::CHEVRON_DOWN, kit::GLYPH).color(th::text().alpha(t)));
+    if interactive {
+        btn = btn.cursor(Cursor::Pointer).hov(th::veil(0.06)).press(th::veil(0.10)).press_scale(th::PRESS).on_press(|s: &mut State| s.set_np(false));
+    }
+    btn
 }
 
 // ---- the island ----------------------------------------------------------------------------------
@@ -350,7 +393,7 @@ fn island_say(s: &State) -> Option<IslandSay> {
     Some(if activity.active > 0 {
         IslandSay {
             key: "island-dl".into(),
-            glyph: icon(&icons::SPINNER, 16.0).color(th::rgb(0xffffff)).looping(rune::LoopSpec::rotation(0.9)),
+            glyph: kit::spin(icon(&icons::SPINNER, 16.0).color(th::rgb(0xffffff))),
             text: format!("{}: {}", S::DownloadInProgress.get(lang), activity.active),
             toast: None,
         }

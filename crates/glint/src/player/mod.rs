@@ -12,7 +12,7 @@ use ym_audio::{Engine, Event, LoadHint};
 
 use crate::app::{DownloadState, Source, State};
 use crate::i18n::S;
-use crate::net::{self, Audio};
+use crate::net::{self, StreamAudio};
 use crate::store::Repeat;
 
 pub use sync::Listen;
@@ -183,7 +183,7 @@ impl State {
         self.engine_ready();
         let (b, q, downloads, fkcensor, fkcensor_on) =
             (self.backend.clone(), self.settings.quality.api(), self.download_store.clone(), self.fkcensor.clone(), self.settings.fkcensor);
-        self.job(async move { b.audio(&track, q, downloads, &fkcensor, fkcensor_on, false).await }, move |s, _, res| s.on_audio(token, q, res, start));
+        self.job(async move { b.audio_stream(&track, q, downloads, &fkcensor, fkcensor_on).await }, move |s, _, res| s.on_audio(token, q, res, start));
     }
 
     pub(super) fn remember_max_quality(&mut self, id: String, quality: net::StreamQuality) {
@@ -227,7 +227,7 @@ impl State {
         }
     }
 
-    pub fn on_audio(&mut self, token: u64, requested: ym_api::Quality, res: net::Result<Audio>, start_ms: u64) {
+    pub fn on_audio(&mut self, token: u64, requested: ym_api::Quality, res: net::Result<StreamAudio>, start_ms: u64) {
         if token != self.player.token {
             return;
         }
@@ -250,12 +250,16 @@ impl State {
                 if self.engine_ready()
                     && let Some(e) = &self.player.engine
                 {
-                    e.load(token, a.bytes.clone(), hint(a.ext, dur), playing, Duration::from_millis(start_ms));
+                    e.load(token, a.data.clone(), hint(a.ext, dur), playing, Duration::from_millis(start_ms));
                 }
-                self.measure_waveform(a.bytes, a.ext, dur);
+                if crate::fx::shaders_enabled() {
+                    self.measure_waveform(a.data, a.ext, dur);
+                }
                 self.player.sim_started = true;
                 self.wave_event(WaveEvent::TrackStarted, 0.0);
-                self.prefetch_next();
+                if !crate::fx::cpu_mode() {
+                    self.prefetch_next();
+                }
             }
             Err(e) => {
                 self.error_toast(&e);
@@ -270,13 +274,13 @@ impl State {
         }
     }
 
-    fn measure_waveform(&mut self, bytes: std::sync::Arc<[u8]>, ext: &'static str, dur: Option<u64>) {
+    fn measure_waveform(&mut self, data: ym_audio::AudioData, ext: &'static str, dur: Option<u64>) {
         let Some(id) = self.current().map(|t| t.id.clone()) else { return };
         if self.waveforms.contains_key(&id) || !self.waveform_jobs.insert(id.clone()) {
             return;
         }
         let h = hint(ext, dur);
-        self.job(async move { tokio::task::spawn_blocking(move || ym_audio::waveform(bytes, &h, crate::fx::WAVE_N).ok()).await.ok().flatten() }, move |s, _, wave| {
+        self.job(async move { tokio::task::spawn_blocking(move || ym_audio::waveform(data, &h, crate::fx::WAVE_N).ok()).await.ok().flatten() }, move |s, _, wave| {
             s.waveform_jobs.remove(&id);
             let Some(wave) = wave else { return };
             if s.waveforms.len() >= 64 {
@@ -338,10 +342,10 @@ impl State {
         let parent = self.player.token;
         let (b, q, downloads, fkcensor, fkcensor_on) =
             (self.backend.clone(), self.settings.quality.api(), self.download_store.clone(), self.fkcensor.clone(), self.settings.fkcensor);
-        self.job(async move { b.audio(&track, q, downloads, &fkcensor, fkcensor_on, false).await }, move |s, _, res| s.on_next_audio(parent, token, ni, q, res));
+        self.job(async move { b.audio_stream(&track, q, downloads, &fkcensor, fkcensor_on).await }, move |s, _, res| s.on_next_audio(parent, token, ni, q, res));
     }
 
-    fn on_next_audio(&mut self, parent: u64, token: u64, index: usize, requested: ym_api::Quality, res: net::Result<Audio>) {
+    fn on_next_audio(&mut self, parent: u64, token: u64, index: usize, requested: ym_api::Quality, res: net::Result<StreamAudio>) {
         if self.player.token != parent || self.player.next_loading != Some(token) {
             return;
         }
@@ -357,7 +361,7 @@ impl State {
         }
         let dur = self.player.queue.get(index).and_then(|t| t.duration_ms);
         if let Some(e) = &self.player.engine {
-            e.enqueue(token, a.bytes, hint(a.ext, dur));
+            e.enqueue(token, a.data, hint(a.ext, dur));
             self.player.next = Some((token, index));
             self.player.next_audio = Some(a.quality);
         }

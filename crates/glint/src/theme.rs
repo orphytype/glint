@@ -252,30 +252,27 @@ const fn display(size: f32, lh: f32) -> TextStyle {
     TextStyle::new(size, SERIF_W).family(DISPLAY).tracking(-size * 0.008).lh(lh)
 }
 
-/// A name set on a shape (My Wave on Home, the moods): Cormorant's italic, to read as written,
-/// set a size up (its letters are small for their size).
+/// A name set on a shape (mood cards): Cormorant italic, set a size up.
 pub fn name_on(size: f32) -> TextStyle {
     TextStyle::new((size * 1.22).round(), SERIF_W).family(DISPLAY).italic().lh((size * 1.3).round())
 }
 
 // Sizes, tracking and line heights are in points.
 
-/// The name at the head of a release, a playlist or an artist: the sans, bold and tight, and a
+/// The name at the head of a release, a playlist or an artist: the sans, tight and balanced, and a
 /// size smaller for a narrow window.
-pub const RELEASE: TextStyle = TextStyle::new(38.0, 700.0).family(SANS).tracking(-1.0).lh(44.0);
-pub const RELEASE_S: TextStyle = TextStyle::new(30.0, 700.0).family(SANS).tracking(-0.7).lh(36.0);
+pub const RELEASE: TextStyle = TextStyle::new(30.0, 600.0).family(SANS).tracking(-0.65).lh(36.0);
+pub const RELEASE_S: TextStyle = TextStyle::new(25.0, 600.0).family(SANS).tracking(-0.45).lh(31.0);
 /// The name in the details card, and at the head of the queue.
-pub const SHEET_TITLE: TextStyle = TextStyle::new(24.0, 700.0).family(SANS).tracking(-0.5).lh(30.0);
+pub const SHEET_TITLE: TextStyle = TextStyle::new(22.0, 600.0).family(SANS).tracking(-0.4).lh(28.0);
 /// Who made it, under that name.
-pub const BYLINE_M: TextStyle = TextStyle::new(17.0, 500.0).family(SANS).lh(24.0);
+pub const BYLINE_M: TextStyle = TextStyle::new(14.5, 450.0).family(SANS).lh(20.0);
 /// A page's title (Home's greeting, a root page).
-pub const TITLE: TextStyle = TextStyle::new(28.0, 700.0).family(SANS).tracking(-0.6).lh(34.0);
-/// The name inside a card or a dialog (the best match, the About page).
-pub const H0: TextStyle = TextStyle::new(22.0, 700.0).family(SANS).tracking(-0.4).lh(28.0);
+pub const TITLE: TextStyle = TextStyle::new(26.0, 600.0).family(SANS).tracking(-0.55).lh(32.0);
 /// A pane's or a dialog's title.
-pub const H1: TextStyle = TextStyle::new(18.0, 650.0).family(SANS).tracking(-0.2).lh(24.0);
+pub const H1: TextStyle = TextStyle::new(17.5, 600.0).family(SANS).tracking(-0.2).lh(23.0);
 /// A section's name over its row of cards or list.
-pub const SECTION: TextStyle = TextStyle::new(18.0, 700.0).family(SANS).tracking(-0.25).lh(24.0);
+pub const SECTION: TextStyle = TextStyle::new(17.5, 600.0).family(SANS).tracking(-0.2).lh(23.0);
 /// A track's name where it stands alone (the player).
 pub const H2: TextStyle = TextStyle::new(16.0, 600.0).family(SANS).tracking(-0.1).lh(22.0);
 /// A track's name in the bar.
@@ -346,20 +343,18 @@ pub const PRESS: f32 = 0.96;
 /// state change, so they settle instead of snapping into place.
 pub const SOFT: rune::SpringPair = rune_motion::tokens::pair::REFLOW;
 
-/// How a block of a page comes in: quick, and without a bounce.
 /// The cover flying between the bar and the player: matched to the player curtain's glide.
-pub const FLIGHT: rune::Spring = rune::Spring::new(0.42, 0.0);
+pub const FLIGHT: rune::Spring = rune::Spring::new(0.36, 0.0);
 
 /// The player's column sliding aside when the lyrics or the queue open, and back.
-pub const SLIDE: rune::Spring = rune::Spring::new(0.38, 0.0);
+pub const SLIDE: rune::Spring = rune::Spring::new(0.26, 0.0);
 
-/// How a page (and each block of it) comes in: a calm rise that settles without a bounce, and a
-/// quick fade out of the way.
-pub const PAGE_IN: rune::SpringPair = rune::SpringPair::new(rune::Spring::new(0.38, 0.0), rune::Spring::new(0.16, 0.0));
+/// How a page (and each block of it) comes in: crisp settle without bounce, fast exit.
+pub const PAGE_IN: rune::SpringPair = rune::SpringPair::new(rune::Spring::new(0.22, 0.0), rune::Spring::new(0.10, 0.0));
 /// The playing track changing: the new cover and lines fade in quickly while the old ones fade
 /// out a little slower, so the swap never dips to an empty frame.
-pub const SWAP: rune::SpringPair = rune::SpringPair::new(rune::Spring::new(0.22, 0.0), rune::Spring::new(0.34, 0.0));
+pub const SWAP: rune::SpringPair = rune::SpringPair::new(rune::Spring::new(0.18, 0.0), rune::Spring::new(0.26, 0.0));
 /// A playing track's title and artists changing: the old line clears out of the way fast, so the
 /// two never read on top of each other, and the new one settles in.
-pub const ROLL: rune::SpringPair = rune::SpringPair::new(rune::Spring::new(0.28, 0.0), rune::Spring::new(0.10, 0.0));
-pub const RISE: rune::SpringPair = rune::SpringPair::new(rune::Spring::new(0.26, 0.0), rune::Spring::new(0.18, 0.0));
+pub const ROLL: rune::SpringPair = rune::SpringPair::new(rune::Spring::new(0.22, 0.0), rune::Spring::new(0.08, 0.0));
+pub const RISE: rune::SpringPair = rune::SpringPair::new(rune::Spring::new(0.18, 0.0), rune::Spring::new(0.10, 0.0));

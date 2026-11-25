@@ -5,13 +5,12 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use rune::{Cursor, El, GrowthSpec, Transition, Tx, col, el, icon, row};
+use rune::{Cursor, El, GrowthSpec, Tx, col, el, icon, row};
 use ym_api::{Album, Artist, Playlist, ShelfItem, Track};
 
 use crate::app::{Load, Page, Source, State};
 use crate::i18n::S;
 use crate::theme as th;
-use crate::ui::blobs::{self, Family};
 use crate::ui::icons;
 use crate::ui::kit::{self, Hover as _, ListSrc, PAGE_MAX, PAGE_PAD, RAIL_W, ROW_H, label};
 
@@ -22,6 +21,14 @@ pub(super) const CARD_R: f32 = 14.0;
 thread_local! {
     static ROWS: RefCell<HashMap<String, [f32; 3]>> = RefCell::new(HashMap::new());
     static GOING: RefCell<HashMap<String, f32>> = RefCell::new(HashMap::new());
+    static VROWS: RefCell<HashMap<String, std::ops::Range<usize>>> = RefCell::new(HashMap::new());
+}
+
+fn visible_row_window(key: &str, pad: usize, fallback_end: usize) -> std::ops::Range<usize> {
+    VROWS.with_borrow(|m| match m.get(key) {
+        Some(r) => r.start.saturating_sub(pad)..r.end.saturating_add(pad),
+        None => 0..fallback_end,
+    })
 }
 
 fn row_at(key: &str) -> Option<[f32; 3]> {
@@ -34,8 +41,22 @@ pub(super) fn column(w: f32) -> f32 {
     ((w - RAIL_W).min(PAGE_MAX) - 2.0 * PAGE_PAD).max(320.0)
 }
 
-pub(super) fn hscroll(key: String, cards: Vec<El>) -> El {
+/// Visible card range `[start..end)` for a horizontal shelf, keeping a 1-card buffer on both
+/// sides for smooth scrolling without decoding far-offscreen covers into RAM.
+pub(super) fn hscroll_range(key: &str, n: usize, card: f32, w: f32) -> std::ops::Range<usize> {
+    let pitch = (card + CARD_GAP).max(1.0);
+    let avail = column(w);
+    let [off, _, view] = row_at(key).unwrap_or([0.0, 0.0, avail]);
+    let view = if view > 1.0 { view } else { avail };
+    let first = ((off / pitch).floor() as isize - 1).max(0) as usize;
+    let last = (((off + view) / pitch).ceil() as usize + 1).min(n);
+    first.min(n)..last.max(first.min(n))
+}
+
+pub(super) fn hscroll(s: &State, key: String, card: f32, cards: Vec<El>) -> El {
     let watch = key.clone();
+    let app = s.app.clone();
+    let pitch = (card + CARD_GAP).max(1.0);
     kit::wheel_to_page(
         row()
             .key(key)
@@ -46,7 +67,11 @@ pub(super) fn hscroll(key: String, cards: Vec<El>) -> El {
             // Cards fade out at the edges while more of the row is hidden behind them.
             .scroll_edge_fade(36.0)
             .on_scroll_offset(move |p: rune::ScrollPos| {
+                let mut bucket_changed = false;
                 ROWS.with_borrow_mut(|m| {
+                    let prev_bucket = m.get(&watch).map_or(0, |old| (old[0] / pitch).floor() as i32);
+                    let next_bucket = (p.offset[0] / pitch).floor() as i32;
+                    bucket_changed = prev_bucket != next_bucket;
                     m.insert(watch.clone(), [p.offset[0], p.max[0], p.viewport[0]]);
                 });
                 GOING.with_borrow_mut(|m| {
@@ -54,6 +79,11 @@ pub(super) fn hscroll(key: String, cards: Vec<El>) -> El {
                         m.remove(&watch);
                     }
                 });
+                if bucket_changed
+                    && let Some(app) = &app
+                {
+                    app.wake();
+                }
             })
             .children(cards),
     )
@@ -107,8 +137,49 @@ pub(super) fn heading_side(arrows: Option<El>, more: Option<El>) -> Option<El> {
     }
 }
 
-pub(super) fn grid(cards: Vec<El>) -> El {
-    row().w_full().flex_wrap().gap(GRID_GAP).children(cards)
+/// Fixed row height for virtualized card grids (`artist` cards have 2 text lines; albums/playlists
+/// have 3 text lines).
+pub(super) fn card_row_h(size: f32, artist: bool) -> f32 {
+    if artist { size + 61.0 } else { size + 84.0 }
+}
+
+/// Virtualized card grid: mounts only rows near the viewport and decodes cover art only for
+/// visible rows plus a 1-row scroll buffer above and below.
+pub(super) fn virtual_grid<F>(key: impl Into<String>, n: usize, cols: usize, row_h: f32, build_item: F) -> El
+where
+    F: Fn(&State, usize, bool) -> El + 'static,
+{
+    let cols = cols.max(1);
+    let rows = n.div_ceil(cols);
+    let under = kit::under();
+    let key: String = key.into();
+    let row_prefix = key.clone();
+    let range_key = key.clone();
+    let watch_key = key.clone();
+    col()
+        .key(key)
+        .w_full()
+        .growth(GrowthSpec::default())
+        .virtual_rows(
+            rows,
+            row_h,
+            move |_s: &State, r: usize| Cow::Owned(format!("{row_prefix}-r{r}")),
+            move |s: &State, r: usize| {
+                let load_art = visible_row_window(&range_key, 1, 4).contains(&r);
+                let start = r * cols;
+                let end = (start + cols).min(n);
+                kit::built_under(under, || row().w_full().h(row_h).pb(GRID_GAP).gap(GRID_GAP).children((start..end).map(|i| build_item(s, i, load_art))))
+            },
+        )
+        .on_visible_rows(move |_s: &mut State, range: std::ops::Range<usize>| {
+            VROWS.with_borrow_mut(|m| {
+                let changed = m.get(&watch_key).is_none_or(|prev| *prev != range);
+                if changed {
+                    m.insert(watch_key.clone(), range);
+                }
+                changed
+            })
+        })
 }
 
 pub(super) fn fit(w: f32, min: f32, gap: f32, max_cols: usize) -> (usize, f32) {
@@ -134,12 +205,14 @@ struct CardSpec<'a> {
     text: CardText,
     size: f32,
     round: bool,
+    load_art: bool,
 }
 
 fn media_card(s: &State, spec: CardSpec<'_>, play: OnPlay, on: impl Fn(&mut State) + 'static) -> El {
-    let CardSpec { key, tpl, title, text, size, round } = spec;
+    let CardSpec { key, tpl, title, text, size, round, load_art } = spec;
     let radius = if round { size * 0.5 } else { CARD_R };
-    let mut art = el().w(size).h(size).radius(radius).child(kit::cover(s, tpl, size, radius));
+    let cover_el = if load_art { kit::cover(s, tpl, size, radius) } else { kit::cover_placeholder(size, radius) };
+    let mut art = el().w(size).h(size).radius(radius).child(cover_el);
     art = art.child(el().absolute(0.0, 0.0).w_full().h_full().radius(radius).fill(th::rgba(0x000000, 0.18)).gop(0.0, 1.0));
     if let Some(play) = play {
         art = art.child(
@@ -205,7 +278,7 @@ pub(super) fn facts_line(parts: impl IntoIterator<Item = String>) -> String {
     parts.into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" · ")
 }
 
-pub(super) fn playlist_card(s: &State, pl: &Playlist, size: f32) -> El {
+pub(super) fn playlist_card_lazy(s: &State, pl: &Playlist, size: f32, load_art: bool) -> El {
     let (uid, kind) = (pl.owner_uid(), pl.kind);
     let lang = s.lang;
     let by = pl
@@ -223,12 +296,12 @@ pub(super) fn playlist_card(s: &State, pl: &Playlist, size: f32) -> El {
     let page = Page::Playlist(uid, kind);
     let preview = Preview { title: pl.title.clone(), cover: pl.cover_template().map(str::to_owned), artists: Vec::new(), year: None };
     let text = CardText { by, facts, ..CardText::default() };
-    media_card(s, CardSpec { key: format!("pl-{}", pl.key()), tpl: pl.cover_template(), title: pl.title.clone(), text, size, round: false }, play, move |s: &mut State| {
+    media_card(s, CardSpec { key: format!("pl-{}", pl.key()), tpl: pl.cover_template(), title: pl.title.clone(), text, size, round: false, load_art }, play, move |s: &mut State| {
         s.go_preview(page.clone(), &preview)
     })
 }
 
-pub(super) fn album_card(s: &State, a: &Album, size: f32) -> El {
+pub(super) fn album_card_lazy(s: &State, a: &Album, size: f32, load_art: bool) -> El {
     let (id, play_id, name) = (a.id.clone(), a.id.clone(), a.title.clone());
     let kind = crate::app::release_kind_name(a.kind.as_deref()).get(s.lang).to_owned();
     let facts = facts_line([kind, a.year.map(|y| y.to_string()).unwrap_or_default()]);
@@ -236,28 +309,28 @@ pub(super) fn album_card(s: &State, a: &Album, size: f32) -> El {
     let page = Page::Album(id);
     let preview = Preview { title: a.title.clone(), cover: a.cover_template().map(str::to_owned), artists: a.artists.clone(), year: a.year };
     let text = CardText { artists: a.artists.clone(), facts, ..CardText::default() };
-    media_card(s, CardSpec { key: format!("al-{}", a.id), tpl: a.cover_template(), title: a.title.clone(), text, size, round: false }, play, move |s: &mut State| {
+    media_card(s, CardSpec { key: format!("al-{}", a.id), tpl: a.cover_template(), title: a.title.clone(), text, size, round: false, load_art }, play, move |s: &mut State| {
         s.go_preview(page.clone(), &preview)
     })
 }
 
-pub(super) fn artist_card(s: &State, a: &Artist, size: f32) -> El {
+pub(super) fn artist_card_lazy(s: &State, a: &Artist, size: f32, load_art: bool) -> El {
     let id = a.id.clone();
     let preview = Preview { title: a.name.clone(), cover: a.cover_template().map(str::to_owned), artists: Vec::new(), year: None };
     let text = CardText { by: S::Artist.get(s.lang).to_owned(), ..CardText::default() };
-    media_card(s, CardSpec { key: format!("ar-{}", a.id), tpl: a.cover_template(), title: a.name.clone(), text, size, round: true }, None, move |s: &mut State| {
+    media_card(s, CardSpec { key: format!("ar-{}", a.id), tpl: a.cover_template(), title: a.name.clone(), text, size, round: true, load_art }, None, move |s: &mut State| {
         s.go_preview(Page::Artist(id.clone()), &preview)
     })
 }
 
-pub(super) fn track_card(s: &State, t: &Track, size: f32, shelf: usize) -> El {
+pub(super) fn track_card_lazy(s: &State, t: &Track, size: f32, shelf: usize, load_art: bool) -> El {
     let (id, play_id) = (t.id.clone(), t.id.clone());
     let album = t.albums.first().cloned();
     let play: OnPlay = Some(Box::new(move |s: &mut State| s.play_shelf_track(shelf, &play_id)));
     let year = album.as_ref().and_then(|a| a.year).map(|y| y.to_string()).unwrap_or_default();
     let length = t.duration_ms.filter(|ms| *ms > 0).map(crate::player::fmt_time).unwrap_or_default();
     let text = CardText { artists: t.artists.clone(), facts: facts_line([year, length]), explicit: t.is_explicit(), ..CardText::default() };
-    media_card(s, CardSpec { key: format!("tr-{shelf}-{}", t.id), tpl: t.cover_template(), title: t.full_title(), text, size, round: false }, play, move |s: &mut State| {
+    media_card(s, CardSpec { key: format!("tr-{shelf}-{}", t.id), tpl: t.cover_template(), title: t.full_title(), text, size, round: false, load_art }, play, move |s: &mut State| {
         match &album {
             Some(al) => {
                 let preview = Preview { title: al.title.clone(), cover: al.cover_template().map(str::to_owned), artists: al.artists.clone(), year: al.year };
@@ -377,15 +450,32 @@ pub(super) fn play_button(s: &State, key: &str, page: Option<Page>, part: bool, 
 
 pub(super) fn track_list(key: &'static str, n: usize, src: ListSrc) -> El {
     let under = kit::under();
-    kit::bleed(col().key(key).growth(GrowthSpec::default()).virtual_rows(
-        n,
-        ROW_H,
-        move |s: &State, i: usize| Cow::Owned(s.list_id(src, i)),
-        move |s: &State, i: usize| match s.list_track(src, i) {
-            Some(t) => kit::built_under(under, || kit::track_row(s, t, i + 1, src)),
-            None => el().h(ROW_H),
-        },
-    ))
+    kit::bleed(
+        col()
+            .key(key)
+            .growth(GrowthSpec::default())
+            .virtual_rows(
+                n,
+                ROW_H,
+                move |s: &State, i: usize| Cow::Owned(s.list_id(src, i)),
+                move |s: &State, i: usize| match s.list_track(src, i) {
+                    Some(t) => {
+                        let load_art = visible_row_window(key, 4, 16).contains(&i);
+                        kit::built_under(under, || kit::track_row_lazy(s, t, i + 1, src, load_art))
+                    }
+                    None => el().h(ROW_H),
+                },
+            )
+            .on_visible_rows(move |_s: &mut State, range: std::ops::Range<usize>| {
+                VROWS.with_borrow_mut(|m| {
+                    let changed = m.get(key).is_none_or(|prev| *prev != range);
+                    if changed {
+                        m.insert(key.to_owned(), range);
+                    }
+                    changed
+                })
+            }),
+    )
 }
 
 pub fn wave_title(id: &str) -> S {
@@ -405,30 +495,6 @@ pub fn wave_title(id: &str) -> S {
     }
 }
 
-pub(super) fn wave_name_tuned(s: &State, id: &str) -> String {
-    let lang = s.lang;
-    let mut out = wave_title(id).get(lang).to_owned();
-    if !crate::store::WaveTune::applies(id) {
-        return out;
-    }
-    let (t, base) = (s.wave_tune(id), crate::store::WaveTune::of(id));
-    let knobs = [
-        (t.diversity, base.diversity, &[S::WaveAnyOne, S::WaveFavorite, S::WaveDiscover, S::WavePopular][..]),
-        (t.mood, base.mood, &[S::WaveAnyMood, S::WaveEnergetic, S::WaveFun, S::WaveCalm, S::WaveSad][..]),
-        (t.language, base.language, &[S::WaveAnyOne, S::WaveRussian, S::WaveForeign, S::WaveNoWords][..]),
-    ];
-    for (now, was, names) in knobs {
-        if now != was
-            && now != 0
-            && let Some(n) = names.get(usize::from(now))
-        {
-            out.push_str(" · ");
-            out.push_str(n.get(lang));
-        }
-    }
-    out
-}
-
 pub(super) fn start_wave_with(s: &mut State, id: &str) {
     s.wave_choice = id.to_owned();
     s.mark_settings_dirty();
@@ -437,41 +503,18 @@ pub(super) fn start_wave_with(s: &mut State, id: &str) {
 
 pub(super) fn wave_hue(id: &str) -> f32 {
     match id {
+        "onyourwave" => 222.0,
         "favorite" => 348.0,
-        "discover" => 205.0,
+        "discover" => 204.0,
         "popular" => 40.0,
-        "energetic" => 14.0,
-        "calm" => 172.0,
-        "fun" => 280.0,
-        "sad" => 228.0,
+        "energetic" => 18.0,
+        "calm" => 182.0,
+        "fun" => 162.0,
+        "sad" => 232.0,
+        "workbackground" => 216.0,
+        "without-words" => 276.0,
+        "russian" => 346.0,
+        "not-russian" => 152.0,
         _ => (id.bytes().fold(11u32, |a, b| a.wrapping_mul(37).wrapping_add(u32::from(b))) % 360) as f32,
     }
-}
-
-pub(super) fn name_on(name: &str, family: Family, side: f32, color: rune::Color) -> El {
-    let r = blobs::radius(family, side);
-    let [cx, cy, rw, rh] = family.room();
-    let (bw, bh) = (r * rw, r * rh);
-    let mut options = vec![name.to_owned()];
-    let mid = name.chars().count() / 2;
-    if let Some((i, _)) = name.char_indices().filter(|(_, ch)| *ch == ' ').min_by_key(|(i, _)| name[..*i].chars().count().abs_diff(mid)) {
-        options.push(format!("{}\n{}", &name[..i], &name[i + 1..]));
-    }
-    let probe = 20.0;
-    let (text, size) = options
-        .into_iter()
-        .map(|t| {
-            let (w, h) = rune::text::measure(&t, &[], th::name_on(probe), None);
-            let size = (probe * (bw / w.max(1.0)).min(bh / h.max(1.0))).floor().clamp(11.0, 22.0);
-            (t, size)
-        })
-        .fold((name.to_owned(), 0.0f32), |best, o| if o.1 > best.1 + 1.0 { o } else { best });
-    let (mx, my) = (side * 0.5 + cx * r, side * 0.5 + cy * r);
-    let half = side * 0.5;
-    el().absolute(mx - half, my - half)
-        .w(side)
-        .h(side)
-        .center()
-        .transition(Transition::none())
-        .child(label(text, th::name_on(size), color).align(rune::Align::Center).max_w(bw.max(side * 0.6)).rotate(family.tilt()))
 }

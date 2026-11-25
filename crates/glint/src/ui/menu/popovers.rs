@@ -7,7 +7,7 @@ use std::rc::Rc;
 use rune::{Cursor, El, Transition, col, el, icon, row};
 
 use super::{Entry, HEAD};
-use crate::app::{DiscKind, DiscSort, DownloadState, Page, PinnedItem, Sheet, Source, State, Station, TrackSort, WaveChoice};
+use crate::app::{AlbumSort, ArtistSort, DiscKind, DiscSort, DownloadState, LibTab, Page, PinnedItem, PlaylistSort, Sheet, Source, State, Station, TrackSort, WaveChoice};
 use crate::i18n::S;
 use crate::store::QualityPref;
 use crate::theme as th;
@@ -234,7 +234,7 @@ fn download_row(s: &State, id: &str) -> El {
         DownloadState::Failed => th::rgb(0xf18a8a),
     };
     let glyph =
-        if matches!(state, DownloadState::Downloading) { icon(glyph_icon, 12.0).color(color).looping(rune::LoopSpec::rotation(0.9)) } else { icon(glyph_icon, 12.0).color(color) };
+        if matches!(state, DownloadState::Downloading) { kit::spin(icon(glyph_icon, 12.0).color(color)) } else { icon(glyph_icon, 12.0).color(color) };
     let mut row = row().key(format!("download-manager-{id}")).role("button").label(title.as_str()).w_full().h(DOWNLOAD_ROW_H).px(10.0).gap(10.0).items_center();
     if let Some(track) = downloaded {
         let open_track = track.clone();
@@ -363,7 +363,7 @@ fn choice_row(key: String, text: &str, on: bool, pick: impl Fn(&mut State) + 'st
 }
 
 fn choice_caption(key: &str, text: &str) -> Entry {
-    Entry::Block(row().key(key.to_owned()).w_full().h(28.0).px(10.0).items_end().pb(4.0).child(kit::caps(text, th::text3())), 28.0)
+    Entry::Block(row().key(key.to_owned()).w_full().h(24.0).px(10.0).items_end().pb(3.0).child(kit::caps(text, th::text3())), 24.0)
 }
 
 pub(super) fn track_sort_entries(s: &State) -> Vec<Entry> {
@@ -376,8 +376,53 @@ pub(super) fn track_sort_entries(s: &State) -> Vec<Entry> {
 }
 
 pub(super) fn lib_sort_entries(s: &State) -> Vec<Entry> {
-    let now = s.library.sort;
-    TrackSort::ALL.into_iter().map(|o| choice_row(format!("lsort-{o:?}"), o.name().get(s.lang), o == now, move |s: &mut State| s.set_library_sort(o))).collect()
+    let lang = s.lang;
+    match s.library.tab {
+        LibTab::Tracks => {
+            let now = s.library.sort;
+            TrackSort::ALL
+                .into_iter()
+                .map(|o| {
+                    let label = if o == TrackSort::Original { S::SortRecent } else { o.name() }.get(lang);
+                    choice_row(format!("lsort-{o:?}"), label, o == now, move |s: &mut State| s.set_library_sort(o))
+                })
+                .collect()
+        }
+        LibTab::Playlists => {
+            let now = s.library.playlist_sort;
+            PlaylistSort::ALL
+                .into_iter()
+                .map(|o| choice_row(format!("lplsort-{o:?}"), o.name().get(lang), o == now, move |s: &mut State| s.library.playlist_sort = o))
+                .collect()
+        }
+        LibTab::Albums => {
+            let (now, kind) = (s.library.album_sort, s.library.album_kind);
+            let mut v = vec![choice_caption("lib-al-sort-cap", S::SortBy.get(lang))];
+            v.extend(
+                AlbumSort::ALL
+                    .into_iter()
+                    .map(|o| choice_row(format!("lalsort-{o:?}"), o.name().get(lang), o == now, move |s: &mut State| s.library.album_sort = o)),
+            );
+            let albums = s.library.albums.get().map_or(&[][..], Vec::as_slice);
+            let kinds: Vec<DiscKind> = DiscKind::ALL
+                .into_iter()
+                .filter(|k| *k == DiscKind::All || *k == kind || albums.iter().any(|a| k.holds(a.kind.as_deref())))
+                .collect();
+            if kinds.len() > 2 {
+                v.push(Entry::Divider);
+                v.push(choice_caption("lib-al-kind-cap", S::ShowKinds.get(lang)));
+                v.extend(kinds.into_iter().map(|k| choice_row(format!("lalkind-{k:?}"), k.name().get(lang), k == kind, move |s: &mut State| s.library.album_kind = k)));
+            }
+            v
+        }
+        LibTab::Artists => {
+            let now = s.library.artist_sort;
+            ArtistSort::ALL
+                .into_iter()
+                .map(|o| choice_row(format!("larsort-{o:?}"), o.name().get(lang), o == now, move |s: &mut State| s.library.artist_sort = o))
+                .collect()
+        }
+    }
 }
 
 pub(super) fn disc_sort_entries(s: &State) -> Vec<Entry> {
@@ -422,14 +467,13 @@ pub(super) fn quality_entries(s: &State) -> Vec<Entry> {
                     .items_center()
                     .radius(8.0)
                     .cursor(Cursor::Pointer)
-                    .fill(if selected { th::veil(0.08) } else { rune::Color::TRANSPARENT })
+                    .fill(if selected { th::veil(0.06) } else { rune::Color::TRANSPARENT })
                     .hov(th::veil(0.06))
                     .press(th::veil(0.10))
                     .on_press(move |s: &mut State| {
                         s.set_quality(quality);
                         s.close_popover();
                     })
-                    .child(icon(np_icons::quality_icon(quality), 18.0).color(ink))
                     .child(label(text, th::BODY, ink).grow(1.0).min_w(0.0).truncate())
                     .child(label(detail, th::MONO, if selected { th::text2() } else { th::text3() }))
                     .child(check),

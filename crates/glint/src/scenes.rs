@@ -10,7 +10,6 @@ use crate::app::{LibTab, Load, LyricsUi, NpTab, Page, SearchTab, Session, Source
 use crate::fixtures::Catalog;
 use crate::i18n::{Lang, S};
 use crate::net::Backend;
-use crate::store::Effects;
 
 type Scene = fn(&mut State);
 
@@ -19,6 +18,7 @@ pub const SCENES: &[(&str, Scene)] = &[
     ("login-ru", login_ru),
     ("launch", launch),
     ("home", home),
+    ("explore", explore),
     ("home-ru", home_ru),
     ("home-cloud", home_cloud),
     ("home-pins", home_pins),
@@ -52,10 +52,11 @@ pub const SCENES: &[(&str, Scene)] = &[
     ("settings", settings),
     ("settings-lyrics", settings_lyrics),
     ("settings-ru", settings_ru),
+    ("settings-ru-look", |s| settings_ru_on(s, crate::ui::settings::SetTab::General)),
     ("settings-ru-sound", |s| settings_ru_on(s, crate::ui::settings::SetTab::Sound)),
     ("settings-ru-player", |s| settings_ru_on(s, crate::ui::settings::SetTab::Player)),
-    ("settings-ru-mini", |s| settings_ru_on(s, crate::ui::settings::SetTab::Mini)),
-    ("settings-ru-startup", |s| settings_ru_on(s, crate::ui::settings::SetTab::Startup)),
+    ("settings-ru-mini", |s| settings_ru_on(s, crate::ui::settings::SetTab::Player)),
+    ("settings-ru-startup", |s| settings_ru_on(s, crate::ui::settings::SetTab::General)),
     ("settings-ru-storage", |s| settings_ru_on(s, crate::ui::settings::SetTab::Storage)),
     ("settings-ru-about", |s| settings_ru_on(s, crate::ui::settings::SetTab::About)),
     ("settings-update", settings_update),
@@ -82,7 +83,6 @@ pub const SCENES: &[(&str, Scene)] = &[
     ("lyrics-count", lyrics_count),
     ("lyrics-count-run", lyrics_count_run),
     ("lyrics-count-scatter", lyrics_count_scatter),
-    ("wave-tune-ru", wave_tune_ru),
     ("update-popover", update_popover),
     ("dock-menu", dock_menu),
     ("download-quality", download_quality),
@@ -169,6 +169,11 @@ fn home(s: &mut State) {
     play(s, &c, 2, 41_000);
 }
 
+fn explore(s: &mut State) {
+    home(s);
+    s.page = Page::Explore;
+}
+
 /// Home with more pins than the rail has room for: they scroll above the foot buttons.
 fn home_pins(s: &mut State) {
     let c = signed_in(s);
@@ -194,10 +199,10 @@ fn home_ru(s: &mut State) {
     s.lang = Lang::Ru;
 }
 
-/// Home in Russian with My Wave drawn as a cloud.
+/// Home in Russian with the dither print mode active on the 3D wave backdrop.
 fn home_cloud(s: &mut State) {
     home_ru(s);
-    s.settings.wave_look.form = 3;
+    s.settings.wave_look.print = 1;
 }
 
 fn search(s: &mut State) {
@@ -534,22 +539,15 @@ fn lyrics_count_scatter(s: &mut State) {
     s.player.playing = false;
 }
 
-/// Home in Russian with the redesigned My Wave settings popover open.
-fn wave_tune_ru(s: &mut State) {
-    home_ru(s);
-    s.open_popover(crate::app::Popover::WaveTune { anchor: "hm-wave-tune".into() });
-    s.pop.t = 1.0;
-}
-
 /// Home in Russian with the circular update icon in the title bar and its dropdown open.
 fn update_popover(s: &mut State) {
     home_ru(s);
     s.update_method = glint_update::Method::WindowsInstaller;
     s.update = crate::update::Ui::Available(glint_update::Release {
-        version: "0.9.5".into(),
-        page_url: "https://github.com/orphytype/glint/releases/tag/v0.9.5".into(),
+        version: "0.10.0".into(),
+        page_url: "https://github.com/orphytype/glint/releases/tag/v0.10.0".into(),
         notes: "Audio quality gets a pill in the mini player and a picker for batch downloads.\n• The quality menu shows each tier with its bitrate.\n• Covers load at the size each view needs, with the large Now Playing cover showing the cached one first.".into(),
-        asset: Some(glint_update::Asset { name: "Glint-0.9.5-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
+        asset: Some(glint_update::Asset { name: "Glint-0.10.0-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
     });
     s.open_popover(crate::app::Popover::Update { anchor: "update-pill".into() });
     s.pop.t = 1.0;
@@ -595,7 +593,7 @@ fn np_waves(s: &mut State) {
 /// The look of the open player, its popover open from the corner button, a few things changed.
 fn np_look(s: &mut State) {
     nowplaying(s);
-    s.settings.stage.effects = 2;
+    s.settings.stage.effects = 1;
     s.open_popover(crate::app::Popover::Stage { anchor: "np-more".into() });
     s.pop.t = 1.0;
 }
@@ -669,7 +667,7 @@ fn settings_playback(s: &mut State) {
 
 fn settings_desktop(s: &mut State) {
     settings(s);
-    s.settings_tab = crate::ui::settings::SetTab::Mini;
+    s.settings_tab = crate::ui::settings::SetTab::Player;
 }
 
 fn settings_about(s: &mut State) {
@@ -701,10 +699,10 @@ fn settings_update(s: &mut State) {
     settings(s);
     s.update_method = glint_update::Method::WindowsInstaller;
     s.update = crate::update::Ui::Available(glint_update::Release {
-        version: "0.9.5".into(),
-        page_url: "https://github.com/orphytype/glint/releases/tag/v0.9.5".into(),
+        version: "0.10.0".into(),
+        page_url: "https://github.com/orphytype/glint/releases/tag/v0.10.0".into(),
         notes: "Audio quality gets a pill in the mini player and a picker for batch downloads.\n• The quality menu shows each tier with its bitrate.".into(),
-        asset: Some(glint_update::Asset { name: "Glint-0.9.5-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
+        asset: Some(glint_update::Asset { name: "Glint-0.10.0-windows-x64-setup.exe".into(), url: String::new(), size: 12_000_000, sha256: String::new() }),
     });
 }
 
@@ -715,7 +713,7 @@ fn settings_ru(s: &mut State) {
 
 /// The Settings search, typed in Latin letters with a typo, and the row a result opened.
 fn settings_find(s: &mut State) {
-    settings_ru_on(s, crate::ui::settings::SetTab::Startup);
+    settings_ru_on(s, crate::ui::settings::SetTab::General);
     s.settings_find = TextEdit::new("trei");
     s.settings_found = Some((crate::ui::settings::item_key(S::CloseToTray.get(Lang::Ru)), s.now + 600.0));
 }
@@ -745,12 +743,12 @@ fn light_np(s: &mut State) {
 
 fn effects_light(s: &mut State) {
     nowplaying(s);
-    s.settings.effects = Effects::Light;
+    s.settings.shaders = false;
 }
 
 fn effects_off(s: &mut State) {
     home(s);
-    s.settings.effects = Effects::Off;
+    s.settings.shaders = false;
 }
 
 fn amber(s: &mut State) {

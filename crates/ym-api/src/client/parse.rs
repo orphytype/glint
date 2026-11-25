@@ -46,16 +46,23 @@ pub(crate) fn from_value<T: DeserializeOwned>(v: Value, what: &str) -> Result<T>
     serde_json::from_value(v).map_err(|e| Error::Parse(format!("{what}: {e}")))
 }
 
-/// List items that may or may not be wrapped (`[{"album": {..}}, ..]` vs `[{..}, ..]`).
-pub(super) fn unwrap_items<T: DeserializeOwned>(v: Value, key: &str) -> Vec<T> {
+/// List items that may or may not be wrapped (`[{"album": {..}, "timestamp": ".."}, ..]` vs
+/// `[{..}, ..]`), sorted newest-added first whenever ISO-8601 `"timestamp"` fields are present.
+pub(super) fn unwrap_items_newest_first<T: DeserializeOwned>(v: Value, key: &str) -> Vec<T> {
     let Value::Array(items) = v else { return Vec::new() };
-    items
+    let mut stamped: Vec<(Option<String>, T)> = items
         .into_iter()
         .filter_map(|mut item| {
+            let ts = item.get("timestamp").and_then(Value::as_str).map(str::to_owned);
             let inner = item.get_mut(key).filter(|x| x.is_object()).map(Value::take);
-            serde_json::from_value(inner.unwrap_or(item)).ok()
+            let parsed = serde_json::from_value(inner.unwrap_or(item)).ok()?;
+            Some((ts, parsed))
         })
-        .collect()
+        .collect();
+    if stamped.iter().any(|(ts, _)| ts.is_some()) {
+        stamped.sort_by(|a, b| b.0.cmp(&a.0));
+    }
+    stamped.into_iter().map(|(_, v)| v).collect()
 }
 
 fn truncate(s: &str, max: usize) -> String {

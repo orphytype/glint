@@ -29,7 +29,7 @@ pub fn page(s: &State) -> El {
         .min_w(0.0)
         .color(th::text())
         .placeholder(S::TokenHint.get(lang), th::text3())
-        .caret(p.accent, p.accent.alpha(0.30))
+        .caret(s.caret_color(s.login.token.focused, p.accent), p.accent.alpha(0.30))
         .on_edit(|s: &mut State| &mut s.login.token)
         .on_submit(|s: &mut State, _tx: &mut Tx| s.submit_token());
     if !s.login.reveal {
@@ -106,7 +106,12 @@ pub fn page(s: &State) -> El {
         }),
     );
 
-    let mut card = col().key("login-card").w(420.0).padding(28.0).transition(Transition::none()).child(kit::glass(Glass::Card, 28.0));
+    let card_tr = if crate::fx::cpu_mode() {
+        Transition::none()
+    } else {
+        Transition::asymmetric(Transition::offset(0.0, 14.0), Transition::none()).springs(th::PAGE_IN)
+    };
+    let mut card = col().key("login-card").w(420.0).padding(28.0).transition(card_tr).child(kit::glass(Glass::Card, 28.0));
     if !wide {
         card = card
             .child(label(S::Welcome.get(lang), th::H1, th::text()).wrap().w_full())
@@ -114,7 +119,7 @@ pub fn page(s: &State) -> El {
     }
     card = card.child(step("1", S::LoginStep1.get(lang), open)).child(step("2", S::LoginStep2.get(lang), sign_in).mt(24.0));
     if let Some(e) = s.login.error {
-        card = card.child(label(e.get(lang), th::SMALL, th::rgb(0xe5503f)).wrap().w_full().mt(10.0));
+        card = card.child(label(e.get(lang), th::SMALL, th::rgb(0xe5503f)).key("login-err").transition(kit::pop_in(0.96, -4.0, th::RISE)).wrap().w_full().mt(10.0));
     }
     card = card.child(el().w_full().h(1.0).mt(24.0).mb(18.0).fill(th::hairline())).child(
         row()

@@ -78,6 +78,10 @@ impl State {
     }
 
     pub fn load_library_tab(&mut self, tab: LibTab) {
+        if self.library.tab != tab {
+            self.art.bump_page();
+            self.art_trim_at = Some(self.now + 1.2);
+        }
         self.library.tab = tab;
         self.preload_library();
     }
@@ -280,7 +284,9 @@ impl State {
         self.job(async move { b.album(&id, &fc, fc_on).await }, move |s, _, res| match res {
             Ok(a) => {
                 let tracks: Vec<Track> = a.tracks().cloned().collect();
-                s.play_list_from(tracks, S::Album, title, Page::Album(a.id));
+                let k = crate::app::album_kind_name(&a);
+                let kind = if k == S::Album && tracks.len() == 1 { S::Single } else { k };
+                s.play_list_from(tracks, kind, title, Page::Album(a.id));
             }
             Err(e) => s.error_toast(&e),
         });

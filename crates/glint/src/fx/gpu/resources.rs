@@ -1,6 +1,6 @@
 //! Blur pyramids and dynamic GPU textures (stage live readings, seek waveform, backdrop, art).
 
-use super::{Gpu, HDR, Pipe};
+use super::{Gpu, HDR, PYR_FMT, Pipe};
 
 const MAX_LEVELS: u32 = 7;
 
@@ -60,7 +60,7 @@ impl Gpu {
             mip_level_count: region.levels,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: HDR,
+            format: PYR_FMT,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
@@ -103,7 +103,7 @@ impl Gpu {
             return;
         }
         // Check both pipelines before marking the pyramid's `source_key` as valid.
-        if !self.has_pipe(HDR, Pipe::Down0) || (region.levels > 1 && !self.has_pipe(HDR, Pipe::Down)) {
+        if !self.has_pipe(PYR_FMT, Pipe::Down0) || (region.levels > 1 && !self.has_pipe(PYR_FMT, Pipe::Down)) {
             return;
         }
         if self.pyrs.get(&key).is_none_or(|p| p.mips.len() != region.levels as usize) {
@@ -125,7 +125,7 @@ impl Gpu {
         let first_bind = &self.first_binds[first_idx].1;
         for k in 0..region.levels as usize {
             let (pipe, bind) = if k == 0 { (Pipe::Down0, first_bind) } else { (Pipe::Down, &p.binds[k - 1]) };
-            let pipeline = &self.pipes[&(HDR, pipe)];
+            let pipeline = &self.pipes[&(PYR_FMT, pipe)];
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("blur pyramid"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -273,13 +273,6 @@ impl Gpu {
             self.art_t = 1.0;
             self.art = Some(view);
         }
-        let sharp = if thumb.sharp_side > 0 && !thumb.sharp.is_empty() {
-            Self::art_texture(device, queue, thumb.sharp_side, thumb.sharp_side, &thumb.sharp).1
-        } else {
-            self.art.clone().unwrap_or_else(|| self.dummy.clone())
-        };
-        self.sharp[1] = if first { Some(sharp.clone()) } else { self.sharp[0].take() };
-        self.sharp[0] = Some(sharp);
         self.art_id = id;
         !first
     }

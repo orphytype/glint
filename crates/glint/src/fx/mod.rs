@@ -100,11 +100,18 @@ fn hex3(c: [f32; 3]) -> u32 {
     (q(c[0]) << 16) | (q(c[1]) << 8) | q(c[2])
 }
 
-/// Readiness flags for staged shader bring-up.
+/// Readiness flags for lazy per-pipeline bring-up.
 pub static READY: AtomicBool = AtomicBool::new(false);
 pub static GLASS_READY: AtomicBool = AtomicBool::new(false);
-pub static SHAPES_READY: AtomicBool = AtomicBool::new(false);
+pub static WAVE_READY: AtomicBool = AtomicBool::new(false);
+pub static STAGE_READY: AtomicBool = AtomicBool::new(false);
+pub static BARS_READY: AtomicBool = AtomicBool::new(false);
+pub static MOOD_READY: AtomicBool = AtomicBool::new(false);
+pub static RIBBON_READY: AtomicBool = AtomicBool::new(false);
 pub static GPU_UP: AtomicBool = AtomicBool::new(false);
+/// Incremented each time a background shader compile batch completes so the runtime can trim
+/// cold DXC/driver compiler heap pages shortly after.
+pub static PIPES_SETTLED_GEN: AtomicU64 = AtomicU64::new(0);
 
 /// Where the pointer is over My Wave's liquid (in liquid units).
 pub(super) static WAVE_POINTER: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
@@ -114,9 +121,28 @@ pub fn set_wave_pointer(x: f32, y: f32) {
     WAVE_POINTER[1].store(y.to_bits(), Ordering::Relaxed);
 }
 
+/// Where the track stage focal center sits inside `hm-wave-shape` (normalized `(fx, fy, min_w_frac, zoom)`).
+pub(super) static WAVE_FRAME: [AtomicU32; 4] = [
+    AtomicU32::new(0.65f32.to_bits()),
+    AtomicU32::new(0.50f32.to_bits()),
+    AtomicU32::new(0.62f32.to_bits()),
+    AtomicU32::new(1.0f32.to_bits()),
+];
+
+pub fn set_wave_frame(fx: f32, fy: f32, min_w_frac: f32, zoom: f32) {
+    WAVE_FRAME[0].store(fx.to_bits(), Ordering::Relaxed);
+    WAVE_FRAME[1].store(fy.to_bits(), Ordering::Relaxed);
+    WAVE_FRAME[2].store(min_w_frac.to_bits(), Ordering::Relaxed);
+    WAVE_FRAME[3].store(zoom.to_bits(), Ordering::Relaxed);
+}
+
 pub(super) static WANTS_TICK: AtomicBool = AtomicBool::new(false);
 pub(super) static TICK_ARMED: AtomicBool = AtomicBool::new(false);
+/// Compositor tick interval in microseconds (33_333 = 30 Hz default, 41_667 = 24 Hz when only
+/// the Now Playing My Wave ribbon is animating).
+pub(super) static TICK_STEP_US: AtomicU32 = AtomicU32::new(33_333);
 pub(super) static EFFECTS_OFF: AtomicBool = AtomicBool::new(false);
+pub(super) static CPU_MODE: AtomicBool = AtomicBool::new(false);
 pub(super) static LAST_DRAW_CLOCK: AtomicU64 = AtomicU64::new(0);
 pub(super) static STAT_PYR_COUNT: AtomicU32 = AtomicU32::new(0);
 pub(super) static STAT_PYR_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -131,6 +157,11 @@ pub fn wants_tick() -> bool {
     WANTS_TICK.load(Ordering::Relaxed)
 }
 
+/// Requested compositor frame interval in seconds (1/24 s for ribbon-only frames, 1/30 s otherwise).
+pub fn tick_step_s() -> f64 {
+    f64::from(TICK_STEP_US.load(Ordering::Relaxed).max(16_667)) / 1_000_000.0
+}
+
 pub fn arm_tick() {
     TICK_ARMED.store(true, Ordering::Relaxed);
 }
@@ -143,16 +174,28 @@ pub fn last_draw_clock() -> f64 {
     f64::from_bits(LAST_DRAW_CLOCK.load(Ordering::Relaxed))
 }
 
+pub fn set_cpu_mode(on: bool) {
+    CPU_MODE.store(on, Ordering::Relaxed);
+}
+
+pub fn cpu_mode() -> bool {
+    CPU_MODE.load(Ordering::Relaxed)
+}
+
 pub fn set_effects_off(off: bool) {
     EFFECTS_OFF.store(off, Ordering::Relaxed);
 }
 
+pub fn shaders_enabled() -> bool {
+    !CPU_MODE.load(Ordering::Relaxed) && !EFFECTS_OFF.load(Ordering::Relaxed)
+}
+
 pub fn ready() -> bool {
-    READY.load(Ordering::Relaxed)
+    shaders_enabled() && READY.load(Ordering::Relaxed)
 }
 
 pub fn glass_ready() -> bool {
-    GLASS_READY.load(Ordering::Relaxed)
+    shaders_enabled() && GLASS_READY.load(Ordering::Relaxed)
 }
 
 thread_local! {
@@ -163,14 +206,34 @@ pub fn set_resizing(active: bool) {
     RESIZING.set(active);
 }
 
-/// While the window edge moves or effects are turned off, draw plain tinted panes without
+/// While the window edge moves or shaders are turned off, draw plain tinted panes without
 /// allocating or copying a full-window backdrop.
 pub fn glass_enabled() -> bool {
-    glass_ready() && !RESIZING.get() && !EFFECTS_OFF.load(Ordering::Relaxed)
+    glass_ready() && !RESIZING.get()
 }
 
-pub fn shapes_ready() -> bool {
-    off_mask() & OFF_SHAPES == 0 && SHAPES_READY.load(Ordering::Relaxed)
+pub fn wave_ready() -> bool {
+    shaders_enabled() && off_mask() & OFF_SHAPES == 0 && WAVE_READY.load(Ordering::Relaxed)
+}
+
+pub fn stage_ready() -> bool {
+    shaders_enabled() && off_mask() & OFF_STAGE == 0 && STAGE_READY.load(Ordering::Relaxed)
+}
+
+pub fn bars_ready() -> bool {
+    shaders_enabled() && off_mask() & OFF_BARS == 0 && BARS_READY.load(Ordering::Relaxed)
+}
+
+pub fn mood_ready() -> bool {
+    shaders_enabled() && off_mask() & OFF_SHAPES == 0 && MOOD_READY.load(Ordering::Relaxed)
+}
+
+pub fn ribbon_ready() -> bool {
+    shaders_enabled() && off_mask() & OFF_SHAPES == 0 && RIBBON_READY.load(Ordering::Relaxed)
+}
+
+pub fn pipes_settled_gen() -> u64 {
+    PIPES_SETTLED_GEN.load(Ordering::Relaxed)
 }
 
 pub fn gpu_up() -> bool {
@@ -181,10 +244,20 @@ pub fn gpu_up() -> bool {
 /// hidden main window can drop them (`release_gpu`) while the mini player keeps playing.
 static PARKED: Mutex<Option<(Option<Gpu>, Option<FxRenderer>)>> = Mutex::new(None);
 
-/// Drops the compositor's textures, buffers and pipelines. The next frame makes them again.
+/// Drops the compositor's textures, buffers and pipelines. The next frame makes them again if needed.
 pub fn release_gpu() {
     let parked = PARKED.lock().map(|mut p| p.take()).unwrap_or_default();
     drop(parked);
+    READY.store(false, Ordering::Relaxed);
+    GLASS_READY.store(false, Ordering::Relaxed);
+    WAVE_READY.store(false, Ordering::Relaxed);
+    STAGE_READY.store(false, Ordering::Relaxed);
+    BARS_READY.store(false, Ordering::Relaxed);
+    MOOD_READY.store(false, Ordering::Relaxed);
+    RIBBON_READY.store(false, Ordering::Relaxed);
+    STAT_PYR_COUNT.store(0, Ordering::Relaxed);
+    STAT_PYR_BYTES.store(0, Ordering::Relaxed);
+    STAT_UBUFS.store(0, Ordering::Relaxed);
 }
 
 pub fn snap_slot(el: rune::El) -> rune::El {
@@ -224,15 +297,19 @@ pub struct Gfx {
     smooth: Smooth,
     animating: bool,
     drew_own: bool,
-    field_t: f32,
     idle: f32,
+    field_t: f32,
     morph_t: f32,
     marker_run: f32,
     morph_on: bool,
-    morph_avg: [f32; 3],
     morph_bars: [f32; 3],
     shape_t: f32,
     shape_music: f32,
+    /// Monotonic fluid clock, smooth audio energy, and crossfaded RGB tint for Home's My Wave orb.
+    wave_t: f32,
+    wave_energy: f32,
+    wave_rgb: [f32; 3],
+    wave_rgb_init: bool,
     wave_ptr: [f32; 3],
     shapes: HashMap<u32, [f32; 4]>,
     shapes_gone: f32,
@@ -257,6 +334,9 @@ pub struct Gfx {
     cpu_ms: f64,
     fps_at: f64,
     prof: Option<Prof>,
+    was_building: bool,
+    last_atlas_rest: f64,
+    last_art_evict_gen: u64,
 }
 
 impl Gfx {
@@ -267,15 +347,18 @@ impl Gfx {
             smooth: Smooth::new(),
             animating: true,
             drew_own: true,
-            field_t: 0.0,
             idle: 0.0,
+            field_t: 0.0,
             morph_t: 0.0,
             marker_run: 0.0,
             morph_on: false,
-            morph_avg: [0.05; 3],
             morph_bars: [0.0; 3],
             shape_t: 0.0,
             shape_music: 0.0,
+            wave_t: 0.0,
+            wave_energy: 0.0,
+            wave_rgb: [0.55, 0.38, 0.92],
+            wave_rgb_init: false,
             wave_ptr: [0.0; 3],
             shapes: HashMap::new(),
             shapes_gone: 1.0,
@@ -299,6 +382,9 @@ impl Gfx {
             cpu_ms: 0.0,
             fps_at: 0.0,
             prof: None,
+            was_building: false,
+            last_atlas_rest: 0.0,
+            last_art_evict_gen: 0,
         }
     }
 }

@@ -18,16 +18,16 @@ use crate::i18n::S;
 use crate::theme as th;
 
 pub use dialogs::{delete_download_confirm, delete_playlist_confirm, download_confirm, name_dialog};
-pub use panels::{look_changed, lyric_rows, reset_look, set_stage_value, stage_rows, stage_value};
+pub use panels::{look_changed, lyric_rows, reset_look, set_stage_value, stage_value};
 pub use track::{overlay, track_link};
 
-pub(super) const W: f32 = 248.0;
+pub(super) const W: f32 = 228.0;
 const RADIUS: f32 = 12.0;
 pub(super) const PAD: f32 = 4.0;
 pub(super) const EDGE: f32 = 12.0;
 const GAP: f32 = 6.0;
-const DIVIDER: f32 = 9.0;
-pub(super) const HEAD: f32 = 44.0;
+const DIVIDER: f32 = 7.0;
+pub(super) const HEAD: f32 = 40.0;
 
 pub(super) enum Entry {
     Row(El),
@@ -136,21 +136,20 @@ pub(super) fn flow_menu(name: &'static str, t: f32, open: bool, flow: &Flow, ent
 pub fn popover(s: &State, cx: &Cx<State>, w: f32, h: f32) -> El {
     let Some(p) = &s.popover else { return el() };
     let (list, width) = match p {
-        Popover::Actions { .. } => (popovers::action_entries(s), 248.0),
-        Popover::Waves { choices, .. } => (popovers::wave_entries(s, choices), 300.0),
-        Popover::Quality { .. } => (popovers::quality_entries(s), 272.0),
+        Popover::Actions { .. } => (popovers::action_entries(s), 228.0),
+        Popover::Waves { choices, .. } => (popovers::wave_entries(s, choices), 276.0),
+        Popover::Quality { .. } => (popovers::quality_entries(s), 248.0),
         Popover::Stage { .. } => {
             let pw = panels::stage_w(s, w, h);
             (panels::stage_entries(s, pw, h), pw)
         }
-        Popover::Pinned { item, .. } => (popovers::pinned_entries(s, item), 208.0),
-        Popover::Downloads { .. } => (popovers::download_entries(s), 300.0),
-        Popover::Liked { .. } => (popovers::liked_entries(s), 260.0),
-        Popover::EqPreset { .. } => (popovers::eq_entries(s), 200.0),
-        Popover::TrackSort { .. } => (popovers::track_sort_entries(s), 220.0),
-        Popover::LibSort { .. } => (popovers::lib_sort_entries(s), 220.0),
-        Popover::DiscSort { .. } => (popovers::disc_sort_entries(s), 220.0),
-        Popover::WaveTune { .. } => (panels::wave_tune_entries(s, h), panels::TUNE_W),
+        Popover::Pinned { item, .. } => (popovers::pinned_entries(s, item), 192.0),
+        Popover::Downloads { .. } => (popovers::download_entries(s), 288.0),
+        Popover::Liked { .. } => (popovers::liked_entries(s), 240.0),
+        Popover::EqPreset { .. } => (popovers::eq_entries(s), 184.0),
+        Popover::TrackSort { .. } => (popovers::track_sort_entries(s), 196.0),
+        Popover::LibSort { .. } => (popovers::lib_sort_entries(s), 196.0),
+        Popover::DiscSort { .. } => (popovers::disc_sort_entries(s), 196.0),
         Popover::Update { .. } => (popovers::update_entries(s), popovers::UPDATE_W),
     };
     let mut flow = place_w(cx, &PopupAnchor::Key(p.anchor().into()), width, height(&list), w, h);
@@ -167,16 +166,24 @@ const VOL_NOTCHES: usize = 15;
 const VOL_TOP: f32 = 34.0;
 const VOL_BOTTOM: f32 = 12.0;
 
-/// Renders the dock's vertical notched volume card.
+/// Renders the vertical notched volume card expanding upwards from the active volume button
+/// (Home's inline playback bar or the collapsed player dock).
 pub fn volume(s: &State, cx: &Cx<State>, w: f32, h: f32) -> El {
     let t = s.vol.t;
-    let (from, from_radius) = match cx.window_layout("vol-btn").or_else(|| cx.window_layout("vol-mute")) {
-        Some(r) => (r, r[2].min(r[3]) * 0.5),
-        None => ([w * 0.5, h * 0.5, 0.0, 0.0], 0.0),
+    let (from, from_radius, on_home) = match cx.window_layout("hm-vol") {
+        Some(r) => (r, r[2].min(r[3]) * 0.5, true),
+        None => match cx.window_layout("vol-btn").or_else(|| cx.window_layout("vol-mute")) {
+            Some(r) => (r, r[2].min(r[3]) * 0.5, false),
+            None => ([w * 0.5, h * 0.5, 0.0, 0.0], 0.0, false),
+        },
     };
     let cx_mid = from[0] + from[2] * 0.5;
-    let dock_top = h - kit::BAR_GAP - kit::BAR_H;
-    let to_y = (dock_top - 10.0 - VOL_H).min(from[1] - GAP - VOL_H).max(EDGE);
+    let to_y = if on_home {
+        (from[1] - GAP - VOL_H).max(EDGE)
+    } else {
+        let dock_top = h - kit::BAR_GAP - kit::BAR_H;
+        (dock_top - 10.0 - VOL_H).min(from[1] - GAP - VOL_H).max(EDGE)
+    };
     let to = [(cx_mid - VOL_W * 0.5).clamp(EDGE, (w - VOL_W - EDGE).max(EDGE)), to_y, VOL_W, VOL_H];
     let e = t.max(0.0);
     let lerp = |a: f32, b: f32| a + (b - a) * e;
@@ -264,8 +271,8 @@ pub fn profile(s: &State, cx: &Cx<State>, w: f32, h: f32) -> El {
     let list = vec![
         Entry::Head(head),
         Entry::Divider,
-        Entry::Row(entry("menu-account", &icons::USER, S::Account.get(lang), s.settings_open && s.settings_tab == super::settings::SetTab::Account).on_press(|s: &mut State| {
-            s.settings_tab = super::settings::SetTab::Account;
+        Entry::Row(entry("menu-account", &icons::USER, S::Account.get(lang), s.settings_open && s.settings_tab == super::settings::SetTab::General).on_press(|s: &mut State| {
+            s.settings_tab = super::settings::SetTab::General;
             s.open_settings();
         })),
         Entry::Divider,

@@ -18,7 +18,8 @@ pub type Result<T> = std::result::Result<T, ym_api::Error>;
 pub fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
-        let workers = std::thread::available_parallelism().map_or(2, std::num::NonZero::get).clamp(2, 4);
+        let cap = if crate::fx::cpu_mode() { 2 } else { 4 };
+        let workers = std::thread::available_parallelism().map_or(2, std::num::NonZero::get).clamp(2, cap);
         tokio::runtime::Builder::new_multi_thread().worker_threads(workers).enable_all().thread_name("glint-net").build().expect("tokio runtime")
     })
 }
@@ -133,43 +134,78 @@ pub fn fixture_playing_quality(track: &Track, pref: crate::store::QualityPref) -
     }
 }
 
-/// What `audio` hands back: the file, container, stream format/bitrate and source flags.
+/// What `audio` hands back for offline download tagging: raw bytes, container, and source flag.
 pub struct Audio {
     pub bytes: Arc<[u8]>,
     pub ext: &'static str,
-    pub quality: StreamQuality,
-    /// Loaded from the local download store instead of fetched over the network.
-    pub from_disk: bool,
     /// FckCensor's uncensored version of the track, not Yandex's own.
     pub clean: bool,
 }
 
-/// Estimates average audio bitrate in kbps from the raw payload bytes and track duration,
-/// skipping FLAC metadata blocks and ID3v2 tags (including embedded cover art).
-fn estimate_bitrate_kbps(bytes: &[u8], ext: &str, duration_ms: Option<u64>) -> u32 {
+/// Disk-backed playback audio handle (64 KiB read buffer in RAM instead of holding whole FLAC/MP3
+/// files in memory).
+pub struct StreamAudio {
+    pub data: ym_audio::AudioData,
+    pub ext: &'static str,
+    pub quality: StreamQuality,
+    pub from_disk: bool,
+    pub clean: bool,
+}
+
+fn temp_stream_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join("glint-stream")
+}
+
+/// Removes stale temporary audio stream files left by a previous session.
+pub fn sweep_temp_streams() {
+    let dir = temp_stream_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    for entry in entries.flatten() {
+        let _ = std::fs::remove_file(entry.path());
+    }
+}
+
+fn next_temp_stream_path(track_id: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let dir = temp_stream_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let clean: String = track_id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(24).collect();
+    dir.join(format!("s-{}-{n}-{clean}.bin", std::process::id()))
+}
+
+fn read_file_head(path: &std::path::Path) -> Vec<u8> {
+    use std::io::Read as _;
+    let Ok(mut f) = std::fs::File::open(path) else { return Vec::new() };
+    let mut buf = vec![0u8; 4096];
+    let n = f.read(&mut buf).unwrap_or(0);
+    buf.truncate(n);
+    buf
+}
+
+/// Estimates average audio bitrate in kbps from the total file size and the file's leading header
+/// bytes without loading the whole file into RAM.
+fn estimate_bitrate_from_head(head: &[u8], total_len: u64, ext: &str, duration_ms: Option<u64>) -> u32 {
     let Some(dur_ms) = duration_ms.filter(|&d| d > 0) else { return 0 };
-    let payload = if ext == "flac" && bytes.starts_with(b"fLaC") {
+    let header_bytes: u64 = if ext == "flac" && head.starts_with(b"fLaC") {
         let mut off = 4usize;
-        while off + 4 <= bytes.len() {
-            let head = bytes[off];
-            let len = ((bytes[off + 1] as usize) << 16) | ((bytes[off + 2] as usize) << 8) | (bytes[off + 3] as usize);
+        while off + 4 <= head.len() {
+            let h = head[off];
+            let len = ((head[off + 1] as usize) << 16) | ((head[off + 2] as usize) << 8) | (head[off + 3] as usize);
             off = off.saturating_add(4).saturating_add(len);
-            if head & 0x80 != 0 {
+            if h & 0x80 != 0 {
                 break;
             }
         }
-        if off < bytes.len() { bytes.len() - off } else { bytes.len() }
-    } else if bytes.len() > 10 && &bytes[0..3] == b"ID3" {
-        let tag = ((usize::from(bytes[6] & 0x7f) << 21)
-            | (usize::from(bytes[7] & 0x7f) << 14)
-            | (usize::from(bytes[8] & 0x7f) << 7)
-            | usize::from(bytes[9] & 0x7f))
-            + 10;
-        if tag < bytes.len() { bytes.len() - tag } else { bytes.len() }
+        off as u64
+    } else if head.len() > 10 && &head[0..3] == b"ID3" {
+        ((u64::from(head[6] & 0x7f) << 21) | (u64::from(head[7] & 0x7f) << 14) | (u64::from(head[8] & 0x7f) << 7) | u64::from(head[9] & 0x7f)) + 10
     } else {
-        bytes.len()
+        0
     };
-    ((payload as u64 * 8 + dur_ms / 2) / dur_ms) as u32
+    let payload = if header_bytes < total_len { total_len - header_bytes } else { total_len };
+    ((payload * 8 + dur_ms / 2) / dur_ms) as u32
 }
 
 /// The container an audio file really is, from its first bytes. Cached downloads have no codec
@@ -646,16 +682,14 @@ impl Backend {
                     && let Some(bytes) = find("replacement")
                 {
                     let ext = sniff_ext(&bytes);
-                    let quality = StreamQuality { codec: AudioCodec::from_ext(ext), bitrate_kbps: estimate_bitrate_kbps(&bytes, ext, track.duration_ms) };
-                    return Ok(Audio { bytes, ext, quality, from_disk: true, clean: true });
+                    return Ok(Audio { bytes, ext, clean: true });
                 }
                 let local = find("original");
                 if replacement.is_none()
                     && let Some(bytes) = local.clone()
                 {
                     let ext = sniff_ext(&bytes);
-                    let quality = StreamQuality { codec: AudioCodec::from_ext(ext), bitrate_kbps: estimate_bitrate_kbps(&bytes, ext, track.duration_ms) };
-                    return Ok(Audio { bytes, ext, quality, from_disk: true, clean: false });
+                    return Ok(Audio { bytes, ext, clean: false });
                 }
                 // With the original on disk, the clean version gets only a short wait: offline,
                 // the download must not sit behind a connection that never comes. Without a local
@@ -669,14 +703,12 @@ impl Backend {
                     if let Some(data) = fetched {
                         let bytes: Arc<[u8]> = data.into();
                         let ext = sniff_ext(&bytes);
-                        let quality = StreamQuality { codec: AudioCodec::from_ext(ext), bitrate_kbps: estimate_bitrate_kbps(&bytes, ext, track.duration_ms) };
-                        return Ok(Audio { bytes, ext, quality, from_disk: false, clean: true });
+                        return Ok(Audio { bytes, ext, clean: true });
                     }
                 }
                 if let Some(bytes) = local {
                     let ext = sniff_ext(&bytes);
-                    let quality = StreamQuality { codec: AudioCodec::from_ext(ext), bitrate_kbps: estimate_bitrate_kbps(&bytes, ext, track.duration_ms) };
-                    return Ok(Audio { bytes, ext, quality, from_disk: true, clean: false });
+                    return Ok(Audio { bytes, ext, clean: false });
                 }
                 let info = c.stream(&track.id, quality).await?;
                 let data = c.fetch_audio(&info, |_, _| {}).await?;
@@ -690,12 +722,95 @@ impl Backend {
                 } else {
                     sniff_ext(&bytes)
                 };
+                Ok(Audio { bytes, ext, clean: false })
+            }
+            Backend::None => Err(no_session()),
+        }
+    }
+
+    /// Opens a seekable disk-backed audio stream for playback so large FLAC/MP3 tracks never sit
+    /// whole in RAM. Offline downloads open straight from disk; online streams write to a small
+    /// temporary file deleted automatically when playback finishes.
+    pub async fn audio_stream(
+        &self,
+        track: &Track,
+        quality: ym_api::Quality,
+        downloads: Option<Arc<DownloadStore>>,
+        fkcensor: &crate::fkcensor::FkCensor,
+        fkcensor_on: bool,
+    ) -> Result<StreamAudio> {
+        match self {
+            #[cfg(feature = "tooling")]
+            Backend::Fixture(_) => Err(ym_api::Error::Api("the scene fixtures have no audio".into())),
+            Backend::Live(c) => {
+                if fkcensor_on {
+                    fkcensor.ensure_loaded(c).await;
+                }
+                let replacement = fkcensor_on.then(|| fkcensor.replacement(&track.id)).flatten();
+                let q = format!("{quality:?}");
+                let find_path = |variant: &str| {
+                    let disk = downloads.as_ref()?;
+                    disk.find_audio_path(&track.id, &q, variant)
+                };
+                if replacement.is_some()
+                    && let Some((path, len)) = find_path("replacement")
+                {
+                    let head = read_file_head(&path);
+                    let ext = sniff_ext(&head);
+                    let quality = StreamQuality { codec: AudioCodec::from_ext(ext), bitrate_kbps: estimate_bitrate_from_head(&head, len, ext, track.duration_ms) };
+                    return Ok(StreamAudio { data: ym_audio::AudioData::file(path, len), ext, quality, from_disk: true, clean: true });
+                }
+                let local = find_path("original");
+                if replacement.is_none()
+                    && let Some((path, len)) = local.clone()
+                {
+                    let head = read_file_head(&path);
+                    let ext = sniff_ext(&head);
+                    let quality = StreamQuality { codec: AudioCodec::from_ext(ext), bitrate_kbps: estimate_bitrate_from_head(&head, len, ext, track.duration_ms) };
+                    return Ok(StreamAudio { data: ym_audio::AudioData::file(path, len), ext, quality, from_disk: true, clean: false });
+                }
+                if let Some(replacement) = replacement {
+                    let tmp = next_temp_stream_path(&track.id);
+                    let fetched = if local.is_some() {
+                        tokio::time::timeout(std::time::Duration::from_secs(4), c.fetch_fkcensor_audio_to_file(&replacement.url, &tmp)).await.ok().and_then(Result::ok)
+                    } else {
+                        c.fetch_fkcensor_audio_to_file(&replacement.url, &tmp).await.ok()
+                    };
+                    if let Some((len, head)) = fetched {
+                        let ext = sniff_ext(&head);
+                        let quality = StreamQuality { codec: AudioCodec::from_ext(ext), bitrate_kbps: estimate_bitrate_from_head(&head, len, ext, track.duration_ms) };
+                        return Ok(StreamAudio { data: ym_audio::AudioData::temp_file(tmp, len), ext, quality, from_disk: false, clean: true });
+                    }
+                    let _ = std::fs::remove_file(&tmp);
+                }
+                if let Some((path, len)) = local {
+                    let head = read_file_head(&path);
+                    let ext = sniff_ext(&head);
+                    let quality = StreamQuality { codec: AudioCodec::from_ext(ext), bitrate_kbps: estimate_bitrate_from_head(&head, len, ext, track.duration_ms) };
+                    return Ok(StreamAudio { data: ym_audio::AudioData::file(path, len), ext, quality, from_disk: true, clean: false });
+                }
+                let info = c.stream(&track.id, quality).await?;
+                let tmp = next_temp_stream_path(&track.id);
+                let (len, head) = match c.fetch_audio_to_file(&info, &tmp).await {
+                    Ok(out) => out,
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&tmp);
+                        return Err(e);
+                    }
+                };
+                let ext = if info.codec.contains("flac") {
+                    "flac"
+                } else if info.codec.contains("aac") {
+                    "m4a"
+                } else {
+                    sniff_ext(&head)
+                };
                 let codec = match AudioCodec::from_ext(ext) {
                     AudioCodec::Other => AudioCodec::from_codec(&info.codec),
                     c => c,
                 };
-                let bitrate_kbps = if info.bitrate_kbps > 0 { info.bitrate_kbps } else { estimate_bitrate_kbps(&bytes, ext, track.duration_ms) };
-                Ok(Audio { bytes, ext, quality: StreamQuality { codec, bitrate_kbps }, from_disk: false, clean: false })
+                let bitrate_kbps = if info.bitrate_kbps > 0 { info.bitrate_kbps } else { estimate_bitrate_from_head(&head, len, ext, track.duration_ms) };
+                Ok(StreamAudio { data: ym_audio::AudioData::temp_file(tmp, len), ext, quality: StreamQuality { codec, bitrate_kbps }, from_disk: false, clean: false })
             }
             Backend::None => Err(no_session()),
         }

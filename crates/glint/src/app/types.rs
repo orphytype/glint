@@ -9,6 +9,7 @@ use crate::store::PinnedSetting;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Page {
     Home,
+    Explore,
     Search,
     Library,
     Album(String),
@@ -56,6 +57,7 @@ impl Page {
     pub fn key(&self) -> String {
         match self {
             Page::Home => "home".into(),
+            Page::Explore => "explore".into(),
             Page::Search => "search".into(),
             Page::Library => "library".into(),
             Page::Album(id) => format!("album-{id}"),
@@ -65,7 +67,7 @@ impl Page {
     }
 
     pub fn is_root(&self) -> bool {
-        matches!(self, Page::Home | Page::Search | Page::Library)
+        matches!(self, Page::Home | Page::Explore | Page::Search | Page::Library)
     }
 
     /// Which rail item lights up.
@@ -323,6 +325,108 @@ impl TrackSort {
     }
 }
 
+/// The order of playlists in Library (default: most recently added/updated first).
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaylistSort {
+    #[default]
+    Recent,
+    Title,
+    MostTracks,
+    Longest,
+}
+
+impl PlaylistSort {
+    pub const ALL: [PlaylistSort; 4] = [PlaylistSort::Recent, PlaylistSort::Title, PlaylistSort::MostTracks, PlaylistSort::Longest];
+
+    pub fn name(self) -> S {
+        match self {
+            PlaylistSort::Recent => S::SortRecent,
+            PlaylistSort::Title => S::SortTitle,
+            PlaylistSort::MostTracks => S::SortMostTracks,
+            PlaylistSort::Longest => S::SortLongest,
+        }
+    }
+
+    pub fn sort_indices(self, items: &[ym_api::Playlist], indices: &mut [usize]) {
+        match self {
+            PlaylistSort::Recent => {}
+            PlaylistSort::Title => indices.sort_by_cached_key(|&i| items[i].title.to_lowercase()),
+            PlaylistSort::MostTracks => indices.sort_by_key(|&i| std::cmp::Reverse(items[i].track_count.unwrap_or(0))),
+            PlaylistSort::Longest => indices.sort_by_key(|&i| std::cmp::Reverse(items[i].duration_ms.unwrap_or(0))),
+        }
+    }
+}
+
+/// The order of liked albums in Library (default: most recently added to favorites first).
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlbumSort {
+    #[default]
+    Recent,
+    Newest,
+    Oldest,
+    Title,
+    Artist,
+}
+
+impl AlbumSort {
+    pub const ALL: [AlbumSort; 5] = [AlbumSort::Recent, AlbumSort::Newest, AlbumSort::Oldest, AlbumSort::Title, AlbumSort::Artist];
+
+    pub fn name(self) -> S {
+        match self {
+            AlbumSort::Recent => S::SortRecent,
+            AlbumSort::Newest => S::SortNewest,
+            AlbumSort::Oldest => S::SortOldest,
+            AlbumSort::Title => S::SortTitle,
+            AlbumSort::Artist => S::SortArtist,
+        }
+    }
+
+    pub fn sort_indices(self, items: &[Album], indices: &mut [usize]) {
+        match self {
+            AlbumSort::Recent => {}
+            AlbumSort::Newest => indices.sort_by(|&a, &b| {
+                let (xa, xb) = (&items[a], &items[b]);
+                (xb.year.unwrap_or(0), xb.release_date.as_deref().unwrap_or("")).cmp(&(xa.year.unwrap_or(0), xa.release_date.as_deref().unwrap_or("")))
+            }),
+            AlbumSort::Oldest => indices.sort_by(|&a, &b| {
+                let (xa, xb) = (&items[a], &items[b]);
+                (xa.year.unwrap_or(i32::MAX), xa.release_date.as_deref().unwrap_or("")).cmp(&(xb.year.unwrap_or(i32::MAX), xb.release_date.as_deref().unwrap_or("")))
+            }),
+            AlbumSort::Title => indices.sort_by_cached_key(|&i| items[i].title.to_lowercase()),
+            AlbumSort::Artist => indices.sort_by_cached_key(|&i| (items[i].artists_line().to_lowercase(), items[i].title.to_lowercase())),
+        }
+    }
+}
+
+/// The order of liked artists in Library (default: most recently added to favorites first).
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArtistSort {
+    #[default]
+    Recent,
+    Name,
+    NameDesc,
+}
+
+impl ArtistSort {
+    pub const ALL: [ArtistSort; 3] = [ArtistSort::Recent, ArtistSort::Name, ArtistSort::NameDesc];
+
+    pub fn name(self) -> S {
+        match self {
+            ArtistSort::Recent => S::SortRecent,
+            ArtistSort::Name => S::SortNameAsc,
+            ArtistSort::NameDesc => S::SortNameDesc,
+        }
+    }
+
+    pub fn sort_indices(self, items: &[Artist], indices: &mut [usize]) {
+        match self {
+            ArtistSort::Recent => {}
+            ArtistSort::Name => indices.sort_by_cached_key(|&i| items[i].name.to_lowercase()),
+            ArtistSort::NameDesc => indices.sort_by_cached_key(|&i| std::cmp::Reverse(items[i].name.to_lowercase())),
+        }
+    }
+}
+
 /// The order of an artist's releases.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiscSort {
@@ -383,6 +487,17 @@ pub fn release_kind_name(kind: Option<&str>) -> S {
     match kind {
         Some("single") => S::Single,
         Some("compilation") => S::Compilation,
+        _ => S::Album,
+    }
+}
+
+/// Identifies a release as single, compilation, or album, falling back to `track_count == 1`
+/// when Yandex Music omits `type: "single"` on an embedded album object.
+pub fn album_kind_name(al: &Album) -> S {
+    match al.kind.as_deref() {
+        Some("single") => S::Single,
+        Some("compilation") => S::Compilation,
+        _ if al.track_count == Some(1) => S::Single,
         _ => S::Album,
     }
 }

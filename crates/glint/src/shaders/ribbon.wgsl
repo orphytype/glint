@@ -6,7 +6,8 @@ fn fs_ribbon(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let k = max(u.misc.w, 1.0);
     let seed = u.p0.y;
     let packed = u.p0.z;
-    let T = u.p0.w;
+    // Cap the My Wave button ribbon effect to 24 FPS even when other UI elements redraw faster.
+    let T = floor(u.p0.w * 24.0) / 24.0;
     let hov = clamp(u.p1.x, 0.0, 1.0);
     let on = clamp(u.p1.y, 0.0, 1.0);
     let music = clamp(u.p1.w, 0.0, 1.0);
@@ -75,5 +76,7 @@ fn fs_ribbon(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let q = col * steps;
     col = (floor(q) + step(vec3<f32>(thr), fract(q))) / steps;
     let clip = rect_clip(p);
-    return vec4<f32>(work(col) * cov * clip, cov * clip);
+    let fade = clamp(1.0 - u.p2.y, 0.0, 1.0);
+    let out_a = cov * clip * fade;
+    return vec4<f32>(work(col) * out_a, out_a);
 }

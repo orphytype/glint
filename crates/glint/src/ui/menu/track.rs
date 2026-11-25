@@ -180,6 +180,12 @@ fn track_entries(s: &State, m: &TrackMenu, h: f32) -> Vec<Entry> {
             s.open_popover(Popover::Stage { anchor: look_anchor.clone() });
         })));
     }
+    if m.player {
+        out.push(Entry::Row(row_of("tm-mini", &np_icons::MINI, S::MiniPlayer.get(lang)).on_press(|s: &mut State| {
+            s.close_track_menu();
+            s.toggle_mini_player();
+        })));
+    }
     let tr = t.clone();
     out.push(Entry::Row(row_of("tm-details", &icons::INFO, S::Details.get(lang)).on_press(move |s: &mut State| s.open_sheet(Sheet::Track(Box::new(tr.clone()))))));
     out

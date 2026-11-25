@@ -168,7 +168,7 @@ pub fn name_dialog(s: &State, w: f32) -> El {
         .label(S::PlaylistName.get(lang))
         .color(th::text())
         .placeholder(S::PlaylistName.get(lang), th::text3())
-        .caret(p.accent, p.accent.alpha(0.30))
+        .caret(s.caret_color(s.name_edit.focused, p.accent), p.accent.alpha(0.30))
         .on_edit(|s: &mut State| &mut s.name_edit)
         .on_submit(|s: &mut State, _tx: &mut rune::Tx| s.submit_name());
     let empty = s.name_edit.text.trim().is_empty();
@@ -176,7 +176,10 @@ pub fn name_dialog(s: &State, w: f32) -> El {
         "name-dialog",
         w,
         title.get(lang),
-        vec![kit::field_surface(row().key("name-field-box").w_full().h(kit::BTN_H).px(14.0).items_center()).child(field)],
+        vec![
+            kit::field_surface(row().key("name-field-box").w_full().h(kit::BTN_H).px(14.0).items_center().clip_rounded(kit::FIELD_R))
+                .child(row().grow(1.0).min_w(0.0).h_full().items_center().clip_rounded(0.0).child(field)),
+        ],
         vec![
             kit::btn_soft("name-cancel", S::Cancel.get(lang), None).on_press(|s: &mut State| s.close_name_dialog()),
             kit::btn_primary("name-accept", action.get(lang), None).opacity(if empty { 0.45 } else { 1.0 }).on_press(|s: &mut State| s.submit_name()),

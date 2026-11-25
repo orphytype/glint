@@ -3,8 +3,8 @@
 use rune::{El, col, el, icon, row, text_input};
 
 use super::detail::{HEAD_COVER_R, HEAD_GAP, HEAD_SIDE, HEAD_SIDE_S, HEAD_STEP_BUTTONS, HEAD_STEP_BY};
-use super::shared::{GRID_GAP, album_card, artist_card, column, fit, grid, play_button, playlist_card, track_list};
-use crate::app::{LibTab, Load, Page, Popover, State, Station, TrackSort};
+use super::shared::{GRID_GAP, album_card_lazy, artist_card_lazy, card_row_h, column, fit, play_button, playlist_card_lazy, track_list, virtual_grid};
+use crate::app::{AlbumSort, ArtistSort, DiscKind, LibTab, Load, Page, PlaylistSort, Popover, State, Station, TrackSort};
 use crate::i18n::S;
 use crate::theme as th;
 use crate::ui::shapes::Ill;
@@ -86,19 +86,33 @@ pub(super) fn library(s: &State, w: f32) -> El {
         .min_w(0.0)
         .color(th::text())
         .placeholder(S::SearchCollection.get(lang), th::text3())
-        .caret(p.accent, p.accent.alpha(0.30))
+        .caret(s.caret_color(s.library.filter.focused, p.accent), p.accent.alpha(0.30))
         .on_edit(|s: &mut State| &mut s.library.filter);
     let clear = (!q.is_empty()).then(|| kit::search_clear("lib-search-clear", lang).on_press(|s: &mut State| s.library.filter.clear()));
     let field = kit::search_field("lib-search-field", LIB_CTL_H, input, clear);
     let cw = column(w);
     let new_pl = (tab == LibTab::Playlists).then(|| {
-        kit::field_icon_btn("lib-new-pl", &icons::PLUS, S::NewPlaylist.get(lang)).on_press_tx(|s: &mut State, tx: &mut rune::Tx| {
-                s.ask_new_playlist(None);
-                tx.focus_when_shown("name-field", false);
-            })
+        kit::field_icon_btn("lib-new-pl", &icons::PLUS, S::NewPlaylist.get(lang)).on_press(|s: &mut State| {
+            s.ask_new_playlist(None);
+        })
     });
-    let sort_now =
-        (tab == LibTab::Tracks && s.library.tracks.get().is_some_and(|v| v.len() > 2)).then(|| (s.library.sort != TrackSort::Original).then(|| s.library.sort.name().get(lang)));
+    let sort_now = match tab {
+        LibTab::Tracks => (s.library.tracks.get().is_some_and(|v| v.len() > 1) || s.library.sort != TrackSort::Original)
+            .then(|| (s.library.sort != TrackSort::Original).then(|| s.library.sort.name().get(lang))),
+        LibTab::Playlists => (s.library.playlists.get().is_some_and(|v| v.len() > 1) || s.library.playlist_sort != PlaylistSort::Recent)
+            .then(|| (s.library.playlist_sort != PlaylistSort::Recent).then(|| s.library.playlist_sort.name().get(lang))),
+        LibTab::Albums => (s.library.albums.get().is_some_and(|v| v.len() > 1) || s.library.album_sort != AlbumSort::Recent || s.library.album_kind != DiscKind::All).then(|| {
+            if s.library.album_kind != DiscKind::All {
+                Some(s.library.album_kind.name().get(lang))
+            } else if s.library.album_sort != AlbumSort::Recent {
+                Some(s.library.album_sort.name().get(lang))
+            } else {
+                None
+            }
+        }),
+        LibTab::Artists => (s.library.artists.get().is_some_and(|v| v.len() > 1) || s.library.artist_sort != ArtistSort::Recent)
+            .then(|| (s.library.artist_sort != ArtistSort::Recent).then(|| s.library.artist_sort.name().get(lang))),
+    };
     let sort_w = sort_now.map_or(0.0, kit::sort_button_w);
     let sort_btn = sort_now.map(|now| {
         let open = s.popover_open && matches!(s.popover, Some(Popover::LibSort { .. }));
@@ -169,7 +183,7 @@ pub(super) fn library(s: &State, w: f32) -> El {
         kit::page_title(S::Collection.get(lang), "").key("lib-head-compact").mt(8.0)
     };
     let body = col().gap(if tab == LibTab::Tracks { 32.0 } else { 20.0 }).child(kit::rise(head, 0)).child(kit::rise(bar, 1));
-    let (_, card) = fit(w, 144.0, GRID_GAP, 8);
+    let (cols, card) = fit(w, 144.0, GRID_GAP, 8);
     let nothing = |art: Ill| kit::empty(&p, art, S::Nothing.get(lang));
     let content = match tab {
         LibTab::Tracks => match &s.library.tracks {
@@ -195,17 +209,66 @@ pub(super) fn library(s: &State, w: f32) -> El {
         },
         LibTab::Playlists => match &s.library.playlists {
             Load::Ready(v) if v.is_empty() => nothing(Ill::Shelf),
-            Load::Ready(v) => grid(pick(v.len(), &|i| vec![v[i].title.clone()]).into_iter().map(|i| playlist_card(s, &v[i], card)).collect()),
+            Load::Ready(v) => {
+                let mut shown = pick(v.len(), &|i| vec![v[i].title.clone()]);
+                s.library.playlist_sort.sort_indices(v, &mut shown);
+                let shown = std::sync::Arc::new(shown);
+                if shown.is_empty() {
+                    nothing(Ill::Lens)
+                } else {
+                    let n = shown.len();
+                    virtual_grid(format!("lib-pl-grid-{cols}"), n, cols, card_row_h(card, false), move |s, pos, load_art| {
+                        match s.library.playlists.get().and_then(|v| shown.get(pos).and_then(|&i| v.get(i))) {
+                            Some(pl) => playlist_card_lazy(s, pl, card, load_art),
+                            None => el().w(card),
+                        }
+                    })
+                }
+            }
             other => kit::list_state(other, s).unwrap_or_else(el),
         },
         LibTab::Albums => match &s.library.albums {
             Load::Ready(v) if v.is_empty() => nothing(Ill::Shelf),
-            Load::Ready(v) => grid(pick(v.len(), &|i| vec![v[i].title.clone(), v[i].artists_line()]).into_iter().map(|i| album_card(s, &v[i], card)).collect()),
+            Load::Ready(v) => {
+                let kind = s.library.album_kind;
+                let mut shown = pick(v.len(), &|i| vec![v[i].title.clone(), v[i].artists_line()]);
+                if kind != DiscKind::All {
+                    shown.retain(|&i| kind.holds(v[i].kind.as_deref()));
+                }
+                s.library.album_sort.sort_indices(v, &mut shown);
+                let shown = std::sync::Arc::new(shown);
+                if shown.is_empty() {
+                    nothing(Ill::Lens)
+                } else {
+                    let n = shown.len();
+                    virtual_grid(format!("lib-al-grid-{cols}"), n, cols, card_row_h(card, false), move |s, pos, load_art| {
+                        match s.library.albums.get().and_then(|v| shown.get(pos).and_then(|&i| v.get(i))) {
+                            Some(a) => album_card_lazy(s, a, card, load_art),
+                            None => el().w(card),
+                        }
+                    })
+                }
+            }
             other => kit::list_state(other, s).unwrap_or_else(el),
         },
         LibTab::Artists => match &s.library.artists {
             Load::Ready(v) if v.is_empty() => nothing(Ill::Shelf),
-            Load::Ready(v) => grid(pick(v.len(), &|i| vec![v[i].name.clone()]).into_iter().map(|i| artist_card(s, &v[i], card)).collect()),
+            Load::Ready(v) => {
+                let mut shown = pick(v.len(), &|i| vec![v[i].name.clone()]);
+                s.library.artist_sort.sort_indices(v, &mut shown);
+                let shown = std::sync::Arc::new(shown);
+                if shown.is_empty() {
+                    nothing(Ill::Lens)
+                } else {
+                    let n = shown.len();
+                    virtual_grid(format!("lib-ar-grid-{cols}"), n, cols, card_row_h(card, true), move |s, pos, load_art| {
+                        match s.library.artists.get().and_then(|v| shown.get(pos).and_then(|&i| v.get(i))) {
+                            Some(a) => artist_card_lazy(s, a, card, load_art),
+                            None => el().w(card),
+                        }
+                    })
+                }
+            }
             other => kit::list_state(other, s).unwrap_or_else(el),
         },
     };

@@ -10,17 +10,20 @@ use rune::Pixels;
 
 use crate::palette::Palette;
 
-/// Small cover size for track lists, queues, mini avatars, and pinned shortcuts.
+/// Small cover size for track lists, queues, mini avatars, mini-player bar, and pinned shortcuts.
 pub const COVER_SM: u32 = 100;
-/// Medium cover size for cards, page headers, mini-player bar, and metadata cards.
-pub const COVER_MD: u32 = 300;
-/// Large cover size for the open Now Playing hero cover.
+/// Card cover size for grids, shelves, page headers, Stage Home, palettes, and desktop media cards.
+pub const COVER_CARD: u32 = 200;
+/// Large cover size loaded only inside open Now Playing for the active track's hero cover.
 pub const COVER_LG: u32 = 600;
-/// Default medium cover size shared by desktop media cards, downloads, and palettes.
-pub const COVER_PX: u32 = COVER_MD;
+/// Default cover size shared by desktop media cards, downloads, and palettes.
+pub const COVER_PX: u32 = COVER_CARD;
 
-/// Target decoded side derived from a cover URL's trailing `WxH` segment (`100`, `300`, or `600`).
+/// Target decoded side derived from a cover URL's trailing `WxH` segment (`100`, `200`, or `600`).
+/// Capped at `200` in CPU mode to keep software-rendered RAM minimal.
 pub fn decode_px_for_key(key: &str) -> u32 {
+    let cpu = crate::fx::cpu_mode();
+    let max_px = if cpu { COVER_CARD } else { COVER_LG };
     let path = key.split(['?', '#']).next().unwrap_or(key);
     let seg = path.rsplit('/').next().unwrap_or("");
     if let Some((w, h)) = seg.split_once('x')
@@ -28,9 +31,13 @@ pub fn decode_px_for_key(key: &str) -> u32 {
         && w > 0
         && h > 0
     {
-        return w.max(h).clamp(64, COVER_LG);
+        let side = w.max(h);
+        if cpu && side == COVER_CARD {
+            return 160;
+        }
+        return side.clamp(64, max_px);
     }
-    COVER_MD
+    COVER_CARD.min(max_px)
 }
 
 #[derive(Clone)]
@@ -38,29 +45,24 @@ pub struct ArtCache(Arc<Mutex<Inner>>);
 
 struct Inner {
     map: HashMap<String, Entry>,
-    /// Compact compressed bytes kept in RAM (300x300 JPEGs are ~15-25 KB each) so revisiting
-    /// evicted pages, upgrading a playing cover to sharp, or sending a media card cover avoids
-    /// touching disk or network.
+    /// Compact compressed bytes kept in RAM so revisiting recently evicted pages or sending a
+    /// media card cover avoids re-reading disk or network.
     raw: HashMap<String, (Arc<[u8]>, u64)>,
     raw_bytes: usize,
     wanted: Vec<String>,
-    /// Already-loaded covers that now play and need their 256px sharp copy for My Wave.
-    sharp_wanted: Vec<String>,
-    sharp_in_flight: HashSet<String>,
-    sharp_failed: HashMap<String, Instant>,
     in_flight: HashSet<String>,
     failed: HashMap<String, Instant>,
     tick: u64,
-    /// Bumped every time the view is built: what the last views asked for is on screen, and is
-    /// never let go of to make room.
-    view: u64,
+    /// Bumped only when the user actually navigates to a new page or tab, used to prioritize
+    /// previous-page covers during offscreen eviction.
+    page: u64,
+    /// Bumped at the start of each view pass so entries currently mounted in the UI tree
+    /// (`e.seen_view == view_gen`) are never evicted mid-frame or while scrolling.
+    view_gen: u64,
     /// Keys whose palette or soft backdrop was asked for while not yet decoded.
     watched: HashSet<String>,
-    /// Bumped only when a watched or playing cover lands, so loading list covers never forces a
-    /// full view rebuild.
+    /// Bumped only when a watched cover lands, so loading list covers never forces a full rebuild.
     watched_landed: u64,
-    /// Playing covers that need the 256px sharp copy (at most two: current and previous).
-    want_sharp: Vec<String>,
 }
 
 struct Entry {
@@ -70,48 +72,41 @@ struct Entry {
     thumb: Option<Arc<Thumb>>,
     ready: bool,
     used: u64,
-    /// The view that last asked for it.
-    seen: u64,
+    /// Page generation that last requested this cover.
+    page: u64,
+    /// View pass generation that last mounted this cover.
+    seen_view: u64,
     /// What the decoded picture takes in memory.
     bytes: usize,
     /// The picture melted into its colours (`ArtCache::soft`), made the first time it is asked for.
     soft: Option<Pixels>,
+    /// Pre-composited opaque 40x40 stage backdrop `(is_light, pixels)` for zero-overdraw Now Playing.
+    stage_bg: Option<(bool, Pixels)>,
 }
 
 /// A cover shrunk for the shaders (sRGB, RGBA, square): `THUMB` texels a side for the blurred
-/// backdrop, and a sharper copy (`sharp_side`, up to `SHARP`) for My Wave's cover fill.
+/// backdrop.
 pub struct Thumb {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
-    pub sharp_side: u32,
-    pub sharp: Vec<u8>,
 }
 
 /// The thumbnail's side in texels: small on purpose, it is only ever seen through a heavy blur.
 pub const THUMB: u32 = 40;
 
-/// The sharper copy's side at most, for the playing cover inside My Wave.
-pub const SHARP: u32 = 256;
-
 impl Thumb {
-    /// The 40px thumbnail, plus the 256px sharp copy when `with_sharp` is set (only for playing covers).
-    pub fn from_rgba(w: u32, h: u32, rgba: &[u8], with_sharp: bool) -> Option<Thumb> {
+    /// The 40px thumbnail for backdrop colour sampling and blur.
+    pub fn from_rgba(w: u32, h: u32, rgba: &[u8]) -> Option<Thumb> {
         if w == 0 || h == 0 || rgba.len() < (w * h * 4) as usize {
             return None;
         }
-        let (sharp_side, sharp) = if with_sharp {
-            let side = SHARP.min(w.min(h)).max(THUMB);
-            (side, shrink(w, h, rgba, side))
-        } else {
-            (0, Vec::new())
-        };
-        Some(Thumb { width: THUMB, height: THUMB, rgba: shrink(w, h, rgba, THUMB), sharp_side, sharp })
+        Some(Thumb { width: THUMB, height: THUMB, rgba: shrink(w, h, rgba, THUMB) })
     }
 
-    /// What the two copies take in memory.
+    /// What the thumbnail takes in memory.
     pub fn bytes(&self) -> usize {
-        self.rgba.len() + self.sharp.len()
+        self.rgba.len()
     }
 }
 
@@ -186,19 +181,47 @@ pub struct Decoded {
     pub rgba: Vec<u8>,
 }
 
-/// Decoded covers kept in RUNE's atlas and RAM (100px list covers are 40 KiB, 300px cards 360 KiB, 600px hero 1.44 MiB).
-const KEEP: usize = 72;
-const BUDGET: usize = 16 << 20;
-/// Decoded covers retained after page switches or idle trims; off-screen covers stay in `raw` as compressed bytes.
-const IDLE_KEEP: usize = 40;
-const IDLE_BUDGET: usize = 10 << 20;
-/// Compressed cover bytes kept in RAM (~400 covers in 8 MiB).
-const RAW_KEEP: usize = 512;
-const RAW_BUDGET: usize = 8 << 20;
+/// Hard ceiling for offscreen decoded covers while actively scrolling (mounted covers are never
+/// evicted so visible rows never flash or reload).
+fn keep_limits() -> (usize, usize) {
+    if crate::fx::cpu_mode() { (24, 1_800_000) } else { (32, 3_600_000) }
+}
+
+/// Tight offscreen cushion retained after scrolling away or changing page so RAM stays well under
+/// 90 MiB while keeping immediate scroll-back warm.
+fn offscreen_limits() -> (usize, usize) {
+    if crate::fx::cpu_mode() { (4, 512 * 1024) } else { (8, 1_024 * 1024) }
+}
+
+fn raw_limits() -> (usize, usize) {
+    if crate::fx::cpu_mode() { (12, 256 * 1024) } else { (32, 512 * 1024) }
+}
 /// Wait before retrying a cover that failed to load, so broken URLs do not spin every frame.
 const FAIL_COOLDOWN: Duration = Duration::from_secs(20);
 
 impl Inner {
+    fn trim_raw(&mut self, keep: usize, budget: usize, keep_keys: &[&str]) -> bool {
+        if self.raw.len() <= keep && self.raw_bytes <= budget {
+            return false;
+        }
+        let mut by_use: Vec<(u64, String)> = self.raw.iter().filter(|(k, _)| !keep_keys.contains(&k.as_str())).map(|(k, (_, u))| (*u, k.clone())).collect();
+        by_use.sort_unstable();
+        let mut evicted = false;
+        for (_, k) in by_use {
+            if self.raw.len() <= keep && self.raw_bytes <= budget * 3 / 4 {
+                break;
+            }
+            if let Some((old, _)) = self.raw.remove(&k) {
+                self.raw_bytes = self.raw_bytes.saturating_sub(old.len());
+                evicted = true;
+            }
+        }
+        if evicted && self.raw.capacity() > self.raw.len() * 2 + 16 {
+            self.raw.shrink_to_fit();
+        }
+        evicted
+    }
+
     fn put_raw(&mut self, key: &str, bytes: Arc<[u8]>) {
         self.tick += 1;
         let tick = self.tick;
@@ -207,17 +230,9 @@ impl Inner {
             self.raw_bytes = self.raw_bytes.saturating_sub(old.len());
         }
         self.raw_bytes = self.raw_bytes.saturating_add(len);
-        if self.raw.len() > RAW_KEEP + 32 || self.raw_bytes > RAW_BUDGET {
-            let mut by_use: Vec<(u64, String)> = self.raw.iter().map(|(k, (_, u))| (*u, k.clone())).collect();
-            by_use.sort_unstable();
-            for (_, k) in by_use {
-                if self.raw.len() <= RAW_KEEP && self.raw_bytes <= RAW_BUDGET * 3 / 4 {
-                    break;
-                }
-                if let Some((old, _)) = self.raw.remove(&k) {
-                    self.raw_bytes = self.raw_bytes.saturating_sub(old.len());
-                }
-            }
+        let (raw_keep, raw_budget) = raw_limits();
+        if self.raw.len() > raw_keep + 8 || self.raw_bytes > raw_budget {
+            self.trim_raw(raw_keep, raw_budget, &[]);
         }
     }
 }
@@ -229,16 +244,13 @@ impl ArtCache {
             raw: HashMap::new(),
             raw_bytes: 0,
             wanted: Vec::new(),
-            sharp_wanted: Vec::new(),
-            sharp_in_flight: HashSet::new(),
-            sharp_failed: HashMap::new(),
             in_flight: HashSet::new(),
             failed: HashMap::new(),
             tick: 0,
-            view: 1,
+            page: 1,
+            view_gen: 1,
             watched: HashSet::new(),
             watched_landed: 0,
-            want_sharp: Vec::new(),
         })))
     }
 
@@ -246,21 +258,34 @@ impl ArtCache {
         self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// A new view is being built: what it asks for counts as on screen.
+    /// Starts a new view pass: advances `view_gen` so every cover mounted during this pass is
+    /// stamped as live and protected from eviction, while unmounted offscreen covers can be freed.
     pub fn begin_view(&self) {
         let mut g = self.lock();
-        g.view += 1;
         g.watched.clear();
+        g.view_gen = g.view_gen.wrapping_add(1);
+    }
+
+    /// Clears the per-view watched set without advancing `view_gen` (used while full-screen Now
+    /// Playing covers the page underneath so its covers stay cached and never flash on close).
+    pub fn clear_watched(&self) {
+        self.lock().watched.clear();
+    }
+
+    /// Marks navigation to a new page or collection tab so previous-page covers evict first.
+    pub fn bump_page(&self) {
+        self.lock().page += 1;
     }
 
     /// The picture for `key` (a cover URL). The first ask schedules the load.
     pub fn pixels(&self, key: &str) -> Pixels {
         let mut g = self.lock();
         g.tick += 1;
-        let (tick, view) = (g.tick, g.view);
+        let (tick, page, view_gen) = (g.tick, g.page, g.view_gen);
         if let Some(e) = g.map.get_mut(key) {
             e.used = tick;
-            e.seen = view;
+            e.page = page;
+            e.seen_view = view_gen;
             return e.pixels.clone();
         }
         if let Some(&at) = g.failed.get(key) {
@@ -270,7 +295,10 @@ impl ArtCache {
             g.failed.remove(key);
         }
         let pixels = Pixels::new();
-        g.map.insert(key.to_owned(), Entry { pixels: pixels.clone(), palette: None, thumb: None, ready: false, used: tick, seen: view, bytes: 0, soft: None });
+        g.map.insert(
+            key.to_owned(),
+            Entry { pixels: pixels.clone(), palette: None, thumb: None, ready: false, used: tick, page, seen_view: view_gen, bytes: 0, soft: None, stage_bg: None },
+        );
         if g.in_flight.insert(key.to_owned()) {
             g.wanted.push(key.to_owned());
         }
@@ -327,27 +355,81 @@ impl ArtCache {
         g.raw_bytes = 0;
     }
 
-    /// Drops off-screen decoded covers down to the idle budget when the window rests.
-    /// Compressed bytes remain warm in `raw`, so revisiting a page re-decodes without network I/O.
-    pub fn trim_idle(&self) {
+    /// Evicts unmounted covers (`e.seen_view < cur_view`, except `keep_keys`) while NEVER touching
+    /// covers currently mounted in the active view pass (guaranteeing zero visible flickering).
+    /// Immediately frees unmounted 600px hero covers and trims remaining offscreen covers down to
+    /// `offscreen_limits`. Returns true if any decoded texture or raw entry was freed.
+    pub fn trim_offscreen(&self, keep_keys: &[&str]) -> bool {
         let mut g = self.lock();
-        let total: usize = g.map.values().map(|e| e.bytes).sum();
-        if g.map.len() <= IDLE_KEEP && total <= IDLE_BUDGET {
-            return;
+        let (raw_keep, raw_budget) = raw_limits();
+        let mut evicted = g.trim_raw(raw_keep, raw_budget, keep_keys);
+        let cur_view = g.view_gen;
+        let cur_page = g.page;
+
+        // 1. Immediately drop any unmounted 600x600 hero cover (>300 KiB RGBA) not in keep_keys.
+        let before = g.map.len();
+        g.map.retain(|k, e| !e.ready || e.seen_view == cur_view || keep_keys.contains(&k.as_str()) || e.bytes <= 300_000);
+        evicted |= g.map.len() < before;
+
+        // 2. Drop melted backdrops on unmounted non-kept covers so stale pages release textures.
+        for (k, e) in &mut g.map {
+            if e.seen_view < cur_view && !keep_keys.contains(&k.as_str()) {
+                if e.soft.take().is_some() {
+                    evicted = true;
+                }
+                if e.stage_bg.take().is_some() {
+                    evicted = true;
+                }
+            }
         }
-        let current = g.view;
-        let mut by_use: Vec<(u64, String)> =
-            g.map.iter().filter(|(k, e)| e.ready && e.seen < current && !g.want_sharp.iter().any(|w| w == *k)).map(|(k, e)| (e.used, k.clone())).collect();
-        by_use.sort_unstable();
-        let (mut count, mut total) = (g.map.len(), total);
-        for (_, k) in by_use {
-            if count <= IDLE_KEEP && total <= IDLE_BUDGET {
-                break;
+
+        // 3. Trim remaining unmounted offscreen covers down to a small warm scroll-back cushion,
+        //    evicting previous-page entries first, then oldest LRU.
+        let mut offscreen: Vec<(bool, u64, usize, String)> = g
+            .map
+            .iter()
+            .filter(|(k, e)| e.ready && e.seen_view < cur_view && !keep_keys.contains(&k.as_str()))
+            .map(|(k, e)| (e.page >= cur_page, e.used, e.bytes, k.clone()))
+            .collect();
+        let (off_keep, off_budget) = offscreen_limits();
+        let mut off_count = offscreen.len();
+        let mut off_bytes: usize = offscreen.iter().map(|x| x.2).sum();
+        if off_count > off_keep || off_bytes > off_budget {
+            offscreen.sort_unstable();
+            for (_, _, b, k) in offscreen {
+                if off_count <= off_keep && off_bytes <= off_budget {
+                    break;
+                }
+                if g.map.remove(&k).is_some() {
+                    off_count -= 1;
+                    off_bytes = off_bytes.saturating_sub(b);
+                    evicted = true;
+                }
             }
-            if let Some(e) = g.map.remove(&k) {
-                count -= 1;
-                total -= e.bytes;
-            }
+        }
+        if evicted && g.map.capacity() > g.map.len() * 2 + 24 {
+            g.map.shrink_to_fit();
+        }
+        evicted
+    }
+
+    /// Drops all decoded covers except `keep_key` when the main window hides to tray or mini player,
+    /// and trims compressed raw bytes in both GPU and CPU modes so hidden RAM stays minimal.
+    pub fn trim_hidden(&self, keep_key: Option<&str>) {
+        let mut g = self.lock();
+        g.map.retain(|k, e| !e.ready || keep_key == Some(k.as_str()));
+        for e in g.map.values_mut() {
+            e.soft = None;
+            e.stage_bg = None;
+        }
+        let keep = keep_key.map(|k| [k]);
+        let keep_slice: &[&str] = match &keep {
+            Some(a) => a,
+            None => &[],
+        };
+        g.trim_raw(6, 192 * 1024, keep_slice);
+        if g.map.capacity() > g.map.len() * 2 + 8 {
+            g.map.shrink_to_fit();
         }
     }
 
@@ -356,42 +438,6 @@ impl ArtCache {
         let g = self.lock();
         let decoded_bytes: usize = g.map.values().map(|e| e.bytes).sum();
         (g.map.len(), decoded_bytes, g.raw.len(), g.raw_bytes)
-    }
-
-    /// Marks `key` as a playing cover that needs the 256px sharp copy (for My Wave).
-    /// Drops sharp copies from older covers so only the last two stay in RAM.
-    pub fn want_sharp(&self, key: &str) {
-        let mut g = self.lock();
-        if let Some(pos) = g.want_sharp.iter().position(|k| k == key) {
-            let k = g.want_sharp.remove(pos);
-            g.want_sharp.push(k);
-        } else {
-            g.want_sharp.push(key.to_owned());
-            while g.want_sharp.len() > 2 {
-                let old = g.want_sharp.remove(0);
-                if let Some(e) = g.map.get_mut(&old)
-                    && let Some(t) = &e.thumb
-                    && !t.sharp.is_empty()
-                {
-                    e.bytes = e.bytes.saturating_sub(t.sharp.len());
-                    e.thumb = Some(Arc::new(Thumb { width: t.width, height: t.height, rgba: t.rgba.clone(), sharp_side: 0, sharp: Vec::new() }));
-                }
-            }
-        }
-        // Already decoded for a list or card without its sharp copy: upgrade thumb only, never
-        // touching the live `Pixels` or re-downloading over the network.
-        let needs_sharp = g.map.get(key).is_some_and(|e| e.ready && e.thumb.as_ref().is_none_or(|t| t.sharp.is_empty()));
-        if needs_sharp && !g.in_flight.contains(key) && !g.sharp_in_flight.contains(key) {
-            if let Some(&at) = g.sharp_failed.get(key) {
-                if at.elapsed() < FAIL_COOLDOWN {
-                    return;
-                }
-                g.sharp_failed.remove(key);
-            }
-            if g.sharp_in_flight.insert(key.to_owned()) {
-                g.sharp_wanted.push(key.to_owned());
-            }
-        }
     }
 
     /// The picture of `key` melted into its colours: its thumbnail blurred far past recognition
@@ -416,6 +462,43 @@ impl ArtCache {
         Some(px)
     }
 
+    /// Pre-composited opaque 40x40 Now Playing backdrop (melted cover blended onto canvas + wash),
+    /// allowing shaders-off Now Playing to draw its background in a single opaque quad with zero
+    /// full-window alpha overdraw.
+    pub fn soft_stage(&self, key: &str, canvas: [f32; 3], light: bool) -> Option<Pixels> {
+        let mut g = self.lock();
+        let Some(e) = g.map.get_mut(key) else {
+            g.watched.insert(key.to_owned());
+            return None;
+        };
+        if let Some((was_light, p)) = &e.stage_bg
+            && *was_light == light
+        {
+            return Some(p.clone());
+        }
+        let Some(t) = e.thumb.clone() else {
+            g.watched.insert(key.to_owned());
+            return None;
+        };
+        let px = Pixels::new();
+        e.stage_bg = Some((light, px.clone()));
+        drop(g);
+        let mut rgba = melt(t.width, t.height, &t.rgba);
+        let alpha = if light { 0.34 } else { 0.54 };
+        let (wash_rgb, wash_a) = if light { ([255.0f32, 255.0, 255.0], 0.32) } else { ([0.0f32, 0.0, 0.0], 0.38) };
+        let bg = [canvas[0] * 255.0, canvas[1] * 255.0, canvas[2] * 255.0];
+        for chunk in rgba.as_chunks_mut::<4>().0 {
+            for c in 0..3 {
+                let over_bg = bg[c] * (1.0 - alpha) + f32::from(chunk[c]) * alpha;
+                let final_c = over_bg * (1.0 - wash_a) + wash_rgb[c] * wash_a;
+                chunk[c] = final_c.round().clamp(0.0, 255.0) as u8;
+            }
+            chunk[3] = 255;
+        }
+        px.set(t.width, t.height, rgba);
+        Some(px)
+    }
+
     pub fn thumb(&self, key: &str) -> Option<Arc<Thumb>> {
         self.lock().map.get(key).and_then(|e| e.thumb.clone())
     }
@@ -423,31 +506,6 @@ impl ArtCache {
     /// Keys asked for since the last call, each of which needs loading.
     pub fn take_wanted(&self) -> Vec<String> {
         std::mem::take(&mut self.lock().wanted)
-    }
-
-    /// Already-loaded keys that now need a 256px sharp thumb for My Wave.
-    pub fn take_sharp_wanted(&self) -> Vec<String> {
-        std::mem::take(&mut self.lock().sharp_wanted)
-    }
-
-    /// Attaches a sharp thumb to an already-loaded cover without replacing its `Pixels`.
-    pub fn finish_sharp(&self, key: &str, image: Option<Decoded>) {
-        let thumb = image.and_then(|img| Thumb::from_rgba(img.width, img.height, &img.rgba, true).map(Arc::new));
-        let mut g = self.lock();
-        g.sharp_in_flight.remove(key);
-        let Some(thumb) = thumb else {
-            g.sharp_failed.insert(key.to_owned(), Instant::now());
-            return;
-        };
-        g.sharp_failed.remove(key);
-        if let Some(e) = g.map.get_mut(key) {
-            let old = e.thumb.as_ref().map_or(0, |t| t.bytes());
-            e.bytes = e.bytes.saturating_sub(old).saturating_add(thumb.bytes());
-            e.thumb = Some(thumb);
-            if g.want_sharp.iter().any(|k| k == key) {
-                g.watched_landed += 1;
-            }
-        }
     }
 
     /// Stores a loaded image (or, with `None`, records a short backoff) and works out its palette.
@@ -459,9 +517,10 @@ impl ArtCache {
             g.failed.insert(key.to_owned(), Instant::now());
             return;
         };
-        let with_sharp = self.lock().want_sharp.iter().any(|k| k == key);
-        let palette = Palette::from_rgba(image.width, image.height, &image.rgba);
-        let thumb = Thumb::from_rgba(image.width, image.height, &image.rgba, with_sharp).map(Arc::new);
+        let side = decode_px_for_key(key);
+        let want_meta = (150..=COVER_CARD).contains(&side);
+        let palette = want_meta.then(|| Palette::from_rgba(image.width, image.height, &image.rgba));
+        let thumb = want_meta.then(|| Thumb::from_rgba(image.width, image.height, &image.rgba).map(Arc::new)).flatten();
         let thumb_bytes = thumb.as_ref().map_or(0, |t| t.bytes());
         let mut g = self.lock();
         g.in_flight.remove(key);
@@ -472,25 +531,30 @@ impl ArtCache {
         let Some(e) = g.map.get_mut(key) else { return };
         let was_ready = e.ready;
         let pixels = e.pixels.clone();
-        e.palette = Some(palette);
+        e.palette = palette;
         e.thumb = thumb;
         e.ready = true;
         e.bytes = image.rgba.len() + thumb_bytes;
-        let need_rebuild = g.watched.remove(key) || g.want_sharp.iter().any(|k| k == key);
-        if need_rebuild {
+        if g.watched.remove(key) {
             g.watched_landed += 1;
         }
-        // Keep memory bounded: drop the least recently used finished pictures, by how many there
-        // are and by what they take. On-screen and currently playing covers stay pinned.
+        // Keep memory bounded while NEVER evicting covers currently mounted in the active view pass
+        // (`e.seen_view == cur_view`), preventing visible cover flicker during scrolling.
+        let (keep, budget) = keep_limits();
         let total: usize = g.map.values().map(|e| e.bytes).sum();
-        if g.map.len() > KEEP + 24 || total > BUDGET {
-            let recent = g.view.saturating_sub(1);
-            let mut by_use: Vec<(u64, String)> =
-                g.map.iter().filter(|(k, e)| e.ready && e.seen < recent && !g.want_sharp.iter().any(|w| w == *k)).map(|(k, e)| (e.used, k.clone())).collect();
-            by_use.sort_unstable();
+        if g.map.len() > keep + 10 || total > budget {
+            let cur_page = g.page;
+            let cur_view = g.view_gen;
+            let mut by_prio: Vec<(bool, u64, String)> = g
+                .map
+                .iter()
+                .filter(|(k, e)| e.ready && k.as_str() != key && e.seen_view < cur_view)
+                .map(|(k, e)| (e.page >= cur_page, e.used, k.clone()))
+                .collect();
+            by_prio.sort_unstable();
             let (mut count, mut total) = (g.map.len(), total);
-            for (_, k) in by_use {
-                if count <= KEEP && total <= BUDGET * 3 / 4 {
+            for (_, _, k) in by_prio {
+                if count <= keep && total <= budget * 3 / 4 {
                     break;
                 }
                 if let Some(e) = g.map.remove(&k) {

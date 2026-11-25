@@ -11,8 +11,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::app::State;
 use crate::i18n::S;
 
-/// The longest side the picture is kept at: sharp on a large screen, and a few megabytes at most.
-const MAX_SIDE: u32 = 2048;
+/// The longest side the picture is kept at: sharp on a desktop window while keeping RAM low.
+const MAX_SIDE: u32 = 1440;
+/// Smaller cap for CPU low-RAM mode.
+const MAX_SIDE_CPU: u32 = 1024;
 
 /// The effects that can be laid over it, in the order Settings lists them.
 pub const EFFECTS: [S; 6] = [S::BdNone, S::BdDither, S::BdGrain, S::BdPixels, S::BdHalftone, S::BdLines];
@@ -24,6 +26,8 @@ pub struct Image {
     pub width: u32,
     pub height: u32,
     pub levels: Vec<(u32, u32, Vec<u8>)>,
+    /// Native RUNE image handle for drawing without custom GPU shaders.
+    pub pixels: rune::Pixels,
 }
 
 impl Image {
@@ -32,27 +36,35 @@ impl Image {
     }
 }
 
-/// Decodes `bytes` and makes its chain of smaller copies.
+/// Decodes `bytes` and builds a mipmap chain only when GPU shaders are enabled.
 pub fn build(bytes: &[u8]) -> Option<Image> {
     static NEXT: AtomicU64 = AtomicU64::new(1);
+    let max_side = if crate::fx::cpu_mode() { MAX_SIDE_CPU } else { MAX_SIDE };
     let img = image::load_from_memory(bytes).ok()?;
-    let img = if img.width().max(img.height()) > MAX_SIDE { img.resize(MAX_SIDE, MAX_SIDE, image::imageops::FilterType::Triangle) } else { img };
+    let img = if img.width().max(img.height()) > max_side { img.resize(max_side, max_side, image::imageops::FilterType::Triangle) } else { img };
     let mut cur = img.to_rgba8();
     let (width, height) = cur.dimensions();
     if width == 0 || height == 0 {
         return None;
     }
+    let pixels = rune::Pixels::new();
+    let build_mips = crate::fx::shaders_enabled();
     let mut levels = Vec::new();
-    loop {
-        let (w, h) = cur.dimensions();
-        let next = (w > 1 || h > 1).then(|| image::imageops::resize(&cur, (w / 2).max(1), (h / 2).max(1), image::imageops::FilterType::Triangle));
-        levels.push((w, h, cur.into_raw()));
-        match next {
-            Some(n) => cur = n,
-            None => break,
+    if build_mips {
+        pixels.set(width, height, cur.as_raw().clone());
+        loop {
+            let (w, h) = cur.dimensions();
+            let next = (w > 1 || h > 1).then(|| image::imageops::resize(&cur, (w / 2).max(1), (h / 2).max(1), image::imageops::FilterType::Triangle));
+            levels.push((w, h, cur.into_raw()));
+            match next {
+                Some(n) => cur = n,
+                None => break,
+            }
         }
+    } else {
+        pixels.set(width, height, cur.into_raw());
     }
-    Some(Image { id: NEXT.fetch_add(1, Ordering::Relaxed), width, height, levels })
+    Some(Image { id: NEXT.fetch_add(1, Ordering::Relaxed), width, height, levels, pixels })
 }
 
 fn read(path: &Path) -> Option<Image> {

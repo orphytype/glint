@@ -14,7 +14,7 @@ use rodio::{DeviceSinkBuilder, MixerDeviceSink};
 
 use crate::analyzer::Analyzer;
 use crate::eq::EqSettings;
-use crate::source::{NO_SEEK, Playback, SWITCH_FADE_SECS, Shared, SourceCtl, Track};
+use crate::source::{AudioData, NO_SEEK, Playback, SWITCH_FADE_SECS, Shared, SourceCtl, Track};
 use crate::{AudioError, Event, LoadHint, PlaybackState};
 
 /// How often the thread checks, while a track is playing, whether the source ended or moved on to
@@ -22,8 +22,8 @@ use crate::{AudioError, Event, LoadHint, PlaybackState};
 const POLL: Duration = Duration::from_millis(15);
 
 enum Cmd {
-    Load { token: u64, audio: Arc<[u8]>, hint: LoadHint, play: bool, start: Duration },
-    Enqueue { token: u64, audio: Arc<[u8]>, hint: LoadHint },
+    Load { token: u64, audio: AudioData, hint: LoadHint, play: bool, start: Duration },
+    Enqueue { token: u64, audio: AudioData, hint: LoadHint },
     Unqueue,
     Stop,
     Shutdown,
@@ -69,17 +69,17 @@ impl Engine {
         let _ = self.tx.send(cmd);
     }
 
-    /// Starts `audio` (a whole MP3, AAC or FLAC file) as the current track, replacing the previous one
+    /// Starts `audio` (in memory or on disk) as the current track, replacing the previous one
     /// with a short fade. Returns at once; a decode failure arrives as [`Event::Error`].
     /// `token` names the track in every later event and in [`PlaybackState`] (use any non-zero id).
-    pub fn load(&self, token: u64, audio: Arc<[u8]>, hint: LoadHint, play: bool, start: Duration) {
-        self.send(Cmd::Load { token: token.max(1), audio, hint, play, start });
+    pub fn load(&self, token: u64, audio: impl Into<AudioData>, hint: LoadHint, play: bool, start: Duration) {
+        self.send(Cmd::Load { token: token.max(1), audio: audio.into(), hint, play, start });
     }
 
     /// Queues the track that should follow the current one without a gap. At most one is kept;
     /// queueing again replaces it. The engine announces the hand-over with [`Event::Advanced`].
-    pub fn enqueue(&self, token: u64, audio: Arc<[u8]>, hint: LoadHint) {
-        self.send(Cmd::Enqueue { token: token.max(1), audio, hint });
+    pub fn enqueue(&self, token: u64, audio: impl Into<AudioData>, hint: LoadHint) {
+        self.send(Cmd::Enqueue { token: token.max(1), audio: audio.into(), hint });
     }
 
     /// Forgets the queued track (the user changed the queue).

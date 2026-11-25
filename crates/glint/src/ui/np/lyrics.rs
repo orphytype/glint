@@ -22,23 +22,26 @@ pub const REST: f32 = 0.35;
 /// Unsung word opacity next to sung words.
 const UNSUNG: f32 = 0.46;
 
-/// Builds character-level color spans for word-synced lines so held words wipe smoothly.
+/// Builds quantized character-level color spans for word-synced lines so held words wipe smoothly
+/// while merging consecutive characters of equal brightness to minimize text-shaping churn.
 pub fn sung_spans(words: &[LyricWord], pos_ms: u32) -> Vec<Span> {
     let mut spans: Vec<Span> = Vec::new();
     let mut at = 0usize;
-    let mut last: Option<(f32, usize)> = None;
+    let mut last: Option<(u8, usize)> = None;
     for (i, w) in words.iter().enumerate() {
         let p = w.progress(pos_ms);
         let n = w.text.chars().count().max(1) as f32;
         for (k, (off, ch)) in w.text.char_indices().enumerate() {
             let lit = (p * n - k as f32).clamp(0.0, 1.0);
+            let e = lit * lit * (3.0 - 2.0 * lit);
+            let step = (e * 8.0).round() as u8;
             let (from, to) = (at + off, at + off + ch.len_utf8());
             match last {
-                Some((l, idx)) if (lit == 0.0 || lit == 1.0) && l == lit && spans[idx].end as usize == from => spans[idx].end = to as u32,
+                Some((prev_step, idx)) if prev_step == step && spans[idx].end as usize == from => spans[idx].end = to as u32,
                 _ => {
-                    let e = lit * lit * (3.0 - 2.0 * lit);
-                    spans.push(Span::new(from, to).color(th::veil(UNSUNG + (1.0 - UNSUNG) * e)));
-                    last = Some((lit, spans.len() - 1));
+                    let q = f32::from(step) / 8.0;
+                    spans.push(Span::new(from, to).color(th::veil(UNSUNG + (1.0 - UNSUNG) * q)));
+                    last = Some((step, spans.len() - 1));
                 }
             }
         }
@@ -80,39 +83,6 @@ fn credit(s: &State) -> Option<El> {
     )
 }
 
-fn line_target(s: &State, i: usize) -> f32 {
-    match &s.lyrics.lyrics {
-        Load::Ready(l) if !l.synced => 1.0,
-        _ if s.lyrics.active == Some(i) => 1.0,
-        _ => 0.0,
-    }
-}
-
-/// Steps lyric line brightness weights smoothly toward the active line.
-pub fn step_lines(s: &mut State, dt: f32) -> bool {
-    let n = match &s.lyrics.lyrics {
-        Load::Ready(l) => l.lines.len(),
-        _ => 0,
-    };
-    if s.ly_e.len() != n {
-        s.ly_e = (0..n).map(|i| line_target(s, i)).collect();
-        return false;
-    }
-    let smooth = !s.settings.reduce_motion;
-    let factor = 1.0 - (-dt / 0.13).exp();
-    let mut moving = false;
-    for i in 0..n {
-        let to = line_target(s, i);
-        let e = s.ly_e[i];
-        if (e - to).abs() < 0.002 {
-            s.ly_e[i] = to;
-            continue;
-        }
-        s.ly_e[i] = if smooth { e + (to - e) * factor } else { to };
-        moving = true;
-    }
-    moving
-}
 
 /// Translates common English song section headings ("Verse 2", "Chorus") into Russian when needed.
 pub fn part_name(part: &str, lang: Lang) -> String {
@@ -159,36 +129,54 @@ struct LineCtx {
     align: u8,
     font: u8,
     reduce: bool,
+    cpu: bool,
     resizing: bool,
 }
 
-fn lyric_line(i: usize, line: &LyricLine, e: f32, active: bool, ctx: &LineCtx) -> El {
+fn lyric_line(i: usize, line: &LyricLine, active: bool, near: bool, ctx: &LineCtx) -> El {
     let (side, ox) = match ctx.align {
         1 => (rune::Align::Center, 0.5),
         2 => (rune::Align::End, 1.0),
         _ => (rune::Align::Start, 0.0),
     };
-    let alpha = ctx.back + (1.0 - ctx.back) * e.clamp(0.0, 1.0);
     let timed = !line.words.is_empty();
     let main = if timed { join_words(&line.words) } else { line.text.clone() };
-    let mut text = label(main, ctx.style, th::veil(alpha)).key(format!("ly-{i}")).w_full().wrap().align(side);
-    if timed && active {
+    let target_opacity = if !ctx.synced { 0.95 } else if active { 1.0 } else { ctx.back };
+    // Only animate lines close to the active line on GPU; CPU mode skips scale transforms &
+    // spring allocations completely so lyrics stay ultra-lightweight.
+    let anim: rune::Anim = if ctx.reduce || ctx.cpu || ctx.resizing || !near {
+        rune::Anim::INSTANT
+    } else {
+        rune::Spring::new(0.28, 0.0).into()
+    };
+    // Apply opacity on leaf text elements (never on the `col()` container) so RUNE paints every
+    // lyric line directly in the main pass instead of allocating an offscreen `Rgba16Float` layer
+    // per line.
+    let mut text = label(main, ctx.style, th::veil(1.0))
+        .key(format!("ly-{i}"))
+        .w_full()
+        .wrap()
+        .align(side)
+        .opacity(target_opacity)
+        .opacity_motion(anim)
+        .motion(rune::Spring::NONE);
+    if timed && active && !ctx.reduce {
         text = text.spans(sung_spans(&line.words, ctx.pos_ms));
     }
-    let mut block = col()
-        .key(format!("ly-row-{i}"))
-        .w_full()
-        .gap(6.0)
-        .animated_changes()
-        .transition(rune::Transition::none())
-        .motion(rune::Spring::NONE)
-        .child(text.motion(rune::Spring::NONE));
-    let target_scale = if !ctx.synced || active { 1.0 } else { 0.92 };
-    let scale_anim: rune::Anim = if ctx.reduce || ctx.resizing { rune::Anim::INSTANT } else { rune::Spring::new(0.28, 0.0).into() };
-    block = block.origin(ox, 0.5).scale(target_scale).scale_motion(scale_anim);
+    let mut block = col().key(format!("ly-row-{i}")).w_full().gap(6.0).transition(rune::Transition::none()).motion(rune::Spring::NONE).child(text);
+    if !ctx.cpu {
+        let target_scale = if !ctx.synced || active { 1.0 } else { 0.92 };
+        block = block.animated_changes().origin(ox, 0.5).scale(target_scale).scale_motion(anim);
+    }
     if !line.backing.is_empty() {
-        let mut back = label(line.backing_text(), th::lyric_face(th::ASIDE, ctx.font), th::veil(0.64 * alpha)).w_full().wrap().align(side).motion(rune::Spring::NONE);
-        if active {
+        let mut back = label(line.backing_text(), th::lyric_face(th::ASIDE, ctx.font), th::veil(0.64))
+            .w_full()
+            .wrap()
+            .align(side)
+            .opacity(target_opacity)
+            .opacity_motion(anim)
+            .motion(rune::Spring::NONE);
+        if active && !ctx.reduce {
             back = back.spans(sung_spans(&line.backing, ctx.pos_ms));
         }
         block = block.child(back);
@@ -291,9 +279,11 @@ pub(super) fn lyrics_view(s: &State, p: &Pal, x: f32, w: f32, h: f32) -> El {
                     }
                     None => (Cow::Borrowed(""), style),
                 };
-                lines = lines.child(count_note(first, pos, block_w, look.align, TargetLine { text: &target_text, style: target_style, font: look.font, top_y }));
+                lines = lines.child(count_note(first, pos, block_w, look.align, s.settings.reduce_motion, TargetLine { text: &target_text, style: target_style, font: look.font, top_y }));
             }
-            let ctx = LineCtx { style, back: 0.30, pos_ms: pos, synced: l.synced, align: look.align, font: look.font, reduce: s.settings.reduce_motion, resizing: s.is_resizing() };
+            let cpu = crate::fx::cpu_mode();
+            let pos_bucket = pos / if cpu { 80 } else { 55 };
+            let ctx = LineCtx { style, back: 0.30, pos_ms: pos, synced: l.synced, align: look.align, font: look.font, reduce: s.settings.reduce_motion, cpu, resizing: s.is_resizing() };
             for (i, line) in l.lines.iter().enumerate() {
                 if line.text.trim().is_empty() && line.words.is_empty() {
                     lines = lines.child(el().key(format!("ly-{i}")).h(20.0));
@@ -311,8 +301,15 @@ pub(super) fn lyrics_view(s: &State, p: &Pal, x: f32, w: f32, h: f32) -> El {
                     lines = lines.child(caps.mt(if i == 0 { 0.0 } else { 18.0 }));
                 }
                 let is_active = l.synced && active == Some(i);
-                let e = if l.synced { s.ly_e.get(i).copied().unwrap_or(if is_active { 1.0 } else { 0.0 }) } else { 0.95 };
-                lines = lines.child(lyric_line(i, line, e, is_active, &ctx));
+                let near = active.is_none_or(|a| i.abs_diff(a) <= 6);
+                let row_el = if is_active && !ctx.reduce && (!line.words.is_empty() || !line.backing.is_empty()) {
+                    let version = (s.lyrics_gen, pos_bucket, look.size, look.align, look.font, ctx.cpu, ctx.resizing, th::light());
+                    rune::memo(format!("ly-memo-{i}"), version, || lyric_line(i, line, true, true, &ctx))
+                } else {
+                    let version = (s.lyrics_gen, is_active, near, l.synced, look.size, look.align, look.font, ctx.reduce, ctx.cpu, ctx.resizing, th::light());
+                    rune::memo(format!("ly-memo-{i}"), version, || lyric_line(i, line, is_active, near, &ctx))
+                };
+                lines = lines.child(row_el);
             }
             if let Some(c) = credit_el {
                 let row_c = match look.align {

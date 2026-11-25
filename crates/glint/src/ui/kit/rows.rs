@@ -6,7 +6,7 @@ use ym_api::Track;
 
 use super::controls::{ctl_radius, ibtn, ibtn_gop, quiet_halo, swap_glyph};
 use super::marquee::{marquee, marquee_hover, marquee_on, measure_room, room};
-use super::media::{artists_row_in_width, cover_sm};
+use super::media::{artists_row_in_width, cover_placeholder, cover_sm};
 use super::{Hover as _, label};
 use crate::app::{DownloadState, FromName, Page, PlayingFrom, Source, State, TrackSort};
 use crate::fx;
@@ -15,9 +15,9 @@ use crate::theme::{self as th, veil};
 use crate::ui::{icons, np_icons};
 
 pub const ROW_H: f32 = 52.0;
-/// Room between a row's hover plate and what it holds. A list hangs its rows this far out on
-/// both sides (`bleed`), so covers and numbers line up with the titles above the list.
-pub const ROW_PAD: f32 = 8.0;
+/// Horizontal padding inside a track row's plate. Rows stay flush with the column edge so their
+/// borders and active highlights align cleanly with the cover, search field, and dividers.
+pub const ROW_PAD: f32 = 10.0;
 const ROW_GAP: f32 = 12.0;
 /// Every slot on the right of a row has the same square, so the icons are evenly spaced.
 const ROW_BTN: f32 = 36.0;
@@ -163,7 +163,10 @@ impl State {
             ListSrc::Detail => {
                 let page = self.detail.page.clone()?;
                 let kind = match page {
-                    Page::Album(_) => S::Album,
+                    Page::Album(_) => {
+                        let k = crate::app::release_kind_name(self.detail.release_kind.as_deref());
+                        if k == S::Album && self.detail.tracks.len() == 1 { S::Single } else { k }
+                    }
                     Page::Playlist(..) => S::Playlist,
                     _ => S::Artist,
                 };
@@ -186,10 +189,10 @@ fn row_btn(key: String, ic: &'static Icon, glyph: f32, name: &str) -> El {
     ibtn_gop(key, ic, glyph, ROW_BTN, th::text2(), name)
 }
 
-/// Lets a list's rows hang `ROW_PAD` past both sides of the column, so what a row starts with
-/// lines up with the column's other content while its hover plate keeps its padding.
+/// Keeps a track list flush with the column's left and right edges so active/hover row plates
+/// align directly with the release cover, search field, and section dividers.
 pub fn bleed(list: El) -> El {
-    row().w_full().child(list.ml(-ROW_PAD).mr(-ROW_PAD).grow(1.0))
+    row().w_full().child(list.grow(1.0))
 }
 
 fn heart_glyph(size: f32) -> f32 {
@@ -277,7 +280,7 @@ fn title_line(s: &State, t: &Track, name: String, ink: Color, width: f32, moving
     let explicit = t.is_explicit();
     let clean = s.clean_tracks.contains(&t.id);
     let badges = 26.0 * (u8::from(explicit) + u8::from(clean)) as f32;
-    let name_w = rune::text::measure(&name, &[], th::BODY_M, None).0.ceil();
+    let name_w = super::measure_w(&name, th::BODY_M).ceil();
     let room = if width.is_finite() { (width - badges).max(40.0) } else { width };
     let line = marquee(format!("tl-{}", t.id), room, name_w, moving, s.settings.reduce_motion, move || label(name.clone(), th::BODY_M, ink));
     let mut r = row().min_w(0.0).gap(6.0).items_center().child(line.shrink());
@@ -290,12 +293,22 @@ fn title_line(s: &State, t: &Track, name: String, ink: Color, width: f32, moving
     r
 }
 
-fn marker(s: &State) -> El {
-    el().key("playing-marker").w(22.0).h(22.0).transition(Transition::none()).fx(fx::MORPH).fx_data([if s.player.playing { 1.0 } else { 0.0 }, 1.0, 0.0, 0.0])
+fn marker(s: &State, on_cover: bool) -> Option<El> {
+    if !fx::ready() {
+        return None;
+    }
+    Some(
+        el().key("playing-marker")
+            .w(22.0)
+            .h(22.0)
+            .transition(Transition::none())
+            .fx(fx::MORPH)
+            .fx_data([if s.player.playing { 1.0 } else { 0.0 }, if on_cover { 1.0 } else { 0.0 }, 0.0, 0.0]),
+    )
 }
 
-fn row_cover(s: &State, t: &Track, playing: bool, hovered: bool, dim_past: bool) -> El {
-    let dim_a = if playing {
+fn row_cover(s: &State, t: &Track, playing: bool, hovered: bool, dim_past: bool, load_art: bool) -> El {
+    let dim_a = if playing && fx::ready() {
         0.52
     } else if dim_past {
         0.38
@@ -303,12 +316,13 @@ fn row_cover(s: &State, t: &Track, playing: bool, hovered: bool, dim_past: bool)
         0.0
     };
     let dim = th::rgba(0x000000, dim_a);
+    let art = if load_art { cover_sm(s, t.cover_template(), ROW_COVER, ROW_COVER_R) } else { cover_placeholder(ROW_COVER, ROW_COVER_R) };
     let mut c = el()
         .key("rc")
         .w(ROW_COVER)
         .h(ROW_COVER)
         .transition(Transition::none())
-        .child(cover_sm(s, t.cover_template(), ROW_COVER, ROW_COVER_R))
+        .child(art)
         .child(el().key("rc-dim").absolute(0.0, 0.0).w_full().h_full().radius(ROW_COVER_R).transition(Transition::none()).fill(dim));
     if playing {
         if hovered {
@@ -324,8 +338,8 @@ fn row_cover(s: &State, t: &Track, playing: bool, hovered: bool, dim_past: bool)
                     .transition(Transition::none())
                     .child(icon(if s.player.playing { &icons::PAUSE } else { &icons::PLAY }, 16.0).color(th::rgb(0xffffff))),
             );
-        } else {
-            c = c.child(row().key("rc-mark").absolute(0.0, 0.0).w_full().h_full().center().transition(Transition::none()).child(marker(s)));
+        } else if let Some(m) = marker(s, true) {
+            c = c.child(row().key("rc-mark").absolute(0.0, 0.0).w_full().h_full().center().transition(Transition::none()).child(m));
         }
     } else {
         c = c
@@ -364,7 +378,7 @@ fn download_status(s: &State, t: &Track) -> Option<El> {
             .w(ROW_BTN)
             .h(ROW_BTN)
             .center()
-            .child(icon(ic, ROW_GLYPH).color(color).looping(rune::LoopSpec::rotation(0.9))),
+            .child(super::spin(icon(ic, ROW_GLYPH).color(color))),
         Some(DownloadState::Done) => row()
             .key(format!("download-done-{}", t.id))
             .role("status")
@@ -383,13 +397,17 @@ fn download_status(s: &State, t: &Track) -> Option<El> {
 }
 
 pub fn track_row(s: &State, t: &Track, n: usize, src: ListSrc) -> El {
+    track_row_lazy(s, t, n, src, true)
+}
+
+pub fn track_row_lazy(s: &State, t: &Track, n: usize, src: ListSrc, load_art: bool) -> El {
     let qi = (src == ListSrc::Queue).then(|| s.player.queue.iter().position(|queued| queued.id == t.id).unwrap_or_else(|| n.saturating_sub(1)));
     let num = (src == ListSrc::Detail && matches!(s.detail.page, Some(Page::Album(_)))).then_some(n);
-    track_row_at(s, t, src, qi, num, false, n.saturating_sub(1))
+    track_row_at(s, t, src, qi, num, false, n.saturating_sub(1), load_art)
 }
 
 pub fn queue_row(s: &State, t: &Track, qi: usize, dim_past: bool) -> El {
-    track_row_at(s, t, ListSrc::Queue, Some(qi), None, dim_past, qi).on_press(move |s: &mut State| {
+    track_row_at(s, t, ListSrc::Queue, Some(qi), None, dim_past, qi, true).on_press(move |s: &mut State| {
         if s.player.index == Some(qi) {
             s.toggle_pause();
         } else {
@@ -398,7 +416,8 @@ pub fn queue_row(s: &State, t: &Track, qi: usize, dim_past: bool) -> El {
     })
 }
 
-fn track_row_at(s: &State, t: &Track, src: ListSrc, qi: Option<usize>, num: Option<usize>, dim_past: bool, row_idx: usize) -> El {
+#[expect(clippy::too_many_arguments, reason = "shared builder for list and queue track rows")]
+fn track_row_at(s: &State, t: &Track, src: ListSrc, qi: Option<usize>, num: Option<usize>, dim_past: bool, row_idx: usize, load_art: bool) -> El {
     let queue = src == ListSrc::Queue;
     let reorderable = queue
         || (src == ListSrc::Detail
@@ -456,13 +475,15 @@ fn track_row_at(s: &State, t: &Track, src: ListSrc, qi: Option<usize>, num: Opti
         .child(heart)
         .child(tail);
 
+    let lead_pad = if queue { (ROW_H - ROW_COVER) * 0.5 } else { ROW_PAD };
     let mut r = row()
         .key(hot.clone())
         .role("button")
         .label(title.as_str())
         .w_full()
         .h(ROW_H)
-        .px(ROW_PAD)
+        .pl(lead_pad)
+        .pr(ROW_PAD)
         .gap(ROW_GAP)
         .items_center()
         .radius(10.0)
@@ -492,7 +513,7 @@ fn track_row_at(s: &State, t: &Track, src: ListSrc, qi: Option<usize>, num: Opti
     }
     let lead = match num {
         Some(n) => row_number(s, n, playing, moving),
-        None => row_cover(s, t, playing, moving, dim_past),
+        None => row_cover(s, t, playing, moving, dim_past, load_art),
     };
     r = r
         .child(lead)
@@ -508,8 +529,10 @@ fn row_number(s: &State, n: usize, playing: bool, hovered: bool) -> El {
     if playing {
         let inner = if hovered {
             icon(if s.player.playing { &icons::PAUSE } else { &icons::PLAY }, 15.0).color(th::text())
+        } else if let Some(m) = marker(s, false) {
+            m
         } else {
-            marker(s)
+            label(n.to_string(), th::TIME, s.pal().accent)
         };
         c = c.child(row().absolute(0.0, 0.0).w_full().h_full().center().transition(Transition::none()).child(inner));
     } else {

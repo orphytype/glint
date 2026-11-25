@@ -53,6 +53,10 @@ impl State {
 
     /// Picks a result filter chip; non-"All" kinds fetch a wider dedicated result set.
     pub fn set_search_tab(&mut self, tab: SearchTab) {
+        if self.search.tab != tab {
+            self.art.bump_page();
+            self.art_trim_at = Some(self.now + 1.2);
+        }
         self.search.tab = tab;
         self.fetch_search_kind();
     }

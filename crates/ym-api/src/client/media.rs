@@ -87,6 +87,30 @@ impl Client {
         Err(last)
     }
 
+    /// Streams the audio file directly to `path` on disk without buffering the whole file in RAM.
+    pub async fn fetch_audio_to_file(&self, info: &StreamInfo, path: &std::path::Path) -> Result<(u64, Vec<u8>)> {
+        let mut last = Error::Api("no stream URL".into());
+        for url in &info.urls {
+            if !cover::is_trusted_host(url) {
+                continue;
+            }
+            match self.fetch_to_file(url, MAX_AUDIO_BYTES, path).await {
+                Ok(out) => return Ok(out),
+                Err(e @ Error::Http { .. }) => last = e,
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last)
+    }
+
+    /// Streams a replacement audio file from FkCensorData directly to `path` on disk.
+    pub async fn fetch_fkcensor_audio_to_file(&self, url: &str, path: &std::path::Path) -> Result<(u64, Vec<u8>)> {
+        if !url.starts_with("https://raw.githubusercontent.com/") {
+            return Err(Error::Parse("replacement audio points outside GitHub raw".into()));
+        }
+        self.fetch_to_file(url, MAX_AUDIO_BYTES, path).await
+    }
+
     /// Loads the public FkCensorData catalog without sending the account token.
     pub async fn fkcensor_catalog(&self) -> Result<crate::fkcensor::Catalog> {
         crate::fkcensor::fetch_catalog(&self.inner.http).await
